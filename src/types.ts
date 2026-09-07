@@ -90,14 +90,6 @@ export interface Room extends RoomMeta {
   profiles: Record<string, Profile>;
 }
 
-export interface HitEvent {
-  shooter: string;
-  target: string;
-  t: number;
-  score: number;
-  via: string;
-}
-
 export const DEFAULT_SETTINGS: RoomSettings = {
   lives: 3,
   cooldownMs: 1000,
@@ -113,3 +105,16 @@ export const CLOTHING_CONFLICT = 0.72;
 
 /** Pseudo-candidate id for "nobody in this room". */
 export const UNKNOWN_ID = '_unknown';
+
+/** Players taking part in the round: enrolled with a profile in this room. */
+export function enrolledPlayers(room: Pick<Room, 'players'>): Player[] {
+  return Object.values(room.players).filter((p) => p.enrolled);
+}
+
+export function alivePlayers(room: Pick<Room, 'players'>): Player[] {
+  return enrolledPlayers(room).filter((p) => p.status === 'alive');
+}
+
+export function livesLabel(p: Player): string {
+  return p.status === 'alive' ? `${p.lives} ♥` : 'out';
+}

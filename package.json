@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host",
-    "dev:http": "VITE_HTTPS=0 PORT=5174 vite --host",
+    "dev:http": "VITE_HTTPS=0 vite --host",
     "build": "tsc -p tsconfig.json && vite build",
     "preview": "vite preview --host",
     "typecheck": "tsc -p tsconfig.json"

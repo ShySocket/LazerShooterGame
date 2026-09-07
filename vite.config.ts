@@ -12,7 +12,8 @@ export default defineConfig(({ command }) => ({
     // VITE_HTTPS=0 gives plain HTTP for localhost-only testing (localhost is a secure context anyway).
     ...(command === 'serve' && process.env.VITE_HTTPS !== '0' ? [basicSsl()] : []),
     VitePWA({
-      registerType: 'autoUpdate',
+      // 'prompt' never reloads on its own; src/pwa.ts applies updates only while idle on the home screen.
+      registerType: 'prompt',
       manifest: {
         name: 'Lazer Shooter',
         short_name: 'Lazer',

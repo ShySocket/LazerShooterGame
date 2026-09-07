@@ -101,7 +101,7 @@ input, .code-input {
 /* Camera screens */
 .camera-screen { padding: 0; max-width: none; gap: 0; }
 .cam-wrap { position: relative; flex: 1; min-height: 45vh; background: #000; overflow: hidden; }
-.cam-wrap.mirrored .cam, .cam-wrap.mirrored .overlay { transform: scaleX(-1); }
+.cam-wrap.mirrored .cam { transform: scaleX(-1); }
 .cam { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .enroll-panel { padding: 18px 20px calc(env(safe-area-inset-bottom) + 20px); display: flex; flex-direction: column; gap: 10px; }
@@ -200,3 +200,6 @@ input, .code-input {
 .account-row .name { flex: 1; }
 .account-chip { background: var(--good); }
 .google-btn { display: flex; align-items: center; justify-content: center; gap: 10px; }
+
+.status-pill.solo-note { top: auto; bottom: calc(env(safe-area-inset-bottom) + 200px); }
+.hud-top .row { gap: 6px; }

@@ -49,3 +49,22 @@ export function crosshairRect(vidW: number, vidH: number, dispW: number, dispH: 
   const y = (dispH - h) / 2;
   return [(x - t.ox) / (vidW * t.scale), (y - t.oy) / (vidH * t.scale), w / (vidW * t.scale), h / (vidH * t.scale)];
 }
+
+/** Human reports boxes as plain number arrays; the tracker wants the 4-tuple. */
+export function toNBox(b: number[]): NBox {
+  return [b[0], b[1], b[2], b[3]];
+}
+
+/** Index of the box with the most overlap with the crosshair, or -1 when nothing is in it. */
+export function indexInSight(boxes: NBox[], crosshair: NBox): number {
+  let best = -1;
+  let bestArea = 0;
+  for (let i = 0; i < boxes.length; i++) {
+    const a = intersectArea(boxes[i], crosshair);
+    if (a > bestArea) {
+      bestArea = a;
+      best = i;
+    }
+  }
+  return best;
+}

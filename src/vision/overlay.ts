@@ -1,6 +1,6 @@
 import type { Track } from './tracker';
 import type { Detection } from './tracker';
-import { coverTransform, toDisplay, type NBox } from './geometry';
+import { coverTransform, toDisplay, toNBox } from './geometry';
 
 export interface OverlayFrame {
   dets: Detection[];
@@ -9,7 +9,6 @@ export interface OverlayFrame {
   vidH: number;
   labels?: Record<string, string>;
   colors?: Record<string, string>;
-  crosshair?: NBox;
 }
 
 /** Debug drawing of bodies, faces, and current identity belief. */
@@ -46,7 +45,7 @@ export function drawOverlay(canvas: HTMLCanvasElement, frame: OverlayFrame, mirr
     ctx.strokeStyle = color;
     ctx.strokeRect(x, y, w, h);
     if (d.face) {
-      const [fx, fy, fw, fh] = toDisplay(d.face.boxRaw as NBox, frame.vidW, frame.vidH, t);
+      const [fx, fy, fw, fh] = toDisplay(toNBox(d.face.boxRaw), frame.vidW, frame.vidH, t);
       ctx.strokeStyle = '#ffffff';
       ctx.strokeRect(fx, fy, fw, fh);
     }

@@ -9,12 +9,14 @@ interface Props {
   initialCode: string;
   account: Account | null;
   deep: DeepProfile | null;
+  /** A message from outside the screen, e.g. a sign-in that failed to complete. */
+  notice?: string | null;
   onProfile: () => void;
   onCreate: (name: string) => Promise<void>;
   onJoin: (name: string, code: string) => Promise<void>;
 }
 
-export function Home({ initialCode, account, deep, onProfile, onCreate, onJoin }: Props) {
+export function Home({ initialCode, account, deep, notice, onProfile, onCreate, onJoin }: Props) {
   const [name, setName] = useState(account?.name ?? localStorage.getItem('lz:name') ?? '');
   useEffect(() => {
     if (account) setName(account.name);
@@ -99,7 +101,7 @@ export function Home({ initialCode, account, deep, onProfile, onCreate, onJoin }
           Join
         </button>
       </div>
-      {err && <div className="note bad">{err}</div>}
+      {(err ?? notice) && <div className="note bad">{err ?? notice}</div>}
     </div>
   );
 }

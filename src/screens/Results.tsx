@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { backend } from '../net';
-import type { Room } from '../types';
+import { enrolledPlayers, livesLabel, type Room } from '../types';
 import { sfx } from '../audio/sfx';
 import { shotLog } from '../debug/shotLog';
 
@@ -20,12 +20,10 @@ export function Results({ room, pid, onLeave }: Props) {
   }, []);
   const fmt = (t: number) => new Date(t).toLocaleTimeString([], { hour12: false, minute: '2-digit', second: '2-digit' });
 
-  const standings = Object.values(room.players)
-    .filter((p) => p.enrolled)
-    .sort((a, b) => {
-      if (a.status !== b.status) return a.status === 'alive' ? -1 : 1;
-      return (b.eliminatedAt ?? 0) - (a.eliminatedAt ?? 0);
-    });
+  const standings = enrolledPlayers(room).sort((a, b) => {
+    if (a.status !== b.status) return a.status === 'alive' ? -1 : 1;
+    return (b.eliminatedAt ?? 0) - (a.eliminatedAt ?? 0);
+  });
 
   return (
     <div className="screen center">
@@ -39,7 +37,7 @@ export function Results({ room, pid, onLeave }: Props) {
             <span className="dot" style={{ background: p.color }} />
             <span className="name">{p.name}</span>
             <span className="tag">{p.tags} tags</span>
-            <span className="tag">{p.status === 'alive' ? `${p.lives} ♥` : 'out'}</span>
+            <span className="tag">{livesLabel(p)}</span>
           </li>
         ))}
       </ol>

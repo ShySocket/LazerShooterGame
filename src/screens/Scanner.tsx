@@ -7,7 +7,7 @@ import { useHumanStatus } from '../hooks/useHumanStatus';
 import { compactEmbedding, faceSimilarity, faceYawDeg, MAX_YAW_DEG, SAME_PERSON_MIN } from '../vision/human';
 import { averageOutfits, averageProps, bodyProportions, FrameSampler, outfitRegions, outfitSignature } from '../vision/clothing';
 import { drawOverlay } from '../vision/overlay';
-import type { NBox } from '../vision/geometry';
+import { toNBox } from '../vision/geometry';
 import type { Detection } from '../vision/tracker';
 import { haptic, sfx } from '../audio/sfx';
 
@@ -151,8 +151,8 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
     const now = performance.now();
     const s = stageRef.current;
     if (canvas) {
-      const dets: Detection[] = res.body.map((b) => ({ box: b.boxRaw as NBox, body: b }));
-      res.face.forEach((f) => dets.push({ box: f.boxRaw as NBox, face: f }));
+      const dets: Detection[] = res.body.map((b) => ({ box: toNBox(b.boxRaw), body: b }));
+      res.face.forEach((f) => dets.push({ box: toNBox(f.boxRaw), face: f }));
       drawOverlay(canvas, { dets, tracks: [], vidW: res.width, vidH: res.height }, facing === 'user');
     }
     if (s === 'face') {
@@ -211,34 +211,32 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
 
   useVisionLoop(videoRef, camReady && humanReady && stage !== 'saving' && stage !== 'error' && stage !== 'bodyMode', onFrame);
 
-  const heading =
-    stage === 'face'
-      ? `Face ${faceIdx + 1} of ${FACE_PROMPTS.length}`
-      : stage === 'bodyMode'
-        ? 'Body scan'
-        : stage === 'bodyFront'
-          ? 'Body scan: front'
-          : stage === 'bodyBack'
-            ? 'Body scan: back'
-            : stage === 'saving'
-              ? 'Saving'
-              : 'Something went wrong';
-  const prompt =
-    stage === 'face'
-      ? FACE_PROMPTS[faceIdx]
-      : stage === 'bodyMode'
-        ? 'The scan needs your whole body, head to feet. Who is holding the phone?'
-        : stage === 'bodyFront'
-          ? bodyMode === 'helper'
-            ? 'Friend: point the back camera at the player, whole body in frame, then tap Record.'
-            : `Prop the phone up, tap Scan, and step back within ${PROP_COUNTDOWN} seconds. Face the phone.`
-          : stage === 'bodyBack'
-            ? bodyMode === 'helper'
-              ? 'Player turns around. Friend taps Record again.'
-              : 'Turn around so the camera sees your back, then tap Scan.'
-            : stage === 'saving'
-              ? (savingText ?? 'Uploading your signature.')
-              : errMsg;
+  const copy = ((): { heading: string; prompt: string } => {
+    switch (stage) {
+      case 'face':
+        return { heading: `Face ${faceIdx + 1} of ${FACE_PROMPTS.length}`, prompt: FACE_PROMPTS[faceIdx] };
+      case 'bodyMode':
+        return { heading: 'Body scan', prompt: 'The scan needs your whole body, head to feet. Who is holding the phone?' };
+      case 'bodyFront':
+        return {
+          heading: 'Body scan: front',
+          prompt:
+            bodyMode === 'helper'
+              ? 'Friend: point the back camera at the player, whole body in frame, then tap Record.'
+              : `Prop the phone up, tap Scan, and step back within ${PROP_COUNTDOWN} seconds. Face the phone.`,
+        };
+      case 'bodyBack':
+        return {
+          heading: 'Body scan: back',
+          prompt: bodyMode === 'helper' ? 'Player turns around. Friend taps Record again.' : 'Turn around so the camera sees your back, then tap Scan.',
+        };
+      case 'saving':
+        return { heading: 'Saving', prompt: savingText ?? 'Uploading your signature.' };
+      case 'error':
+        return { heading: 'Something went wrong', prompt: errMsg };
+    }
+  })();
+  const { heading, prompt } = copy;
 
   return (
     <div className="screen camera-screen">

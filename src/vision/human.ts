@@ -1,13 +1,16 @@
 import { Human, type Config } from '@vladmandic/human';
+import { roundTo } from '../util/num';
 
 const modelBasePath = import.meta.env.BASE_URL.replace(/\/?$/, '/') + 'models/';
 
 export const humanConfig: Partial<Config> = {
   modelBasePath,
   debug: false,
-  warmup: 'none',
+  // Compile shaders during loading, not on the first live frame of a round.
+  warmup: 'full',
   cacheSensitivity: 0,
-  filter: { enabled: true, equalization: false, flip: false },
+  // No image effects are used, so skip Human's full-resolution filter pass on every frame.
+  filter: { enabled: false },
   face: {
     enabled: true,
     // Tighter crop than Human's default 1.4 because ArcFace-family models expect a close face box.
@@ -45,7 +48,7 @@ export function isHumanReady(): boolean {
   return ready;
 }
 
-/** Loads models once; safe to call from many places. */
+/** Loads models once; safe to call from many places. A failed load is forgotten so the next call retries. */
 export function loadHuman(onStatus?: (msg: string) => void): Promise<Human> {
   if (!loading) {
     loading = (async () => {
@@ -57,7 +60,10 @@ export function loadHuman(onStatus?: (msg: string) => void): Promise<Human> {
       ready = true;
       onStatus?.('Ready');
       return h;
-    })();
+    })().catch((e: unknown) => {
+      loading = null;
+      throw e;
+    });
   }
   return loading;
 }
@@ -78,26 +84,30 @@ export const SAME_PERSON_MIN = 0.25;
 /** Faces turned more than this (degrees of yaw) are too oblique for a reliable embedding. */
 export const MAX_YAW_DEG = 45;
 
-function normalize(e: number[]): number[] {
+/** Scale a raw model embedding to unit length. Stored profile embeddings are already unit length. */
+export function unitEmbedding(e: number[]): number[] {
   let n = 0;
   for (const v of e) n += v * v;
   const inv = n > 0 ? 1 / Math.sqrt(n) : 0;
   return e.map((v) => v * inv);
 }
 
-/** Cosine similarity in 0..1. Model output is not unit length, so both sides are normalised first. */
-export function faceSimilarity(a: number[], b: number[]): number {
-  const na = normalize(a);
-  const nb = normalize(b);
+/** Cosine similarity in 0..1 of two unit-length embeddings. Allocation free, safe for the frame loop. */
+export function unitSimilarity(a: number[], b: number[]): number {
   let dot = 0;
-  const n = Math.min(na.length, nb.length);
-  for (let i = 0; i < n; i++) dot += na[i] * nb[i];
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) dot += a[i] * b[i];
   return Math.max(0, dot);
+}
+
+/** Cosine similarity of two raw embeddings. Normalises both, so prefer unitSimilarity in hot paths. */
+export function faceSimilarity(a: number[], b: number[]): number {
+  return unitSimilarity(unitEmbedding(a), unitEmbedding(b));
 }
 
 /** Unit-length embeddings rounded so they are small enough to sync comfortably. */
 export function compactEmbedding(e: number[]): number[] {
-  return normalize(e).map((v) => Math.round(v * 10000) / 10000);
+  return unitEmbedding(e).map((v) => roundTo(v, 4));
 }
 
 /** Head yaw in degrees when the mesh reports it, else 0. */

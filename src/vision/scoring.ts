@@ -102,8 +102,6 @@ export interface Resolution {
   score: number;
   margin: number;
   via: string;
-  /** Who came second, for the shot log. */
-  runnerUp?: string;
 }
 
 /**
@@ -115,7 +113,7 @@ export function topBelief(track: Track): Resolution | null {
   if (entries.length === 0) return null;
   const [id, score] = entries[0];
   const second = entries[1];
-  return { id, score, margin: score - (second?.[1] ?? 0), via: track.via, runnerUp: second?.[0] };
+  return { id, score, margin: score - (second?.[1] ?? 0), via: track.via };
 }
 
 /** Best eligible player, for the live label. Null when the top belief is not a shootable player. */

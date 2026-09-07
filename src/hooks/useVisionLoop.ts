@@ -1,6 +1,6 @@
 import { useEffect, useRef, type RefObject } from 'react';
 import type { Human, Result } from '@vladmandic/human';
-import { getHuman, loadHuman } from '../vision/human';
+import { loadHuman } from '../vision/human';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -16,8 +16,13 @@ export function useVisionLoop(
     if (!active) return;
     let running = true;
     (async () => {
-      await loadHuman();
-      const human = getHuman();
+      let human: Human;
+      try {
+        human = await loadHuman();
+      } catch (e) {
+        console.warn('vision models unavailable', e);
+        return;
+      }
       while (running) {
         const v = video.current;
         if (!v || v.readyState < 2 || v.videoWidth === 0) {

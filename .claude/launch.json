@@ -13,7 +13,7 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev:http"],
       "port": 5174,
-      "url": "http://localhost:5174"
+      "autoPort": true
     }
   ]
 }

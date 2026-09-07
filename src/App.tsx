@@ -9,6 +9,7 @@ import { Game } from './screens/Game';
 import { Results } from './screens/Results';
 import { Profile } from './screens/Profile';
 import { loadHuman } from './vision/human';
+import { applyPendingUpdate, onUpdatePending, updatePending } from './pwa';
 
 function guestPid(): string {
   let v = localStorage.getItem('lz:pid');
@@ -32,8 +33,19 @@ export default function App() {
   const pid = account ? account.uid : guestPid();
   const [code, setCode] = useState<string | null>(null);
   const [room, setRoom] = useState<Room | null | undefined>(undefined);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [swPending, setSwPending] = useState(updatePending());
 
-  useEffect(() => onAccount(setAccount), []);
+  useEffect(() => onAccount(setAccount, setNotice), []);
+  useEffect(() => onUpdatePending(() => setSwPending(true)), []);
+  // A new build is applied only while nobody is mid-scan or mid-round on this phone.
+  useEffect(() => {
+    if (swPending && !code && !showProfile) applyPendingUpdate();
+  }, [swPending, code, showProfile]);
+  // Models are ~24 MB; start fetching while the player is still typing a name.
+  useEffect(() => {
+    void loadHuman().catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     if (!account) {
@@ -64,8 +76,6 @@ export default function App() {
       return;
     }
     setRoom(undefined);
-    // Start pulling models as soon as we are in a room so enrollment does not wait.
-    void loadHuman();
     return backend.subscribe(code, setRoom);
   }, [code]);
 
@@ -74,6 +84,7 @@ export default function App() {
     history.replaceState(null, '', `${location.pathname}?room=${c}`);
   };
   const leave = () => {
+    if (code) void backend.leaveRoom(code, pid).catch(() => undefined);
     setCode(null);
     history.replaceState(null, '', location.pathname);
   };
@@ -90,13 +101,16 @@ export default function App() {
         initialCode={codeFromUrl()}
         account={account}
         deep={deep}
+        notice={notice}
         onProfile={() => {
           void loadHuman();
           setShowProfile(true);
         }}
         onCreate={async (name) => enter(await backend.createRoom({ id: pid, name }))}
         onJoin={async (name, c) => {
-          if (!(await backend.joinRoom(c, { id: pid, name }))) throw new Error(`Room ${c} was not found`);
+          const r = await backend.joinRoom(c, { id: pid, name });
+          if (r === 'missing') throw new Error(`Room ${c} was not found`);
+          if (r === 'in-progress') throw new Error(`Room ${c} is mid-game. Ask the host to share the link again once they are back in the lobby.`);
           enter(c);
         }}
       />

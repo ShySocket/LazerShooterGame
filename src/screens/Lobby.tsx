@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { backend } from '../net';
+import { backend, MIN_PLAYERS } from '../net';
 import { CLOTHING_CONFLICT, type Player, type Room, type RoomSettings } from '../types';
 import { outfitConflict } from '../vision/clothing';
 import { FACE_MODEL } from '../vision/human';
@@ -35,9 +35,8 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
     }
   }
 
-  const minPlayers = backend.mode === 'local' ? 1 : 2;
   const notEnrolled = connected.filter((p) => !p.enrolled);
-  const canStart = isHost && enrolled.length >= minPlayers && notEnrolled.length === 0 && conflicts.length === 0 && stale.length === 0;
+  const canStart = isHost && enrolled.length >= MIN_PLAYERS && notEnrolled.length === 0 && conflicts.length === 0 && stale.length === 0;
 
   const link = `${location.origin}${import.meta.env.BASE_URL}?room=${room.code}`;
   const share = async () => {
@@ -65,9 +64,10 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
     haptic();
   };
 
+  // Starting applies the final settings to everyone, so a Lives change made after people joined counts.
   const start = () => {
     soundCheck();
-    void backend.updateMeta(room.code, { status: 'countdown', startAt: backend.now() + 5000, settings });
+    void backend.startRound(room.code, settings, backend.now() + 5000);
   };
 
   return (
@@ -127,19 +127,16 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
         <div className="settings">
           <h3>Rules</h3>
           <label>
-            Lives <input type="number" min={1} max={10} value={settings.lives} onChange={(e) => saveSettings({ lives: +e.target.value || 1 })} />
+            Lives <NumberField value={settings.lives} min={1} max={10} step={1} onCommit={(v) => saveSettings({ lives: v })} />
           </label>
           <label>
-            Cooldown (ms){' '}
-            <input type="number" min={200} step={100} value={settings.cooldownMs} onChange={(e) => saveSettings({ cooldownMs: +e.target.value || 1000 })} />
+            Cooldown (ms) <NumberField value={settings.cooldownMs} min={200} max={10000} step={100} onCommit={(v) => saveSettings({ cooldownMs: v })} />
           </label>
           <label>
-            Shield after hit (ms){' '}
-            <input type="number" min={0} step={500} value={settings.invulnMs} onChange={(e) => saveSettings({ invulnMs: +e.target.value || 0 })} />
+            Shield after hit (ms) <NumberField value={settings.invulnMs} min={0} max={30000} step={500} onCommit={(v) => saveSettings({ invulnMs: v })} />
           </label>
           <label>
-            Hit confidence{' '}
-            <input type="number" min={0.2} max={0.95} step={0.05} value={settings.hitThreshold} onChange={(e) => saveSettings({ hitThreshold: +e.target.value || 0.5 })} />
+            Hit confidence <NumberField value={settings.hitThreshold} min={0.2} max={0.95} step={0.05} onCommit={(v) => saveSettings({ hitThreshold: v })} />
           </label>
         </div>
       ) : (
@@ -158,8 +155,8 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
         )}
         {isHost && !canStart && (
           <p className="hint">
-            {enrolled.length < minPlayers
-              ? `Need at least ${minPlayers} enrolled players.`
+            {enrolled.length < MIN_PLAYERS
+              ? `Need at least ${MIN_PLAYERS} enrolled players.`
               : notEnrolled.length > 0
                 ? `Waiting for ${notEnrolled.map((p) => p.name).join(', ')} to enroll.`
                 : stale.length > 0
@@ -177,5 +174,44 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
         </div>
       </div>
     </div>
+  );
+}
+
+interface NumberFieldProps {
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onCommit: (v: number) => void;
+}
+
+/** Numeric input that lets the host clear and retype freely, then clamps and saves once on blur or Enter. */
+function NumberField({ value, min, max, step, onCommit }: NumberFieldProps) {
+  const [text, setText] = useState(String(value));
+  useEffect(() => setText(String(value)), [value]);
+  const commit = () => {
+    const n = Number(text);
+    if (!Number.isFinite(n) || text.trim() === '') {
+      setText(String(value));
+      return;
+    }
+    const clamped = Math.min(max, Math.max(min, n));
+    setText(String(clamped));
+    if (clamped !== value) onCommit(clamped);
+  };
+  return (
+    <input
+      type="number"
+      inputMode="decimal"
+      min={min}
+      max={max}
+      step={step}
+      value={text}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+      }}
+    />
   );
 }

@@ -33,15 +33,30 @@ function toAccount(u: User): Account {
   return { uid: u.uid, name: u.displayName ?? u.email?.split('@')[0] ?? 'Player', email: u.email, photo: u.photoURL };
 }
 
-/** Fires with the current account (or null) now and on every change. */
-export function onAccount(cb: (a: Account | null) => void): () => void {
+/** Turn Firebase auth error codes into something a player can act on. */
+function describeAuthError(e: unknown): string {
+  const code = (e as { code?: string }).code ?? '';
+  if (code === 'auth/configuration-not-found' || code === 'auth/operation-not-allowed') {
+    return 'Google sign-in is not switched on in the Firebase console yet. Play as a guest for now.';
+  }
+  if (code === 'auth/unauthorized-domain') {
+    return `This site (${location.hostname}) is not in the Firebase authorized domains list yet. Play as a guest for now.`;
+  }
+  if (code === 'auth/network-request-failed') return 'Sign-in failed: no connection. Try again or play as a guest.';
+  return e instanceof Error ? e.message : 'Sign-in did not complete. Play as a guest for now.';
+}
+
+/**
+ * Fires with the current account (or null) now and on every change. A redirect-based sign-in that
+ * comes back failed (Safari can drop it under storage partitioning) is reported through onError.
+ */
+export function onAccount(cb: (a: Account | null) => void, onError?: (message: string) => void): () => void {
   const a = getAuthInstance();
   if (!a) {
     queueMicrotask(() => cb(null));
     return () => undefined;
   }
-  // Complete a redirect-based sign-in if one is pending; errors surface through signInGoogle's caller.
-  void getRedirectResult(a).catch(() => undefined);
+  void getRedirectResult(a).catch((e: unknown) => onError?.(describeAuthError(e)));
   return onAuthStateChanged(a, (u) => cb(u ? toAccount(u) : null));
 }
 
@@ -60,13 +75,7 @@ export async function signInGoogle(): Promise<void> {
       return;
     }
     if (code === 'auth/popup-closed-by-user') return;
-    if (code === 'auth/configuration-not-found' || code === 'auth/operation-not-allowed') {
-      throw new Error('Google sign-in is not switched on in the Firebase console yet. Play as a guest for now.');
-    }
-    if (code === 'auth/unauthorized-domain') {
-      throw new Error(`This site (${location.hostname}) is not in the Firebase authorized domains list yet. Play as a guest for now.`);
-    }
-    throw e;
+    throw new Error(describeAuthError(e));
   }
 }
 

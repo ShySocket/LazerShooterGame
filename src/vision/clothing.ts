@@ -1,8 +1,9 @@
 import type { BodyResult } from '@vladmandic/human';
 import type { BodyProps, OutfitSides, OutfitSig } from '../types';
+import { roundTo } from '../util/num';
 
 /** 12 hues x 2 saturation x 2 value bins, plus 3 grey bins. */
-export const SIG_LEN = 51;
+const SIG_LEN = 51;
 
 type Pt = [number, number];
 type Quad = [Pt, Pt, Pt, Pt];
@@ -17,11 +18,6 @@ function keypoints(body: BodyResult, minScore: number): Partial<Record<string, P
 function quadOf(pts: Partial<Record<string, Pt>>, a: Part, b: Part, c: Part, d: Part): Quad | null {
   const q = [pts[a], pts[b], pts[c], pts[d]];
   return q.every(Boolean) ? (q as Quad) : null;
-}
-
-/** Torso quad in normalised coordinates, or null if the torso is not visible enough. */
-export function torsoQuad(body: BodyResult, minScore = 0.3): Quad | null {
-  return quadOf(keypoints(body, minScore), 'leftShoulder', 'rightShoulder', 'rightHip', 'leftHip');
 }
 
 const dist = (a: Pt, b: Pt) => Math.hypot(a[0] - b[0], a[1] - b[1]);
@@ -149,18 +145,13 @@ function sampleQuad(img: ImageData, quad: Quad, hist: Float32Array, G = 14): num
 }
 
 /** Colour histogram of one or more quads sampled from a small frame. */
-export function regionSignature(img: ImageData, quads: Quad[]): number[] {
+function regionSignature(img: ImageData, quads: Quad[]): number[] {
   const hist = new Float32Array(SIG_LEN);
   let n = 0;
   for (const q of quads) n += sampleQuad(img, q, hist);
   if (n === 0) return new Array(SIG_LEN).fill(0);
   const sm = smoothHues(hist);
-  return Array.from(sm, (v) => Math.round((v / n) * 10000) / 10000);
-}
-
-/** Colour histogram of the torso region sampled from a small frame. */
-export function torsoSignature(img: ImageData, quad: Quad): number[] {
-  return regionSignature(img, [quad]);
+  return Array.from(sm, (v) => roundTo(v / n, 4));
 }
 
 /** Every visible clothing region of one body in one frame. */
@@ -175,18 +166,18 @@ export function outfitSignature(img: ImageData, body: BodyResult, minScore = 0.3
 }
 
 /** Histogram intersection in 0..1. */
-export function sigSimilarity(a: number[], b: number[]): number {
+function sigSimilarity(a: number[], b: number[]): number {
   let s = 0;
   const n = Math.min(a.length, b.length);
   for (let i = 0; i < n; i++) s += Math.min(a[i], b[i]);
   return s;
 }
 
-export function averageSigs(sigs: number[][]): number[] {
+function averageSigs(sigs: number[][]): number[] {
   const out = new Array(SIG_LEN).fill(0);
   if (sigs.length === 0) return out;
   for (const s of sigs) for (let i = 0; i < SIG_LEN; i++) out[i] += s[i] ?? 0;
-  return out.map((v) => Math.round((v / sigs.length) * 10000) / 10000);
+  return out.map((v) => roundTo(v / sigs.length, 4));
 }
 
 /** Average of several outfit samples, region by region, using each region only where it was seen. */
@@ -204,7 +195,7 @@ export function averageOutfits(samples: OutfitSig[]): OutfitSig {
 const REGION_WEIGHT: Record<keyof OutfitSig, number> = { top: 0.45, thighs: 0.25, shins: 0.1, hair: 0.2 };
 
 /** Weighted similarity over the regions both signatures have. */
-export function outfitSimilarity(a: OutfitSig, b: OutfitSig): number {
+function outfitSimilarity(a: OutfitSig, b: OutfitSig): number {
   let num = 0;
   let den = 0;
   for (const k of Object.keys(REGION_WEIGHT) as (keyof OutfitSig)[]) {
@@ -253,7 +244,7 @@ export function bodyProportions(body: BodyResult, minScore = 0.3): BodyProps | n
   if (legs.length === 0) return null;
   const legL = legs.reduce((a, b) => a + b, 0) / legs.length;
   const headW = p.leftEar && p.rightEar ? dist(p.leftEar, p.rightEar) : p.leftEye && p.rightEye ? dist(p.leftEye, p.rightEye) * 2.2 : 0;
-  const r = (v: number) => Math.round(v * 1000) / 1000;
+  const r = (v: number) => roundTo(v, 3);
   return { shoulderTorso: r(shoulderW / torsoL), hipShoulder: r(hipW / shoulderW), legTorso: r(legL / torsoL), headShoulder: r(headW / shoulderW) };
 }
 
@@ -263,7 +254,7 @@ export function averageProps(list: BodyProps[]): BodyProps | null {
   const out = {} as BodyProps;
   for (const k of keys) {
     const vals = list.map((b) => b[k]).filter((v) => v > 0);
-    out[k] = vals.length ? Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 1000) / 1000 : 0;
+    out[k] = vals.length ? roundTo(vals.reduce((a, b) => a + b, 0) / vals.length, 3) : 0;
   }
   return out;
 }

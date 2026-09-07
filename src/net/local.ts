@@ -1,6 +1,17 @@
-import type { Player, Profile, Room, RoomMeta } from '../types';
-import { DEFAULT_SETTINGS } from '../types';
-import { applyHit, newPlayer, pickColor, randomCode, type HitOutcome, type PlayerSeed, type RoomBackend } from './backend';
+import type { Player, Profile, Room, RoomMeta, RoomSettings } from '../types';
+import {
+  evaluateHit,
+  newPlayer,
+  newRoomMeta,
+  pickColor,
+  randomCode,
+  ROUND_META_RESET,
+  roundResetFields,
+  type HitOutcome,
+  type JoinResult,
+  type PlayerSeed,
+  type RoomBackend,
+} from './backend';
 
 /** In-memory backend used when no Firebase config is present. Single device only. */
 export class LocalBackend implements RoomBackend {
@@ -19,37 +30,33 @@ export class LocalBackend implements RoomBackend {
 
   async createRoom(host: PlayerSeed): Promise<string> {
     const code = randomCode();
-    const meta: RoomMeta = {
-      code,
-      hostId: host.id,
-      createdAt: this.now(),
-      status: 'lobby',
-      startAt: null,
-      endedAt: null,
-      winnerId: null,
-      settings: DEFAULT_SETTINGS,
-    };
+    const meta = newRoomMeta(code, host.id, this.now());
     this.rooms.set(code, {
       ...meta,
-      players: { [host.id]: newPlayer(host, pickColor(undefined), DEFAULT_SETTINGS.lives, this.now()) },
+      players: { [host.id]: newPlayer(host, pickColor(undefined), meta.settings.lives, this.now()) },
       profiles: {},
     });
     this.emit(code);
     return code;
   }
 
-  async joinRoom(code: string, player: PlayerSeed): Promise<boolean> {
+  async joinRoom(code: string, player: PlayerSeed): Promise<JoinResult> {
     const room = this.rooms.get(code);
-    if (!room) return false;
+    if (!room) return 'missing';
     const existing = room.players[player.id];
     if (existing) {
       existing.connected = true;
       existing.name = player.name;
     } else {
+      if (room.status !== 'lobby') return 'in-progress';
       room.players[player.id] = newPlayer(player, pickColor(room.players), room.settings.lives, this.now());
     }
     this.emit(code);
-    return true;
+    return 'ok';
+  }
+
+  async leaveRoom(code: string, id: string): Promise<void> {
+    await this.updatePlayer(code, id, { connected: false });
   }
 
   subscribe(code: string, cb: (room: Room | null) => void): () => void {
@@ -82,30 +89,33 @@ export class LocalBackend implements RoomBackend {
     this.emit(code);
   }
 
+  private resetPlayers(room: Room, lives: number): void {
+    for (const p of Object.values(room.players)) Object.assign(p, roundResetFields(lives));
+  }
+
+  async startRound(code: string, settings: RoomSettings, startAt: number): Promise<void> {
+    const room = this.rooms.get(code);
+    if (!room) return;
+    room.settings = settings;
+    this.resetPlayers(room, settings.lives);
+    Object.assign(room, { status: 'countdown', startAt, endedAt: null, winnerId: null });
+    this.emit(code);
+  }
+
   async resetForNewRound(code: string): Promise<void> {
     const room = this.rooms.get(code);
     if (!room) return;
-    room.status = 'lobby';
-    room.startAt = null;
-    room.endedAt = null;
-    room.winnerId = null;
-    for (const p of Object.values(room.players)) {
-      p.lives = room.settings.lives;
-      p.status = 'alive';
-      p.lastHitAt = 0;
-      p.eliminatedAt = null;
-      p.tags = 0;
-    }
+    Object.assign(room, ROUND_META_RESET);
+    this.resetPlayers(room, room.settings.lives);
     this.emit(code);
   }
 
   async registerHit(code: string, shooter: string, target: string): Promise<HitOutcome> {
     const room = this.rooms.get(code);
     if (!room || room.status !== 'playing') return 'invalid';
-    const r = applyHit(room.players[target] ?? null, this.now(), room.settings.invulnMs);
-    if (r.next) {
-      room.players[target] = r.next;
-      if (room.players[shooter]) room.players[shooter].tags += 1;
+    const r = evaluateHit(room.players, shooter, target, this.now(), room.settings.invulnMs);
+    if (r.players) {
+      room.players = r.players;
       this.emit(code);
     }
     return r.outcome;

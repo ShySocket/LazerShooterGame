@@ -10,7 +10,6 @@ export interface Detection {
 export interface Track {
   id: number;
   box: NBox;
-  born: number;
   lastSeen: number;
   /** Per-player identity belief in 0..1, updated by face and clothing evidence. */
   belief: Record<string, number>;
@@ -42,7 +41,7 @@ export class Tracker {
     const out = dets.map((d, i) => {
       let t = assigned[i];
       if (!t) {
-        t = { id: this.nextId++, box: d.box, born: now, lastSeen: now, belief: {}, via: 'none', lastFaceAt: 0 };
+        t = { id: this.nextId++, box: d.box, lastSeen: now, belief: {}, via: 'none', lastFaceAt: 0 };
         this.tracks.push(t);
       }
       t.box = d.box;
@@ -51,10 +50,6 @@ export class Tracker {
     });
     this.tracks = this.tracks.filter((t) => now - t.lastSeen < ttlMs);
     return out;
-  }
-
-  all(): Track[] {
-    return this.tracks;
   }
 
   reset(): void {
