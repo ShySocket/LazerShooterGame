@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { backend } from '../net';
-import { unlockAudio } from '../audio/sfx';
+import { haptic, sfx, unlockAudio } from '../audio/sfx';
 
 interface Props {
   initialCode: string;
@@ -21,6 +21,8 @@ export function Home({ initialCode, onCreate, onJoin }: Props) {
       setErr('Enter a name first');
       return;
     }
+    sfx.tick();
+    haptic();
     localStorage.setItem('lz:name', n);
     setBusy(true);
     setErr(null);

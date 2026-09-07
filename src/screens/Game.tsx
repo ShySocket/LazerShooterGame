@@ -6,12 +6,13 @@ import { useCamera } from '../hooks/useCamera';
 import { useVisionLoop } from '../hooks/useVisionLoop';
 import { useHumanStatus } from '../hooks/useHumanStatus';
 import { useWakeLock } from '../hooks/useWakeLock';
+import { useTorch } from '../hooks/useTorch';
 import { Tracker, type Detection, type Track } from '../vision/tracker';
 import { clampBox, crosshairRect, intersectArea, type NBox } from '../vision/geometry';
 import { FrameSampler, torsoQuad, torsoSignature } from '../vision/clothing';
 import { bestBelief, clothingEvidence, combineEvidence, faceEvidence, resolveHit, updateBelief, type Candidate } from '../vision/scoring';
 import { drawOverlay } from '../vision/overlay';
-import { sfx, unlockAudio, vibrate } from '../audio/sfx';
+import { haptic, sfx, unlockAudio, vibrate } from '../audio/sfx';
 
 interface Props {
   room: Room;
@@ -41,6 +42,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   useWakeLock(true);
+  const torch = useTorch(videoRef);
 
   const [debug, setDebug] = useState(false);
   const [banner, setBanner] = useState<{ text: string; kind: Kind } | null>(null);
@@ -129,7 +131,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
       if (me.lastHitAt > 0) {
         sfx.gotHit();
         vibrate([200, 100, 200]);
-        flashScreen('rgba(255,59,92,0.75)', 500);
+        flashScreen('rgba(255,59,92,0.9)', 650);
         show(me.status === 'out' ? 'YOU ARE OUT' : `HIT! ${me.lives} ${me.lives === 1 ? 'life' : 'lives'} left`, 'bad', 2000);
       }
     }
@@ -247,7 +249,9 @@ export function Game({ room, me, pid, onLeave }: Props) {
     setCooling(true);
     window.setTimeout(() => setCooling(false), settings.cooldownMs);
     sfx.fire();
-    flashScreen('rgba(255,255,255,0.18)', 80);
+    haptic();
+    torch(120);
+    flashScreen('rgba(255,255,255,0.9)', 90);
 
     const L = latest.current;
     const wrap = wrapRef.current;
@@ -330,7 +334,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
           </button>
         </div>
       ) : (
-        <button className={`fire ${cooling ? 'cooling' : ''}`} disabled={!playing} onPointerDown={fire}>
+        <button className={`fire ${cooling ? 'cooling' : ''}`} disabled={!playing} onPointerDown={fire} onClick={unlockAudio}>
           FIRE
         </button>
       )}

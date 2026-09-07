@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { backend } from '../net';
 import { CLOTHING_CONFLICT, type Player, type Room, type RoomSettings } from '../types';
 import { torsoConflict } from '../vision/clothing';
-import { unlockAudio } from '../audio/sfx';
+import { haptic, sfx, unlockAudio } from '../audio/sfx';
+import { useAudioState } from '../hooks/useAudioState';
 
 interface Props {
   room: Room;
@@ -15,6 +16,7 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
   const isHost = room.hostId === pid;
   const [settings, setSettings] = useState<RoomSettings>(room.settings);
   const [copied, setCopied] = useState(false);
+  const audio = useAudioState();
   useEffect(() => setSettings(room.settings), [room.settings]);
 
   const players = Object.values(room.players).sort((a, b) => a.joinedAt - b.joinedAt);
@@ -53,8 +55,14 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
     void backend.updateMeta(room.code, { settings: next });
   };
 
-  const start = () => {
+  const soundCheck = () => {
     unlockAudio();
+    sfx.fire();
+    haptic();
+  };
+
+  const start = () => {
+    soundCheck();
     void backend.updateMeta(room.code, { status: 'countdown', startAt: backend.now() + 5000, settings });
   };
 
@@ -69,6 +77,12 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
           {copied ? 'Copied!' : 'Share link'}
         </button>
       </div>
+
+      {audio !== 'running' && (
+        <button className="note warn sound-check" onClick={soundCheck}>
+          {audio === 'none' ? 'Tap to enable sound and buzz' : 'Sound is blocked. Tap to turn it back on'}
+        </button>
+      )}
 
       <h3>Players ({connected.length})</h3>
       <ul className="players">
