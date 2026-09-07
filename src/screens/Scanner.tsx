@@ -1,5 +1,5 @@
 import { useRef, useState, type ReactNode } from 'react';
-import type { Result } from '@vladmandic/human';
+import type { Human, Result } from '@vladmandic/human';
 import type { BodyProps, OutfitSig } from '../types';
 import { useCamera, type Facing } from '../hooks/useCamera';
 import { useVisionLoop } from '../hooks/useVisionLoop';
@@ -8,6 +8,7 @@ import { compactEmbedding, faceSimilarity, faceYawDeg, MAX_YAW_DEG, SAME_PERSON_
 import { averageOutfits, averageProps, bodyProportions, FrameSampler, outfitRegions, outfitSignature } from '../vision/clothing';
 import { drawOverlay } from '../vision/overlay';
 import { toNBox } from '../vision/geometry';
+import { faceRegion, ZoomPass } from '../vision/zoom';
 import type { Detection } from '../vision/tracker';
 import { haptic, sfx } from '../audio/sfx';
 
@@ -71,6 +72,7 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
   const front = useRef<OutfitSig | null>(null);
   const stageStart = useRef(performance.now());
   const sampler = useRef(new FrameSampler());
+  const zoom = useRef(new ZoomPass());
   const countdownTimer = useRef<number | undefined>(undefined);
 
   const go = (s: Stage) => {
@@ -144,7 +146,7 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
     go('bodyFront');
   };
 
-  const onFrame = (res: Result) => {
+  const onFrame = async (res: Result, human: Human) => {
     const v = videoRef.current;
     const canvas = canvasRef.current;
     if (!v) return;
@@ -159,9 +161,13 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
       if (now - stageStart.current < 1200) return;
       if (res.face.length === 0) return setHint('No face found. Move closer and face the camera.');
       if (res.face.length > 1) return setHint('Only one face in frame please.');
-      const f = res.face[0];
-      if (!f.embedding || f.score < 0.7) return setHint('Hold still');
-      if (faceYawDeg(f) > MAX_YAW_DEG + 15) return setHint('Turned too far. Bring your face back a little.');
+      const detected = res.face[0];
+      if (detected.score < 0.7) return setHint('Hold still');
+      if (faceYawDeg(detected) > MAX_YAW_DEG + 15) return setHint('Turned too far. Bring your face back a little.');
+      // The embedding is taken from a square crop, the same way the game reads faces (see ZoomPass).
+      const crops = await zoom.current.run(human, v, faceRegion(toNBox(detected.boxRaw), res.width / res.height));
+      const f = crops[0]?.face;
+      if (!f?.embedding?.length) return setHint('Hold still');
       if (faces.current.length > 0 && faceSimilarity(f.embedding, faces.current[0]) < SAME_PERSON_MIN) {
         return setHint('That does not look like the same person as frame 1.');
       }

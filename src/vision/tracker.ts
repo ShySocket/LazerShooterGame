@@ -13,8 +13,13 @@ export interface Track {
   lastSeen: number;
   /** Per-player identity belief in 0..1, updated by face and clothing evidence. */
   belief: Record<string, number>;
+  /** Belief with identities claimed by stronger tracks removed. Refreshed every frame by assignIdentities. */
+  claimed: Record<string, number> | null;
   via: 'face' | 'clothing' | 'none';
   lastFaceAt: number;
+  /** Running mean of the unit face embeddings seen on this track, so matching uses many frames rather than one. */
+  faceMean: number[] | null;
+  faceSamples: number;
 }
 
 /** Keeps identities attached to bodies across frames using box overlap. */
@@ -41,7 +46,7 @@ export class Tracker {
     const out = dets.map((d, i) => {
       let t = assigned[i];
       if (!t) {
-        t = { id: this.nextId++, box: d.box, lastSeen: now, belief: {}, via: 'none', lastFaceAt: 0 };
+        t = { id: this.nextId++, box: d.box, lastSeen: now, belief: {}, claimed: null, via: 'none', lastFaceAt: 0, faceMean: null, faceSamples: 0 };
         this.tracks.push(t);
       }
       t.box = d.box;
@@ -50,6 +55,15 @@ export class Tracker {
     });
     this.tracks = this.tracks.filter((t) => now - t.lastSeen < ttlMs);
     return out;
+  }
+
+  /** Every track still within its time-to-live, including ones not matched this frame. */
+  live(): Track[] {
+    return this.tracks;
+  }
+
+  get(id: number): Track | undefined {
+    return this.tracks.find((t) => t.id === id);
   }
 
   reset(): void {

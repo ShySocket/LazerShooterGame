@@ -69,7 +69,8 @@ export function loadHuman(onStatus?: (msg: string) => void): Promise<Human> {
 }
 
 /** Name of the descriptor model behind the embeddings. Profiles made with another model are ignored. */
-export const FACE_MODEL = 'insightface-mobilenet-swish';
+// The '-sq' suffix marks embeddings taken from square-padded frames; earlier scans were distorted and must be redone.
+export const FACE_MODEL = 'insightface-mobilenet-swish-sq';
 
 /**
  * Cosine similarity calibration for FACE_MODEL: below reject is a different person, above accept the same.

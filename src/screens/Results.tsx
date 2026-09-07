@@ -65,6 +65,7 @@ export function Results({ room, pid, onLeave }: Props) {
                 <span className={`shot-outcome ${s.outcome}`}>{s.outcome.toUpperCase()}</span>
                 {s.targetName && <span className="name">{s.targetName}</span>}
                 {s.via && <span className="tag">via {s.via}</span>}
+                {s.resolveMs !== undefined && <span className="tag">{s.resolveMs}ms{s.zoom ? ' zoom' : ''}</span>}
               </div>
               {s.beliefs.length > 0 && (
                 <div className="shot-beliefs">

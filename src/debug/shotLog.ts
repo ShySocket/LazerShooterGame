@@ -6,6 +6,10 @@ export interface ShotRecord {
   via?: string;
   /** Top beliefs on the track that was in the crosshair, best first. */
   beliefs: { id: string; name: string; score: number }[];
+  /** Time from the tap to the decision. */
+  resolveMs?: number;
+  /** Whether the crosshair zoom pass contributed to this shot. */
+  zoom?: boolean;
 }
 
 /** Per-round record of every FIRE press on this phone, so a wrong hit can be explained afterwards. */

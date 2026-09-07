@@ -4,11 +4,14 @@ import { loadHuman } from '../vision/human';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Runs Human on every frame while active, sequentially so frames never pile up. */
+/**
+ * Runs Human on every frame while active, sequentially so frames never pile up. The handler may be
+ * async (for example to run a zoom pass) and is awaited before the next frame is taken.
+ */
 export function useVisionLoop(
   video: RefObject<HTMLVideoElement | null>,
   active: boolean,
-  onFrame: (res: Result, human: Human) => void,
+  onFrame: (res: Result, human: Human) => void | Promise<void>,
 ): void {
   const cb = useRef(onFrame);
   cb.current = onFrame;
@@ -38,7 +41,11 @@ export function useVisionLoop(
           continue;
         }
         if (!running) break;
-        cb.current(res, human);
+        try {
+          await cb.current(res, human);
+        } catch (e) {
+          console.warn('frame handler failed', e);
+        }
         await new Promise(requestAnimationFrame);
       }
     })();
