@@ -28,15 +28,19 @@ After a round, **Show my shot log** on the results screen lists every FIRE press
 npm install
 ```
 
-### 2. Firebase (free, needed for multiplayer)
+### 2. Firebase
+
+The Firebase web config for the shared project is committed in `src/net/firebaseApp.ts`. It is public client configuration, the same values any player's browser downloads, and access is controlled by `database.rules.json`, so nothing needs to be configured to build or deploy.
+
+To point a fork at your own Firebase project instead:
 
 1. Go to https://console.firebase.google.com and create a project. Google Analytics can be off.
 2. In the left menu open **Build > Realtime Database**, click **Create database**, pick a region, and start in **locked mode**.
-3. Open the **Rules** tab, paste the contents of `database.rules.json`, and publish. These rules let anyone who knows a 4-letter room code read and write that room, which is fine for playing with friends.
-4. Click the gear next to **Project Overview > Project settings**, scroll to **Your apps**, click the web icon (`</>`), register an app (no hosting needed), and copy the config values.
-5. Copy `.env.example` to `.env` and fill in the values. `VITE_FIREBASE_DATABASE_URL` is the `databaseURL` field.
+3. Open the **Rules** tab, paste the contents of `database.rules.json`, and publish.
+4. Click the gear next to **Project Overview > Project settings**, scroll to **Your apps**, click the web icon (`</>`), register an app, and copy the config values.
+5. Either replace the defaults in `src/net/firebaseApp.ts`, or copy `.env.example` to `.env` and fill in the values. Environment variables override the committed defaults.
 
-Without a `.env` the app runs in local mode: one device, no multiplayer, useful for testing the camera and enrollment.
+Set `VITE_LOCAL_MODE=1` to run in local mode: one device, no network, useful for testing the camera and enrollment alone.
 
 ### 2b. Google sign-in (optional, for accounts)
 
@@ -58,9 +62,9 @@ Vite prints a `https://192.168.x.x:5173` address. Open it on each phone on the s
 
 ### 4. Deploy for free
 
-**Vercel**: import the GitHub repo at https://vercel.com/new, add the five `VITE_FIREBASE_*` values under Environment Variables, deploy. Vercel detects Vite automatically.
+**Vercel**: import the GitHub repo at https://vercel.com/new and deploy. Vercel detects Vite automatically and no environment variables are needed.
 
-**GitHub Pages**: in the repo go to **Settings > Pages** and set Source to **GitHub Actions**. Then add the five `VITE_FIREBASE_*` values under **Settings > Secrets and variables > Actions**. Every push to `main` deploys via `.github/workflows/pages.yml`.
+**GitHub Pages**: in the repo go to **Settings > Pages** and set Source to **GitHub Actions**. Every push to `main` deploys via `.github/workflows/pages.yml`.
 
 ## Playing
 
