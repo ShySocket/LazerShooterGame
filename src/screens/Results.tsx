@@ -1,7 +1,8 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { backend } from '../net';
 import type { Room } from '../types';
 import { sfx } from '../audio/sfx';
+import { shotLog } from '../debug/shotLog';
 
 interface Props {
   room: Room;
@@ -12,9 +13,12 @@ interface Props {
 export function Results({ room, pid, onLeave }: Props) {
   const isHost = room.hostId === pid;
   const winner = room.winnerId ? room.players[room.winnerId] : null;
+  const [showLog, setShowLog] = useState(false);
+  const shots = shotLog.all();
   useEffect(() => {
     sfx.gameOver();
   }, []);
+  const fmt = (t: number) => new Date(t).toLocaleTimeString([], { hour12: false, minute: '2-digit', second: '2-digit' });
 
   const standings = Object.values(room.players)
     .filter((p) => p.enrolled)
@@ -49,6 +53,34 @@ export function Results({ room, pid, onLeave }: Props) {
       <button className="link" onClick={onLeave}>
         Leave room
       </button>
+      {shots.length > 0 && (
+        <button className="link" onClick={() => setShowLog((v) => !v)}>
+          {showLog ? 'Hide' : 'Show'} my shot log ({shots.length})
+        </button>
+      )}
+      {showLog && (
+        <ol className="shot-log">
+          {shots.map((s, i) => (
+            <li key={i}>
+              <div className="shot-head">
+                <span className="tag">{fmt(s.t)}</span>
+                <span className={`shot-outcome ${s.outcome}`}>{s.outcome.toUpperCase()}</span>
+                {s.targetName && <span className="name">{s.targetName}</span>}
+                {s.via && <span className="tag">via {s.via}</span>}
+              </div>
+              {s.beliefs.length > 0 && (
+                <div className="shot-beliefs">
+                  {s.beliefs.map((b) => (
+                    <span key={b.id} className="tag">
+                      {b.name} {Math.round(b.score * 100)}%
+                    </span>
+                  ))}
+                </div>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
     </div>
   );
 }

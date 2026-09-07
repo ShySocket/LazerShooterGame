@@ -173,3 +173,30 @@ input, .code-input {
   display: flex; flex-direction: column; gap: 12px; align-items: center; background: var(--bg);
 }
 .spectator .players { width: 100%; max-width: 420px; }
+
+/* Enrollment body scan */
+.mode-pick { display: flex; flex-direction: column; gap: 10px; }
+.rec-dot {
+  position: absolute; top: calc(env(safe-area-inset-top) + 12px); left: 12px; z-index: 3;
+  background: rgba(255, 59, 92, 0.9); color: #fff; font-weight: 900; font-size: 12px; letter-spacing: 2px;
+  padding: 4px 10px; border-radius: 999px; animation: blink 1s steps(2, start) infinite;
+}
+@keyframes blink { to { visibility: hidden; } }
+.cam-wrap .countdown { font-size: 120px; }
+
+/* Shot log */
+.shot-log { list-style: none; margin: 0; padding: 0; width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: 6px; text-align: left; }
+.shot-log li { background: var(--panel); border-radius: var(--radius); padding: 10px 12px; font-size: 13px; }
+.shot-head { display: flex; gap: 8px; align-items: center; }
+.shot-outcome { font-weight: 800; font-size: 12px; letter-spacing: 1px; }
+.shot-outcome.hit, .shot-outcome.eliminated { color: var(--good); }
+.shot-outcome.unclear { color: var(--warn); }
+.shot-beliefs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+
+/* Accounts */
+.note.ok { background: rgba(124, 255, 59, 0.12); color: var(--good); }
+.account-row { display: flex; align-items: center; gap: 10px; background: var(--panel); border-radius: var(--radius); padding: 10px 14px; text-align: left; }
+.account-row img { width: 32px; height: 32px; border-radius: 50%; }
+.account-row .name { flex: 1; }
+.account-chip { background: var(--good); }
+.google-btn { display: flex; align-items: center; justify-content: center; gap: 10px; }

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Human, Result } from '@vladmandic/human';
+import type { Result } from '@vladmandic/human';
 import { backend } from '../net';
-import type { Player, Room } from '../types';
+import { UNKNOWN_ID, type Player, type Room } from '../types';
 import { useCamera } from '../hooks/useCamera';
 import { useVisionLoop } from '../hooks/useVisionLoop';
 import { useHumanStatus } from '../hooks/useHumanStatus';
@@ -9,8 +9,10 @@ import { useWakeLock } from '../hooks/useWakeLock';
 import { useTorch } from '../hooks/useTorch';
 import { Tracker, type Detection, type Track } from '../vision/tracker';
 import { clampBox, crosshairRect, intersectArea, type NBox } from '../vision/geometry';
-import { FrameSampler, torsoQuad, torsoSignature } from '../vision/clothing';
-import { bestBelief, clothingEvidence, combineEvidence, faceEvidence, resolveHit, updateBelief, type Candidate } from '../vision/scoring';
+import { bodyProportions, FrameSampler, outfitSignature } from '../vision/clothing';
+import { bestBelief, bodyEvidence, clothingEvidence, combineEvidence, faceEvidence, resolveHit, topBelief, updateBelief, type Candidate } from '../vision/scoring';
+import { FACE_CALIB, FACE_MODEL, faceSimilarity, faceYawDeg, MAX_YAW_DEG } from '../vision/human';
+import { shotLog } from '../debug/shotLog';
 import { drawOverlay } from '../vision/overlay';
 import { haptic, sfx, unlockAudio, vibrate } from '../audio/sfx';
 
@@ -61,19 +63,23 @@ export function Game({ room, me, pid, onLeave }: Props) {
   const bannerTimer = useRef<number | undefined>(undefined);
   const lockKey = useRef('');
 
-  // Everyone else who is enrolled, including eliminated players, so their bodies do not get mistaken for someone alive.
+  // Everyone enrolled with a compatible profile, including eliminated players and the shooter themself.
+  // The shooter's own profile is a decoy: a mirror or a look-alike resolves to "me" and never counts.
   const candidates: Candidate[] = useMemo(
     () =>
       Object.values(room.players)
-        .filter((p) => p.id !== pid && p.enrolled && room.profiles[p.id])
+        .filter((p) => p.enrolled && room.profiles[p.id]?.outfit && room.profiles[p.id].faceModel === FACE_MODEL)
         .map((p) => ({ id: p.id, profile: room.profiles[p.id] })),
-    [room.players, room.profiles, pid],
+    [room.players, room.profiles],
   );
   const eligible = useMemo(
     () => new Set(Object.values(room.players).filter((p) => p.id !== pid && p.enrolled && p.status === 'alive').map((p) => p.id)),
     [room.players, pid],
   );
-  const labels = useMemo(() => Object.fromEntries(Object.values(room.players).map((p) => [p.id, p.name])), [room.players]);
+  const labels = useMemo<Record<string, string>>(
+    () => ({ ...Object.fromEntries(Object.values(room.players).map((p) => [p.id, p.id === pid ? 'YOU' : p.name])), [UNKNOWN_ID]: 'STRANGER' }),
+    [room.players, pid],
+  );
   const colors = useMemo(() => Object.fromEntries(Object.values(room.players).map((p) => [p.id, p.color])), [room.players]);
   const candRef = useRef(candidates);
   candRef.current = candidates;
@@ -115,6 +121,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
     if (room.status !== prevRoomStatus.current) {
       prevRoomStatus.current = room.status;
       if (room.status === 'playing') {
+        shotLog.clear();
         sfx.go();
         show('GO!', 'good', 1000);
         tracker.current.reset();
@@ -156,7 +163,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
     return () => window.clearTimeout(tm);
   }, [room.players, room.status, room.code, isHost]);
 
-  const onFrame = (res: Result, human: Human) => {
+  const onFrame = (res: Result) => {
     const v = videoRef.current;
     const wrap = wrapRef.current;
     if (!v || !wrap) return;
@@ -192,13 +199,17 @@ export function Game({ room, me, pid, onLeave }: Props) {
     const cands = candRef.current;
     dets.forEach((d, i) => {
       const t = tracks[i];
-      const fe = d.face?.embedding?.length ? faceEvidence(d.face.embedding, cands, human.match.similarity) : null;
+      const fe =
+        d.face?.embedding?.length && faceYawDeg(d.face) <= MAX_YAW_DEG ? faceEvidence(d.face.embedding, cands, faceSimilarity, FACE_CALIB) : null;
       let ce: Record<string, number> | null = null;
+      let be: Record<string, number> | null = null;
       if (img && d.body) {
-        const q = torsoQuad(d.body);
-        if (q) ce = clothingEvidence(torsoSignature(img, q), cands);
+        const sig = outfitSignature(img, d.body);
+        if (sig) ce = clothingEvidence(sig, cands);
+        const bp = bodyProportions(d.body);
+        if (bp) be = bodyEvidence(bp, cands);
       }
-      const ev = combineEvidence(fe, ce);
+      const ev = combineEvidence({ face: fe, cloth: ce, body: be });
       if (ev) {
         updateBelief(t, ev);
         if (fe) {
@@ -227,7 +238,10 @@ export function Game({ room, me, pid, onLeave }: Props) {
       if (hit) next = { text: `LOCK ${labels[hit.id] ?? ''}`, kind: 'good' };
       else {
         const b = bestBelief(inSight, eligRef.current);
-        next = b && b.score > 0.2 ? { text: `${labels[b.id] ?? ''}? ${Math.round(b.score * 100)}%`, kind: 'warn' } : { text: 'UNKNOWN', kind: 'info' };
+        const top = topBelief(inSight);
+        if (b && b.score > 0.2) next = { text: `${labels[b.id] ?? ''}? ${Math.round(b.score * 100)}%`, kind: 'warn' };
+        else if (top && top.score > 0.3) next = { text: labels[top.id] ?? 'UNKNOWN', kind: 'info' };
+        else next = { text: 'UNKNOWN', kind: 'info' };
       }
     }
     const key = next ? next.text + next.kind : '';
@@ -255,7 +269,24 @@ export function Game({ room, me, pid, onLeave }: Props) {
 
     const L = latest.current;
     const wrap = wrapRef.current;
-    if (!L || !wrap || performance.now() - L.t > 800) return show('NO CAMERA LOCK', 'warn');
+    const log = (outcome: string, track: Track | null, targetName?: string, via?: string) =>
+      shotLog.add({
+        t: Date.now(),
+        outcome,
+        targetName,
+        via,
+        top: track ? topBelief(track) : null,
+        beliefs: track
+          ? Object.entries(track.belief)
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 4)
+              .map(([id, score]) => ({ id, name: labels[id] ?? id, score: Math.round(score * 100) / 100 }))
+          : [],
+      });
+    if (!L || !wrap || performance.now() - L.t > 800) {
+      log('no camera', null);
+      return show('NO CAMERA LOCK', 'warn');
+    }
     const ch = crosshairRect(L.vidW, L.vidH, wrap.clientWidth, wrap.clientHeight);
     let best: Track | null = null;
     let bestA = 0;
@@ -266,14 +297,22 @@ export function Game({ room, me, pid, onLeave }: Props) {
         best = L.tracks[i];
       }
     }
-    if (!best) return show('MISS', 'info');
+    if (!best) {
+      log('miss', null);
+      return show('MISS', 'info');
+    }
     const r = resolveHit(best, eligible, settings.hitThreshold, settings.hitMargin);
     if (!r) {
+      const top = topBelief(best);
       sfx.unclear();
+      log('unclear', best);
+      if (top?.id === pid && top.score > 0.3) return show('THAT IS YOU', 'warn');
+      if (top?.id === UNKNOWN_ID && top.score > 0.3) return show('NOT A PLAYER', 'warn');
       return show('UNCLEAR TARGET', 'warn');
     }
     const name = room.players[r.id]?.name ?? '?';
     void backend.registerHit(room.code, pid, r.id, r.score, r.via).then((out) => {
+      log(out, best, name, r.via);
       if (out === 'hit' || out === 'eliminated') {
         sfx.hit();
         flashScreen('rgba(124,255,59,0.35)');

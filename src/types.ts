@@ -1,16 +1,53 @@
 export type PlayerStatus = 'alive' | 'out';
 export type RoomStatus = 'lobby' | 'countdown' | 'playing' | 'ended';
 
-/** Torso colour histograms captured at enrollment, front and back. */
-export interface TorsoSig {
-  front: number[];
-  back: number[];
+/** Colour histograms of the visible clothing regions from one side. Missing regions were not in frame. */
+export interface OutfitSig {
+  top: number[];
+  thighs?: number[];
+  shins?: number[];
+  hair?: number[];
+}
+
+/** Outfit captured at enrollment, front and back. */
+export interface OutfitSides {
+  front: OutfitSig;
+  back: OutfitSig;
+}
+
+/** Scale-free body ratios from the pose model. Weak identity signal, stable across games. */
+export interface BodyProps {
+  /** Shoulder width / torso length. */
+  shoulderTorso: number;
+  /** Hip width / shoulder width. */
+  hipShoulder: number;
+  /** Leg length (hip to ankle) / torso length. */
+  legTorso: number;
+  /** Head width (ear to ear) / shoulder width. */
+  headShoulder: number;
+}
+
+/** One-time scan stored under a signed-in account: the parts of a person that do not change between games. */
+export interface DeepProfile {
+  faceModel: string;
+  face: number[][];
+  body: BodyProps | null;
+  updatedAt: number;
+}
+
+/** Public account record. Never contains photos. */
+export interface UserRecord {
+  name: string;
+  deep?: DeepProfile | null;
 }
 
 /** What the shooter's phone needs to recognise a player. Never contains photos. */
 export interface Profile {
+  /** Which face descriptor produced the embeddings, so mismatched profiles are ignored rather than misread. */
+  faceModel: string;
   face: number[][];
-  torso: TorsoSig;
+  outfit: OutfitSides;
+  body?: BodyProps | null;
 }
 
 export interface Player {
@@ -71,5 +108,8 @@ export const DEFAULT_SETTINGS: RoomSettings = {
 
 export const PLAYER_COLORS = ['#ff3b5c', '#3bd1ff', '#ffd23b', '#7cff3b', '#c43bff', '#ff8a3b'];
 
-/** Two torso signatures above this are too similar to tell apart. */
+/** Two outfits above this are too similar to tell apart. */
 export const CLOTHING_CONFLICT = 0.72;
+
+/** Pseudo-candidate id for "nobody in this room". */
+export const UNKNOWN_ID = '_unknown';

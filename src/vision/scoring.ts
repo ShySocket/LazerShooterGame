@@ -1,5 +1,6 @@
-import type { Profile } from '../types';
-import { profileClothSim } from './clothing';
+import type { BodyProps, OutfitSig, Profile } from '../types';
+import { UNKNOWN_ID } from '../types';
+import { profileOutfitSim, propsSimilarity } from './clothing';
 import type { Track } from './tracker';
 
 export interface Candidate {
@@ -7,46 +8,85 @@ export interface Candidate {
   profile: Profile;
 }
 
+/** Similarity values below `reject` mean a different person, above `accept` the same person. Model specific. */
+export interface FaceCalib {
+  reject: number;
+  accept: number;
+}
+
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
-/** Face similarity per candidate mapped to 0..1 evidence. Human says > 0.5 is a match. */
+/**
+ * Face similarity per candidate mapped to 0..1 evidence. The pseudo-candidate UNKNOWN_ID gets the
+ * evidence that nobody matched well, so a lone weak match has to beat "a stranger" before it locks.
+ */
 export function faceEvidence(
   embedding: number[],
   cands: Candidate[],
   sim: (a: number[], b: number[]) => number,
+  calib: FaceCalib,
 ): Record<string, number> {
   const ev: Record<string, number> = {};
+  let top = 0;
   for (const c of cands) {
     let best = 0;
     for (const f of c.profile.face ?? []) best = Math.max(best, sim(embedding, f));
-    ev[c.id] = clamp01((best - 0.45) / 0.3);
+    ev[c.id] = clamp01((best - calib.reject) / (calib.accept - calib.reject));
+    top = Math.max(top, ev[c.id]);
   }
+  ev[UNKNOWN_ID] = clamp01(1 - top);
   return ev;
 }
 
-/** Clothing similarity per candidate mapped to 0..1 evidence. */
-export function clothingEvidence(sig: number[], cands: Candidate[]): Record<string, number> {
+/** Outfit similarity per candidate mapped to 0..1 evidence, plus the stranger baseline. */
+export function clothingEvidence(sig: OutfitSig, cands: Candidate[]): Record<string, number> {
   const ev: Record<string, number> = {};
+  let top = 0;
   for (const c of cands) {
-    const raw = c.profile.torso ? profileClothSim(sig, c.profile.torso) : 0;
+    const raw = c.profile.outfit ? profileOutfitSim(sig, c.profile.outfit) : 0;
     ev[c.id] = clamp01((raw - 0.45) / 0.35);
+    top = Math.max(top, ev[c.id]);
   }
+  ev[UNKNOWN_ID] = clamp01(0.9 - top);
   return ev;
 }
 
-export function combineEvidence(
-  face: Record<string, number> | null,
-  cloth: Record<string, number> | null,
-): Record<string, number> | null {
-  if (!face && !cloth) return null;
-  const ids = new Set([...Object.keys(face ?? {}), ...Object.keys(cloth ?? {})]);
+/** Body ratio similarity per candidate. Weak on its own, so it never produces an unknown vote. */
+export function bodyEvidence(props: BodyProps, cands: Candidate[]): Record<string, number> {
+  const ev: Record<string, number> = {};
+  for (const c of cands) ev[c.id] = c.profile.body ? propsSimilarity(props, c.profile.body) : 0;
+  return ev;
+}
+
+export interface Signals {
+  face: Record<string, number> | null;
+  cloth: Record<string, number> | null;
+  body: Record<string, number> | null;
+}
+
+const W = { face: 0.6, cloth: 0.3, body: 0.1 };
+
+/** Weighted mix of whatever signals were available this frame. Without a face the total is capped. */
+export function combineEvidence(sig: Signals): Record<string, number> | null {
+  const present = (Object.keys(W) as (keyof Signals)[]).filter((k) => sig[k]);
+  if (present.length === 0) return null;
+  const ids = new Set<string>();
+  for (const k of present) Object.keys(sig[k]!).forEach((id) => ids.add(id));
+  const den = present.reduce((s, k) => s + W[k], 0);
+  const cap = sig.face ? 1 : 0.85;
   const out: Record<string, number> = {};
   for (const id of ids) {
-    const f = face?.[id] ?? 0;
-    const c = cloth?.[id] ?? 0;
-    if (face && cloth) out[id] = 0.7 * f + 0.3 * c;
-    else if (face) out[id] = f;
-    else out[id] = 0.85 * c;
+    let num = 0;
+    for (const k of present) {
+      const v = sig[k]![id];
+      // Unknown only speaks through face and clothing; body ratios abstain.
+      if (v === undefined) {
+        if (id === UNKNOWN_ID && k === 'body') num += W[k] * 0.5;
+        continue;
+      }
+      num += W[k] * v;
+    }
+    out[id] = cap * (num / den);
   }
   return out;
 }
@@ -62,19 +102,29 @@ export interface Resolution {
   score: number;
   margin: number;
   via: string;
+  /** Who came second, for the shot log. */
+  runnerUp?: string;
 }
 
-export function bestBelief(track: Track, eligible: Set<string>): Resolution | null {
-  const entries = Object.entries(track.belief)
-    .filter(([id]) => eligible.has(id))
-    .sort((a, b) => b[1] - a[1]);
+/**
+ * The strongest belief on the track, whoever it is. The runner-up is drawn from every candidate,
+ * including the shooter's own decoy profile and the stranger baseline, so a hit must beat those too.
+ */
+export function topBelief(track: Track): Resolution | null {
+  const entries = Object.entries(track.belief).sort((a, b) => b[1] - a[1]);
   if (entries.length === 0) return null;
   const [id, score] = entries[0];
-  const second = entries[1]?.[1] ?? 0;
-  return { id, score, margin: score - second, via: track.via };
+  const second = entries[1];
+  return { id, score, margin: score - (second?.[1] ?? 0), via: track.via, runnerUp: second?.[0] };
 }
 
-/** A hit only registers when the top candidate is confident and clearly ahead. */
+/** Best eligible player, for the live label. Null when the top belief is not a shootable player. */
+export function bestBelief(track: Track, eligible: Set<string>): Resolution | null {
+  const t = topBelief(track);
+  return t && eligible.has(t.id) ? t : null;
+}
+
+/** A hit only registers when the top candidate is a live opponent, confident, and clearly ahead of everyone else. */
 export function resolveHit(track: Track, eligible: Set<string>, threshold: number, margin: number): Resolution | null {
   const b = bestBelief(track, eligible);
   if (!b || b.score < threshold || b.margin < margin) return null;

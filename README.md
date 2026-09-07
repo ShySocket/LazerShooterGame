@@ -3,19 +3,22 @@
 Real-life laser tag played with phones. Everyone opens the same link, enrolls their face and outfit, and then hunts each other with the rear camera. Press FIRE while another player is in the crosshair and their phone takes the hit.
 
 - **Mobile web app (PWA)**: no app store. iPhone and Android both work in the browser.
-- **Free multiplayer**: Firebase Realtime Database free tier syncs rooms, lives, and hits.
+- **Free multiplayer**: Firebase Realtime Database free tier syncs rooms, lives, and hits. Optional Google sign-in stores a one-time scan per account.
 - **On-device vision**: face recognition, body pose, and clothing colour all run on the shooter's phone. Only numeric signatures are shared, never photos.
 - **Rules**: 3 lives, no respawn, last player standing wins. Cooldown and shield times are tunable in the lobby.
 
 ## How a hit is decided
 
-Each body the camera sees gets a running belief of who it is, built from three signals:
+Each body the camera sees gets a running belief of who it is, built from four signals:
 
-1. **Face recognition** against the 5 frames captured at enrollment. Strongest signal, only works within ~3 m and face-on.
+1. **Face recognition** with an InsightFace (ArcFace-family) model against the 8 head angles captured at enrollment. Strongest signal, only works within ~3 m and within about 45° of face-on. Cosine similarity, thresholds in `src/vision/human.ts`.
 2. **Identity tracking**: once a body is recognised it stays recognised while it remains in frame, even when it turns around.
-3. **Clothing signature**: a colour histogram of the torso captured front and back at enrollment. This is what makes back-shots and long-range shots work. The lobby refuses to start if two players' tops look too alike.
+3. **Outfit signature**: colour histograms of the top, thighs, shins, and hair, captured front and back at enrollment. This is what makes back-shots and long-range shots work. The lobby refuses to start if two players' whole outfits look too alike.
+4. **Body proportions**: shoulder, hip, leg, and head ratios from the pose model. A weak tiebreaker that survives a change of clothes.
 
-A shot only counts when the top candidate's belief is above the hit confidence and clearly ahead of the runner-up. When unsure the app says UNCLEAR TARGET instead of guessing.
+Two decoys compete with the real players: the shooter's own profile, so a mirror or a look-alike resolves to YOU, and a stranger baseline that wins whenever nobody matches well. A shot only counts when a live opponent is above the hit confidence and clearly ahead of everyone else, decoys included. Otherwise the app says UNCLEAR TARGET, THAT IS YOU, or NOT A PLAYER instead of guessing.
+
+After a round, **Show my shot log** on the results screen lists every FIRE press with the top beliefs at that moment. Use it to see why a shot landed or did not.
 
 ## Setup
 
@@ -35,6 +38,16 @@ npm install
 
 Without a `.env` the app runs in local mode: one device, no multiplayer, useful for testing the camera and enrollment.
 
+### 2b. Google sign-in (optional, for accounts)
+
+Signing in lets a player do the deep scan once and reuse it on any phone. Guests can still play without it.
+
+1. In the Firebase console open **Build > Authentication**, click **Get started**, open the **Sign-in method** tab, enable **Google**, pick a support email, and save.
+2. Still in Authentication, open **Settings > Authorized domains** and add the domain the game is served from, for example `your-app.vercel.app`. `localhost` is already there.
+3. Re-publish `database.rules.json`. It now includes a `users` section so each account can only read and write its own scan.
+
+Account data lives at `users/{uid}` and holds the name plus the deep scan: face embeddings and body ratios as numbers, never photos.
+
 ### 3. Run on your phones over Wi-Fi
 
 ```bash
@@ -51,8 +64,9 @@ Vite prints a `https://192.168.x.x:5173` address. Open it on each phone on the s
 
 ## Playing
 
+0. Optional: tap **Sign in with Google**, then the account row, then **Start deep scan**. About a minute, once.
 1. Host taps **Create a room** and shares the link or code.
-2. Everyone enrolls: 5 face frames with the selfie camera, then a front and back body scan. Prop the phone up or have a friend hold it for the body scan.
+2. Everyone enrolls. Guests do 8 head angles with the selfie camera, then a front and back body scan with the whole body in frame. Pick **A friend is holding it** and they tap Record with the rear camera, or **It is propped up** for a 5-second countdown with the selfie camera. Signed-in players who have done their deep scan only do the body scan, which records today's outfit.
 3. Wear tops that look different from each other. The lobby will tell you if two are too close.
 4. Host taps **Start game**. After a 5-second countdown, hunt.
 5. Hold the phone up, put a player in the crosshair, and tap **FIRE**. The crosshair turns green with the target's name when the phone is confident.
@@ -63,7 +77,8 @@ Vite prints a `https://192.168.x.x:5173` address. Open it on each phone on the s
 - Good light matters more than anything. Face recognition needs the face to be at least the size of a thumbnail on screen.
 - The clothing signature carries hits from behind and at range. Bright, solid, distinct tops work best. Avoid tops that match the walls.
 - Tap **debug** during a game to see boxes, names, and confidence live. Handy for tuning **Hit confidence** in the lobby.
+- If close-range faces are confused or never lock, adjust `FACE_CALIB` in `src/vision/human.ts` using the similarity numbers from the shot log.
 
 ## Stack
 
-Vite + React + TypeScript, `@vladmandic/human` (BlazeFace + FaceRes embeddings + MoveNet MultiPose), Firebase Realtime Database, Web Audio for synthesized sounds, `vite-plugin-pwa`.
+Vite + React + TypeScript, `@vladmandic/human` (BlazeFace + FaceMesh + InsightFace MobileNet-Swish embeddings + MoveNet MultiPose), Firebase Realtime Database, Web Audio for synthesized sounds, `vite-plugin-pwa`.

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { backend } from '../net';
 import { CLOTHING_CONFLICT, type Player, type Room, type RoomSettings } from '../types';
-import { torsoConflict } from '../vision/clothing';
+import { outfitConflict } from '../vision/clothing';
+import { FACE_MODEL } from '../vision/human';
 import { haptic, sfx, unlockAudio } from '../audio/sfx';
 import { useAudioState } from '../hooks/useAudioState';
 
@@ -22,18 +23,21 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
   const players = Object.values(room.players).sort((a, b) => a.joinedAt - b.joinedAt);
   const connected = players.filter((p) => p.connected);
   const enrolled = connected.filter((p) => p.enrolled && room.profiles[p.id]);
+  // Profiles made by an older build lack the outfit or use another face model. They must re-enroll.
+  const stale = enrolled.filter((p) => !room.profiles[p.id].outfit?.front?.top || room.profiles[p.id].faceModel !== FACE_MODEL);
 
   const conflicts: { a: Player; b: Player; sim: number }[] = [];
   for (let i = 0; i < enrolled.length; i++) {
     for (let j = i + 1; j < enrolled.length; j++) {
-      const sim = torsoConflict(room.profiles[enrolled[i].id].torso, room.profiles[enrolled[j].id].torso);
+      if (!room.profiles[enrolled[i].id].outfit || !room.profiles[enrolled[j].id].outfit) continue;
+      const sim = outfitConflict(room.profiles[enrolled[i].id].outfit, room.profiles[enrolled[j].id].outfit);
       if (sim > CLOTHING_CONFLICT) conflicts.push({ a: enrolled[i], b: enrolled[j], sim });
     }
   }
 
   const minPlayers = backend.mode === 'local' ? 1 : 2;
   const notEnrolled = connected.filter((p) => !p.enrolled);
-  const canStart = isHost && enrolled.length >= minPlayers && notEnrolled.length === 0 && conflicts.length === 0;
+  const canStart = isHost && enrolled.length >= minPlayers && notEnrolled.length === 0 && conflicts.length === 0 && stale.length === 0;
 
   const link = `${location.origin}${import.meta.env.BASE_URL}?room=${room.code}`;
   const share = async () => {
@@ -99,10 +103,23 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
         ))}
       </ul>
 
+      {stale.map((p) => (
+        <div key={p.id} className="note warn">
+          {p.id === pid ? 'Your' : `${p.name}'s`} scan is from an older version of the game.{' '}
+          {p.id === pid ? (
+            <button className="link" onClick={() => backend.updatePlayer(room.code, me.id, { enrolled: false })}>
+              Redo it now
+            </button>
+          ) : (
+            'They need to redo it.'
+          )}
+        </div>
+      ))}
+
       {conflicts.map((c) => (
         <div key={c.a.id + c.b.id} className="note bad">
-          {c.a.name} and {c.b.name} are wearing tops that look too alike ({Math.round(c.sim * 100)}% match). One of them needs to change
-          before the game can start.
+          {c.a.name} and {c.b.name} are dressed too alike ({Math.round(c.sim * 100)}% match). One of them needs to change a top, trousers,
+          or add a hat before the game can start.
         </div>
       ))}
 
@@ -145,7 +162,9 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
               ? `Need at least ${minPlayers} enrolled players.`
               : notEnrolled.length > 0
                 ? `Waiting for ${notEnrolled.map((p) => p.name).join(', ')} to enroll.`
-                : 'Resolve the clothing conflict above.'}
+                : stale.length > 0
+                  ? 'Someone needs to redo an outdated scan.'
+                  : 'Resolve the clothing conflict above.'}
           </p>
         )}
         <div className="row">

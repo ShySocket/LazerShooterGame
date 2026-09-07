@@ -1,21 +1,88 @@
 import type { BodyResult } from '@vladmandic/human';
-import type { TorsoSig } from '../types';
+import type { BodyProps, OutfitSides, OutfitSig } from '../types';
 
 /** 12 hues x 2 saturation x 2 value bins, plus 3 grey bins. */
 export const SIG_LEN = 51;
 
-const TORSO_PARTS = ['leftShoulder', 'rightShoulder', 'rightHip', 'leftHip'] as const;
 type Pt = [number, number];
+type Quad = [Pt, Pt, Pt, Pt];
+type Part = BodyResult['keypoints'][number]['part'];
+
+function keypoints(body: BodyResult, minScore: number): Partial<Record<string, Pt>> {
+  const pts: Partial<Record<string, Pt>> = {};
+  for (const kp of body.keypoints) if (kp.score >= minScore) pts[kp.part] = [kp.positionRaw[0], kp.positionRaw[1]];
+  return pts;
+}
+
+function quadOf(pts: Partial<Record<string, Pt>>, a: Part, b: Part, c: Part, d: Part): Quad | null {
+  const q = [pts[a], pts[b], pts[c], pts[d]];
+  return q.every(Boolean) ? (q as Quad) : null;
+}
 
 /** Torso quad in normalised coordinates, or null if the torso is not visible enough. */
-export function torsoQuad(body: BodyResult, minScore = 0.3): [Pt, Pt, Pt, Pt] | null {
-  const pts: Partial<Record<(typeof TORSO_PARTS)[number], Pt>> = {};
-  for (const kp of body.keypoints) {
-    const part = kp.part as (typeof TORSO_PARTS)[number];
-    if (TORSO_PARTS.includes(part) && kp.score >= minScore) pts[part] = [kp.positionRaw[0], kp.positionRaw[1]];
+export function torsoQuad(body: BodyResult, minScore = 0.3): Quad | null {
+  return quadOf(keypoints(body, minScore), 'leftShoulder', 'rightShoulder', 'rightHip', 'leftHip');
+}
+
+const dist = (a: Pt, b: Pt) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+const mid = (a: Pt, b: Pt): Pt => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+
+/** A quad around a limb segment, widened to roughly the limb's thickness. */
+function limbQuad(top: Pt, bottom: Pt, halfWidth: number): Quad {
+  const dx = bottom[0] - top[0];
+  const dy = bottom[1] - top[1];
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = (-dy / len) * halfWidth;
+  const ny = (dx / len) * halfWidth;
+  return [
+    [top[0] + nx, top[1] + ny],
+    [top[0] - nx, top[1] - ny],
+    [bottom[0] - nx, bottom[1] - ny],
+    [bottom[0] + nx, bottom[1] + ny],
+  ];
+}
+
+/**
+ * Sampling regions for every clothing area the pose makes visible. Legs are sampled from both
+ * sides when available; hair is the band above the eyes and ears.
+ */
+export function outfitRegions(body: BodyResult, minScore = 0.3): Partial<Record<keyof OutfitSig, Quad[]>> {
+  const p = keypoints(body, minScore);
+  const out: Partial<Record<keyof OutfitSig, Quad[]>> = {};
+  const torso = quadOf(p, 'leftShoulder', 'rightShoulder', 'rightHip', 'leftHip');
+  if (!torso) return out;
+  out.top = [torso];
+  const shoulderW = dist(p.leftShoulder!, p.rightShoulder!);
+  const legW = Math.max(0.01, shoulderW * 0.22);
+  const thighs: Quad[] = [];
+  const shins: Quad[] = [];
+  for (const side of ['left', 'right'] as const) {
+    const hip = p[`${side}Hip`];
+    const knee = p[`${side}Knee`];
+    const ankle = p[`${side}Ankle`];
+    if (hip && knee) thighs.push(limbQuad(hip, knee, legW));
+    if (knee && ankle) shins.push(limbQuad(knee, ankle, legW * 0.8));
   }
-  if (TORSO_PARTS.some((p) => !pts[p])) return null;
-  return [pts.leftShoulder!, pts.rightShoulder!, pts.rightHip!, pts.leftHip!];
+  if (thighs.length) out.thighs = thighs;
+  if (shins.length) out.shins = shins;
+  const ears = p.leftEar && p.rightEar ? [p.leftEar, p.rightEar] : null;
+  const eyes = p.leftEye && p.rightEye ? [p.leftEye, p.rightEye] : null;
+  const anchor = ears ?? eyes;
+  if (anchor) {
+    const w = Math.max(dist(anchor[0], anchor[1]), shoulderW * 0.35);
+    const c = mid(anchor[0], anchor[1]);
+    const topY = c[1] - w * 1.15;
+    const botY = c[1] - w * 0.35;
+    out.hair = [
+      [
+        [c[0] - w * 0.55, topY],
+        [c[0] + w * 0.55, topY],
+        [c[0] + w * 0.55, botY],
+        [c[0] - w * 0.55, botY],
+      ],
+    ];
+  }
+  return out;
 }
 
 function hsvBin(r: number, g: number, b: number): number {
@@ -39,12 +106,29 @@ function hsvBin(r: number, g: number, b: number): number {
   return hb * 4 + sb * 2 + vb;
 }
 
-/** Colour histogram of the torso region sampled from a small frame. */
-export function torsoSignature(img: ImageData, quad: [Pt, Pt, Pt, Pt]): number[] {
+/**
+ * Spread each hue bin a little into its neighbours so a colour sitting on a bin edge, or shifted
+ * slightly by lighting, still overlaps with itself. Grey bins are left alone.
+ */
+function smoothHues(hist: Float32Array): Float32Array {
+  const out = new Float32Array(SIG_LEN);
+  for (let hb = 0; hb < 12; hb++) {
+    for (let sv = 0; sv < 4; sv++) {
+      const i = hb * 4 + sv;
+      const prev = ((hb + 11) % 12) * 4 + sv;
+      const next = ((hb + 1) % 12) * 4 + sv;
+      out[i] += hist[i] * 0.7;
+      out[prev] += hist[i] * 0.15;
+      out[next] += hist[i] * 0.15;
+    }
+  }
+  for (let i = 48; i < SIG_LEN; i++) out[i] = hist[i];
+  return out;
+}
+
+function sampleQuad(img: ImageData, quad: Quad, hist: Float32Array, G = 14): number {
   const [ls, rs, rh, lh] = quad;
-  const hist = new Float32Array(SIG_LEN);
   let n = 0;
-  const G = 14;
   for (let i = 0; i < G; i++) {
     const u = 0.15 + (0.7 * (i + 0.5)) / G;
     for (let j = 0; j < G; j++) {
@@ -61,8 +145,33 @@ export function torsoSignature(img: ImageData, quad: [Pt, Pt, Pt, Pt]): number[]
       n++;
     }
   }
+  return n;
+}
+
+/** Colour histogram of one or more quads sampled from a small frame. */
+export function regionSignature(img: ImageData, quads: Quad[]): number[] {
+  const hist = new Float32Array(SIG_LEN);
+  let n = 0;
+  for (const q of quads) n += sampleQuad(img, q, hist);
   if (n === 0) return new Array(SIG_LEN).fill(0);
-  return Array.from(hist, (v) => Math.round((v / n) * 10000) / 10000);
+  const sm = smoothHues(hist);
+  return Array.from(sm, (v) => Math.round((v / n) * 10000) / 10000);
+}
+
+/** Colour histogram of the torso region sampled from a small frame. */
+export function torsoSignature(img: ImageData, quad: Quad): number[] {
+  return regionSignature(img, [quad]);
+}
+
+/** Every visible clothing region of one body in one frame. */
+export function outfitSignature(img: ImageData, body: BodyResult, minScore = 0.3): OutfitSig | null {
+  const regions = outfitRegions(body, minScore);
+  if (!regions.top) return null;
+  const sig: OutfitSig = { top: regionSignature(img, regions.top) };
+  if (regions.thighs) sig.thighs = regionSignature(img, regions.thighs);
+  if (regions.shins) sig.shins = regionSignature(img, regions.shins);
+  if (regions.hair) sig.hair = regionSignature(img, regions.hair);
+  return sig;
 }
 
 /** Histogram intersection in 0..1. */
@@ -80,18 +189,99 @@ export function averageSigs(sigs: number[][]): number[] {
   return out.map((v) => Math.round((v / sigs.length) * 10000) / 10000);
 }
 
-export function profileClothSim(sig: number[], torso: TorsoSig): number {
-  return Math.max(sigSimilarity(sig, torso.front), sigSimilarity(sig, torso.back));
+/** Average of several outfit samples, region by region, using each region only where it was seen. */
+export function averageOutfits(samples: OutfitSig[]): OutfitSig {
+  const pick = (k: keyof OutfitSig) => samples.map((s) => s[k]).filter((v): v is number[] => Boolean(v));
+  const out: OutfitSig = { top: averageSigs(pick('top')) };
+  for (const k of ['thighs', 'shins', 'hair'] as const) {
+    const vals = pick(k);
+    if (vals.length >= Math.max(1, samples.length * 0.4)) out[k] = averageSigs(vals);
+  }
+  return out;
 }
 
-/** Highest similarity between any of two players' front/back signatures. */
-export function torsoConflict(a: TorsoSig, b: TorsoSig): number {
+/** How much each region counts. The top is largest and most visible; hair is small but rarely shared. */
+const REGION_WEIGHT: Record<keyof OutfitSig, number> = { top: 0.45, thighs: 0.25, shins: 0.1, hair: 0.2 };
+
+/** Weighted similarity over the regions both signatures have. */
+export function outfitSimilarity(a: OutfitSig, b: OutfitSig): number {
+  let num = 0;
+  let den = 0;
+  for (const k of Object.keys(REGION_WEIGHT) as (keyof OutfitSig)[]) {
+    const x = a[k];
+    const y = b[k];
+    if (!x || !y) continue;
+    num += REGION_WEIGHT[k] * sigSimilarity(x, y);
+    den += REGION_WEIGHT[k];
+  }
+  return den === 0 ? 0 : num / den;
+}
+
+/** Best match of a live outfit against a player's front or back. */
+export function profileOutfitSim(sig: OutfitSig, outfit: OutfitSides): number {
+  return Math.max(outfitSimilarity(sig, outfit.front), outfitSimilarity(sig, outfit.back));
+}
+
+/** Highest similarity between any of two players' front/back outfits. */
+export function outfitConflict(a: OutfitSides, b: OutfitSides): number {
   return Math.max(
-    sigSimilarity(a.front, b.front),
-    sigSimilarity(a.front, b.back),
-    sigSimilarity(a.back, b.front),
-    sigSimilarity(a.back, b.back),
+    outfitSimilarity(a.front, b.front),
+    outfitSimilarity(a.front, b.back),
+    outfitSimilarity(a.back, b.front),
+    outfitSimilarity(a.back, b.back),
   );
+}
+
+/**
+ * Scale-free body ratios. Only meaningful when the body is roughly square to the camera, which
+ * is true for the enrollment scans and for most shots at range.
+ */
+export function bodyProportions(body: BodyResult, minScore = 0.3): BodyProps | null {
+  const p = keypoints(body, minScore);
+  if (!p.leftShoulder || !p.rightShoulder || !p.leftHip || !p.rightHip) return null;
+  const shoulderW = dist(p.leftShoulder, p.rightShoulder);
+  const hipW = dist(p.leftHip, p.rightHip);
+  const torsoL = dist(mid(p.leftShoulder, p.rightShoulder), mid(p.leftHip, p.rightHip));
+  if (shoulderW < 0.02 || torsoL < 0.02) return null;
+  const legs: number[] = [];
+  for (const side of ['left', 'right'] as const) {
+    const hip = p[`${side}Hip`];
+    const knee = p[`${side}Knee`];
+    const ankle = p[`${side}Ankle`];
+    if (hip && knee && ankle) legs.push(dist(hip, knee) + dist(knee, ankle));
+  }
+  if (legs.length === 0) return null;
+  const legL = legs.reduce((a, b) => a + b, 0) / legs.length;
+  const headW = p.leftEar && p.rightEar ? dist(p.leftEar, p.rightEar) : p.leftEye && p.rightEye ? dist(p.leftEye, p.rightEye) * 2.2 : 0;
+  const r = (v: number) => Math.round(v * 1000) / 1000;
+  return { shoulderTorso: r(shoulderW / torsoL), hipShoulder: r(hipW / shoulderW), legTorso: r(legL / torsoL), headShoulder: r(headW / shoulderW) };
+}
+
+export function averageProps(list: BodyProps[]): BodyProps | null {
+  if (list.length === 0) return null;
+  const keys = ['shoulderTorso', 'hipShoulder', 'legTorso', 'headShoulder'] as const;
+  const out = {} as BodyProps;
+  for (const k of keys) {
+    const vals = list.map((b) => b[k]).filter((v) => v > 0);
+    out[k] = vals.length ? Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 1000) / 1000 : 0;
+  }
+  return out;
+}
+
+/** Spread of each ratio across people, so differences can be turned into 0..1 similarity. */
+const PROP_SCALE: Record<keyof BodyProps, number> = { shoulderTorso: 0.12, hipShoulder: 0.1, legTorso: 0.25, headShoulder: 0.06 };
+
+/** 0..1 similarity between two sets of body ratios, 1 meaning identical. */
+export function propsSimilarity(a: BodyProps, b: BodyProps): number {
+  let sum = 0;
+  let n = 0;
+  for (const k of Object.keys(PROP_SCALE) as (keyof BodyProps)[]) {
+    if (!a[k] || !b[k]) continue;
+    const z = (a[k] - b[k]) / PROP_SCALE[k];
+    sum += Math.exp(-0.5 * z * z);
+    n++;
+  }
+  return n === 0 ? 0 : sum / n;
 }
 
 /** Grabs a small copy of the video frame for pixel sampling. */
