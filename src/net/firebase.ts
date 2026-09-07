@@ -1,12 +1,10 @@
-import { initializeApp } from 'firebase/app';
 import { getDatabase, ref, set, update, get, onValue, onDisconnect, runTransaction, push, type Database } from 'firebase/database';
 import type { Player, Profile, Room, RoomMeta } from '../types';
 import { DEFAULT_SETTINGS } from '../types';
 import { applyHit, newPlayer, pickColor, randomCode, type HitOutcome, type PlayerSeed, type RoomBackend } from './backend';
+import { firebaseApp } from './firebaseApp';
 
-export function hasFirebaseConfig(): boolean {
-  return Boolean(import.meta.env.VITE_FIREBASE_DATABASE_URL);
-}
+export { hasFirebaseConfig } from './firebaseApp';
 
 export class FirebaseBackend implements RoomBackend {
   readonly mode = 'firebase' as const;
@@ -14,14 +12,7 @@ export class FirebaseBackend implements RoomBackend {
   private offset = 0;
 
   constructor() {
-    const app = initializeApp({
-      apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-      authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-      databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL,
-      projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-      appId: import.meta.env.VITE_FIREBASE_APP_ID,
-    });
-    this.db = getDatabase(app);
+    this.db = getDatabase(firebaseApp());
     onValue(ref(this.db, '.info/serverTimeOffset'), (s) => {
       this.offset = (s.val() as number | null) ?? 0;
     });

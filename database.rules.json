@@ -6,6 +6,12 @@
         ".write": true,
         ".validate": "$code.matches(/^[A-Z]{4}$/)"
       }
+    },
+    "users": {
+      "$uid": {
+        ".read": "auth != null && auth.uid == $uid",
+        ".write": "auth != null && auth.uid == $uid"
+      }
     }
   }
 }
