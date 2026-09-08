@@ -39,6 +39,9 @@ let instance: Human | null = null;
 let loading: Promise<Human> | null = null;
 let ready = false;
 
+// Development only: lets tuning scripts in the browser console reuse the app's loaded models.
+if (import.meta.env.DEV) (window as unknown as { __lzHuman?: unknown }).__lzHuman = { getHuman: () => getHuman(), loadHuman: () => loadHuman() };
+
 export function getHuman(): Human {
   if (!instance) instance = new Human(humanConfig);
   return instance;
