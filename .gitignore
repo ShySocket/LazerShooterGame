@@ -4,3 +4,4 @@ dev-dist
 .env
 .env.local
 .DS_Store
+public/_sample.jpg

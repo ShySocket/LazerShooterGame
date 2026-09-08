@@ -18,7 +18,18 @@ export class ZoomPass {
   private canvas = document.createElement('canvas');
   private ctx = this.canvas.getContext('2d')!;
 
-  async run(human: Human, video: HTMLVideoElement, region: NBox, scale = 2): Promise<ZoomFace[]> {
+  /**
+   * @param side Fixed canvas size. A constant input size keeps the GPU texture allocations inside the
+   *   vision library stable from frame to frame; varying sizes churn memory, which phones punish by
+   *   reloading the page. The crop is scaled to fit, so a distant face is magnified and a close one
+   *   is shrunk slightly, both well within what the face model expects.
+   */
+  constructor(private side = 512) {
+    this.canvas.width = side;
+    this.canvas.height = side;
+  }
+
+  async run(human: Human, video: HTMLVideoElement, region: NBox): Promise<ZoomFace[]> {
     const vw = video.videoWidth;
     const vh = video.videoHeight;
     if (!vw || !vh) return [];
@@ -27,14 +38,11 @@ export class ZoomPass {
     const sw = r[2] * vw;
     const sh = r[3] * vh;
     if (sw < 8 || sh < 8) return [];
+    const side = this.side;
+    const scale = Math.min(side / sw, side / sh);
     const w = Math.round(sw * scale);
     const h = Math.round(sh * scale);
-    // Square canvas: Human distorts non-square inputs, which ruins the embedding (see SquareFrame).
-    const side = Math.max(w, h);
-    if (this.canvas.width !== side || this.canvas.height !== side) {
-      this.canvas.width = side;
-      this.canvas.height = side;
-    }
+    // Square canvas: Human distorts non-square inputs, which ruins the embedding.
     this.ctx.fillStyle = '#000';
     this.ctx.fillRect(0, 0, side, side);
     this.ctx.drawImage(video, r[0] * vw, r[1] * vh, sw, sh, 0, 0, w, h);

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { backend } from './net';
 import { authAvailable, loadUser, onAccount, saveUserName, type Account } from './net/auth';
 import type { DeepProfile, Room } from './types';
@@ -10,6 +10,7 @@ import { Results } from './screens/Results';
 import { Profile } from './screens/Profile';
 import { loadHuman } from './vision/human';
 import { applyPendingUpdate, onUpdatePending, updatePending } from './pwa';
+import { recordIncident, wasReloaded } from './diag';
 
 function guestPid(): string {
   let v = localStorage.getItem('lz:pid');
@@ -24,6 +25,31 @@ function codeFromUrl(): string {
   return (new URL(location.href).searchParams.get('room') ?? '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 4);
 }
 
+interface LastRoom {
+  code: string;
+  name: string;
+  t: number;
+}
+
+/** The room this phone was in most recently, so a reload (crash, memory pressure, accidental swipe) rejoins it. */
+function readLastRoom(): LastRoom | null {
+  try {
+    const raw = localStorage.getItem('lz:lastRoom');
+    const v = raw ? (JSON.parse(raw) as LastRoom) : null;
+    return v && Date.now() - v.t < 6 * 3600 * 1000 ? v : null;
+  } catch {
+    return null;
+  }
+}
+function writeLastRoom(v: LastRoom | null): void {
+  try {
+    if (v) localStorage.setItem('lz:lastRoom', JSON.stringify(v));
+    else localStorage.removeItem('lz:lastRoom');
+  } catch {
+    /* ignore */
+  }
+}
+
 export default function App() {
   // Signed-in players use their account id everywhere, so the same person can play from any phone.
   const [account, setAccount] = useState<Account | null | undefined>(authAvailable ? undefined : null);
@@ -35,6 +61,8 @@ export default function App() {
   const [room, setRoom] = useState<Room | null | undefined>(undefined);
   const [notice, setNotice] = useState<string | null>(null);
   const [swPending, setSwPending] = useState(updatePending());
+  const [rejoining, setRejoining] = useState(false);
+  const rejoinTried = useRef(false);
 
   useEffect(() => onAccount(setAccount, setNotice), []);
   useEffect(() => onUpdatePending(() => setSwPending(true)), []);
@@ -79,17 +107,40 @@ export default function App() {
     return backend.subscribe(code, setRoom);
   }, [code]);
 
-  const enter = (c: string) => {
+  const enter = (c: string, name: string) => {
+    writeLastRoom({ code: c, name, t: Date.now() });
     setCode(c);
     history.replaceState(null, '', `${location.pathname}?room=${c}`);
   };
   const leave = () => {
     if (code) void backend.leaveRoom(code, pid).catch(() => undefined);
+    writeLastRoom(null);
     setCode(null);
     history.replaceState(null, '', location.pathname);
   };
 
+  // After a reload, go straight back into the room this phone was in instead of landing on Home.
+  useEffect(() => {
+    if (account === undefined || !deepLoaded || rejoinTried.current) return;
+    rejoinTried.current = true;
+    const last = readLastRoom();
+    const url = codeFromUrl();
+    if (!last || !url || last.code !== url) return;
+    if (wasReloaded()) recordIncident('reload', `The page reloaded on its own while in room ${url}.`);
+    setRejoining(true);
+    backend
+      .joinRoom(url, { id: pid, name: last.name })
+      .then((r) => {
+        if (r === 'ok') enter(url, last.name);
+        else writeLastRoom(null);
+      })
+      .catch(() => undefined)
+      .finally(() => setRejoining(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account, deepLoaded]);
+
   if (account === undefined || !deepLoaded) return <Notice text="Connecting" />;
+  if (rejoining) return <Notice text="Rejoining your room" />;
 
   if (showProfile && account) {
     return <Profile account={account} deep={deep} onDeepChange={setDeep} onBack={() => setShowProfile(false)} />;
@@ -106,12 +157,12 @@ export default function App() {
           void loadHuman();
           setShowProfile(true);
         }}
-        onCreate={async (name) => enter(await backend.createRoom({ id: pid, name }))}
+        onCreate={async (name) => enter(await backend.createRoom({ id: pid, name }), name)}
         onJoin={async (name, c) => {
           const r = await backend.joinRoom(c, { id: pid, name });
           if (r === 'missing') throw new Error(`Room ${c} was not found`);
           if (r === 'in-progress') throw new Error(`Room ${c} is mid-game. Ask the host to share the link again once they are back in the lobby.`);
-          enter(c);
+          enter(c, name);
         }}
       />
     );

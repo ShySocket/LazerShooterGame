@@ -4,6 +4,7 @@ import { authAvailable, signInGoogle, type Account } from '../net/auth';
 import type { DeepProfile } from '../types';
 import { FACE_MODEL } from '../vision/human';
 import { haptic, sfx, unlockAudio } from '../audio/sfx';
+import { clearIncident, readIncident } from '../diag';
 
 interface Props {
   initialCode: string;
@@ -25,6 +26,7 @@ export function Home({ initialCode, account, deep, notice, onProfile, onCreate, 
   const [code, setCode] = useState(initialCode);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [incident, setIncident] = useState(readIncident);
 
   const run = async (fn: () => Promise<void>) => {
     unlockAudio();
@@ -102,6 +104,23 @@ export function Home({ initialCode, account, deep, notice, onProfile, onCreate, 
         </button>
       </div>
       {(err ?? notice) && <div className="note bad">{err ?? notice}</div>}
+      {incident && (
+        <div className="note warn incident">
+          <div className="label">Last session ended unexpectedly</div>
+          <div className="incident-msg">
+            {new Date(incident.t).toLocaleTimeString()} · {incident.kind}: {incident.message.split('\n')[0]}
+          </div>
+          <button
+            className="link"
+            onClick={() => {
+              clearIncident();
+              setIncident(null);
+            }}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
     </div>
   );
 }
