@@ -1,5 +1,6 @@
 import type { FaceResult, Human } from '@vladmandic/human';
 import { clampBox, type NBox } from './geometry';
+import { configurePass } from './human';
 
 export interface ZoomFace {
   face: FaceResult;
@@ -29,9 +30,9 @@ export class ZoomPass {
     this.canvas.height = side;
   }
 
-  async run(human: Human, video: HTMLVideoElement, region: NBox): Promise<ZoomFace[]> {
-    const vw = video.videoWidth;
-    const vh = video.videoHeight;
+  async run(human: Human, video: HTMLVideoElement | HTMLCanvasElement, region: NBox): Promise<ZoomFace[]> {
+    const vw = 'videoWidth' in video ? video.videoWidth : video.width;
+    const vh = 'videoHeight' in video ? video.videoHeight : video.height;
     if (!vw || !vh) return [];
     // Grow the region a little so a face at the edge of the crosshair is not clipped.
     const r = clampBox([region[0] - region[2] * 0.25, region[1] - region[3] * 0.25, region[2] * 1.5, region[3] * 1.5]);
@@ -48,10 +49,10 @@ export class ZoomPass {
     this.ctx.drawImage(video, r[0] * vw, r[1] * vh, sw, sh, 0, 0, w, h);
     let res;
     try {
-      res = await human.detect(this.canvas, { body: { enabled: false } });
+      configurePass(human, 'crop');
+      res = await human.detect(this.canvas);
     } finally {
-      // The per-call override is merged into the live config, so put the body model back.
-      human.config.body.enabled = true;
+      configurePass(human, 'frame');
     }
     // Face boxes come back relative to the square; map through the crop back to the full frame.
     const kx = side / w;

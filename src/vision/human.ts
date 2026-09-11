@@ -1,5 +1,6 @@
 import { Human, type Config } from '@vladmandic/human';
-import { roundTo } from '../util/num';
+import { createSerialQueue } from './serial';
+export * from './embedding';
 
 const modelBasePath = import.meta.env.BASE_URL.replace(/\/?$/, '/') + 'models/';
 
@@ -14,7 +15,7 @@ export const humanConfig: Partial<Config> = {
   face: {
     enabled: true,
     // Tighter crop than Human's default 1.4 because ArcFace-family models expect a close face box.
-    detector: { rotation: true, maxDetected: 6, minConfidence: 0.5, minSize: 18, return: false, scale: 1.2 },
+    detector: { rotation: true, maxDetected: 6, minConfidence: 0.5, minSize: 18, return: false, scale: 1.2, skipFrames: 0, skipTime: 0 },
     // Mesh gives a steadier crop and the head yaw angle so turned faces can be skipped.
     mesh: { enabled: true },
     attention: { enabled: false },
@@ -26,18 +27,34 @@ export const humanConfig: Partial<Config> = {
     liveness: { enabled: false },
     gear: { enabled: false },
     // Untyped in Human's config but honoured by the pipeline: overwrites face.embedding with a 512-d ArcFace vector.
-    ...({ insightface: { enabled: true, modelPath: 'insightface-mobilenet-swish.json' } } as object),
+    ...({ insightface: { enabled: true, modelPath: 'insightface-mobilenet-swish.json', skipFrames: 0, skipTime: 0 } } as object),
   },
-  body: { enabled: true, modelPath: 'movenet-multipose.json', maxDetected: 6, minConfidence: 0.25 },
+  body: { enabled: true, modelPath: 'movenet-multipose.json', maxDetected: 6, minConfidence: 0.25, skipFrames: 0, skipTime: 0 },
   hand: { enabled: false },
   object: { enabled: false },
   gesture: { enabled: false },
   segmentation: { enabled: false },
 };
 
+/**
+ * The full-frame pass only needs face boxes (for association and crop windows) and bodies. The
+ * mesh and the embedding model run on the magnified crops, so paying for them on every full-frame
+ * face would only slow the loop down on a phone. Human keeps one mutable config, so the two passes
+ * flip these flags before each detect call inside the same serialized session.
+ */
+export function configurePass(h: Human, pass: 'frame' | 'crop'): void {
+  const crop = pass === 'crop';
+  h.config.face.mesh!.enabled = crop;
+  (h.config.face as unknown as { insightface: { enabled: boolean } }).insightface.enabled = crop;
+  h.config.body.enabled = !crop;
+}
+
 let instance: Human | null = null;
 let loading: Promise<Human> | null = null;
 let ready = false;
+
+// Human keeps mutable config and model caches. A frame and all its crops form one session.
+export const withHumanSession = createSerialQueue();
 
 // Development only: lets tuning scripts in the browser console reuse the app's loaded models.
 if (import.meta.env.DEV) (window as unknown as { __lzHuman?: unknown }).__lzHuman = { getHuman: () => getHuman(), loadHuman: () => loadHuman() };
@@ -57,64 +74,26 @@ export function loadHuman(onStatus?: (msg: string) => void): Promise<Human> {
     loading = (async () => {
       const h = getHuman();
       onStatus?.('Loading vision models');
-      await h.load();
+      await h.load(humanConfig);
+      // Human logs some download failures without rejecting load(). Do not report a partial load as ready.
+      const required = ['blazeface', 'facemesh', 'insightface-mobilenet-swish', 'movenet-multipose'];
+      const stats = h.models.stats().modelStats;
+      const missing = required.filter((name) => !stats.some((model) => model.name === name && model.loaded));
+      if (missing.length) throw new Error('Could not load vision models: ' + missing.join(', '));
       onStatus?.('Warming up');
-      await h.warmup();
+      const result = await h.warmup();
+      if (result?.error) throw new Error(result.error);
       ready = true;
       onStatus?.('Ready');
       return h;
     })().catch((e: unknown) => {
+      ready = false;
       loading = null;
+      // Reset also invalidates Human's module-level model caches for the next load attempt.
+      getHuman().reset();
       throw e;
     });
   }
   return loading;
 }
 
-/** Name of the descriptor model behind the embeddings. Profiles made with another model are ignored. */
-// The '-sq' suffix marks embeddings taken from square-padded frames; earlier scans were distorted and must be redone.
-export const FACE_MODEL = 'insightface-mobilenet-swish-sq';
-
-/**
- * Cosine similarity calibration for FACE_MODEL: below reject is a different person, above accept the same.
- * ArcFace-family models separate people around 0.3 to 0.5 with proper alignment; Human's crop is looser,
- * so these start conservative. Tune with the shot log.
- */
-export const FACE_CALIB = { reject: 0.28, accept: 0.6 };
-
-/** Enrollment sanity check: frames of one person should score at least this against frame 1. */
-export const SAME_PERSON_MIN = 0.25;
-
-/** Faces turned more than this (degrees of yaw) are too oblique for a reliable embedding. */
-export const MAX_YAW_DEG = 45;
-
-/** Scale a raw model embedding to unit length. Stored profile embeddings are already unit length. */
-export function unitEmbedding(e: number[]): number[] {
-  let n = 0;
-  for (const v of e) n += v * v;
-  const inv = n > 0 ? 1 / Math.sqrt(n) : 0;
-  return e.map((v) => v * inv);
-}
-
-/** Cosine similarity in 0..1 of two unit-length embeddings. Allocation free, safe for the frame loop. */
-export function unitSimilarity(a: number[], b: number[]): number {
-  let dot = 0;
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) dot += a[i] * b[i];
-  return Math.max(0, dot);
-}
-
-/** Cosine similarity of two raw embeddings. Normalises both, so prefer unitSimilarity in hot paths. */
-export function faceSimilarity(a: number[], b: number[]): number {
-  return unitSimilarity(unitEmbedding(a), unitEmbedding(b));
-}
-
-/** Unit-length embeddings rounded so they are small enough to sync comfortably. */
-export function compactEmbedding(e: number[]): number[] {
-  return unitEmbedding(e).map((v) => roundTo(v, 4));
-}
-
-/** Head yaw in degrees when the mesh reports it, else 0. */
-export function faceYawDeg(f: { rotation?: { angle?: { yaw?: number } } | null }): number {
-  return Math.abs(((f.rotation?.angle?.yaw ?? 0) * 180) / Math.PI);
-}

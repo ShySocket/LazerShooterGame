@@ -1,8 +1,8 @@
 import type { BodyProps, OutfitSig, Profile } from '../types';
-import { UNKNOWN_ID } from '../types';
+import { BODY_MODEL, UNKNOWN_ID } from '../types';
 import { profileOutfitSim, propsSimilarity } from './clothing';
-import type { Track } from './tracker';
-import { unitSimilarity } from './human';
+import { resetIdentity, type Track } from './tracker';
+import { unitSimilarity } from './embedding';
 
 export interface Candidate {
   id: string;
@@ -55,7 +55,9 @@ export function clothingEvidence(sig: OutfitSig, cands: Candidate[]): Record<str
 /** Body ratio similarity per candidate. Weak on its own, so it never produces an unknown vote. */
 export function bodyEvidence(props: BodyProps, cands: Candidate[]): Record<string, number> {
   const ev: Record<string, number> = {};
-  for (const c of cands) ev[c.id] = c.profile.body ? propsSimilarity(props, c.profile.body) : 0;
+  for (const c of cands) {
+    if (c.profile.body && c.profile.bodyModel === BODY_MODEL) ev[c.id] = propsSimilarity(props, c.profile.body);
+  }
   return ev;
 }
 
@@ -69,6 +71,8 @@ const W = { face: 0.6, cloth: 0.3, body: 0.1 };
 
 /** Weighted mix of whatever signals were available this frame. Without a face the total is capped. */
 export function combineEvidence(sig: Signals): Record<string, number> | null {
+  // Body proportions are shared by many people. They may break an outfit tie, never identify alone.
+  if (!sig.face && !sig.cloth) return null;
   const present = (Object.keys(W) as (keyof Signals)[]).filter((k) => sig[k]);
   if (present.length === 0) return null;
   const ids = new Set<string>();
@@ -104,6 +108,7 @@ const MEAN_RESET_SIM = 0.2;
 export function updateFaceMean(track: Track, emb: number[]): number[] {
   const m = track.faceMean;
   if (!m || m.length !== emb.length || unitSimilarity(m, emb) < MEAN_RESET_SIM) {
+    if (m) resetIdentity(track);
     track.faceMean = emb.slice();
     track.faceSamples = 1;
     return track.faceMean;
@@ -121,35 +126,32 @@ export function updateFaceMean(track: Track, emb: number[]): number[] {
 }
 
 /**
- * One body per player. Claims are granted strongest first, each track taking one identity; an
- * identity owned by another track is dropped from a track's claimable beliefs, so the loser falls
- * through to its next-best candidate (or the stranger baseline) instead of also reading as that player.
+ * One body per player. Only a track's actual first choice can claim an identity. Keep every competing
+ * belief when computing the margin: another person's presence is not evidence for a weaker match.
  */
 export function assignIdentities(tracks: Track[], exclusive: Set<string>): void {
-  const claims: { t: Track; id: string; v: number }[] = [];
-  for (const t of tracks) for (const [id, v] of Object.entries(t.belief)) if (exclusive.has(id)) claims.push({ t, id, v });
-  claims.sort((a, b) => b.v - a.v);
-  const ownerOf = new Map<string, Track>();
-  const taken = new Set<Track>();
-  for (const c of claims) {
-    if (ownerOf.has(c.id) || taken.has(c.t)) continue;
-    ownerOf.set(c.id, c.t);
-    taken.add(c.t);
-  }
+  const claims = new Map<string, { t: Track; v: number }[]>();
   for (const t of tracks) {
-    const claimed: Record<string, number> = {};
-    for (const [id, v] of Object.entries(t.belief)) {
-      const owner = ownerOf.get(id);
-      if (!owner || owner === t) claimed[id] = v;
-    }
-    t.claimed = claimed;
+    t.claimed = { ...t.belief };
+    t.identityConflict = false;
+    const top = topBelief(t);
+    if (top && exclusive.has(top.id)) claims.set(top.id, [...(claims.get(top.id) ?? []), { t, v: top.score }]);
+  }
+  for (const list of claims.values()) {
+    list.sort((a, b) => b.v - a.v);
+    for (let i = 1; i < list.length; i++) list[i].t.identityConflict = true;
+    // Near-equal duplicate claims have no defensible winner.
+    if (list.length > 1 && list[0].v - list[1].v < 0.15) list[0].t.identityConflict = true;
   }
 }
 
-export function updateBelief(track: Track, ev: Record<string, number>, alpha = 0.35): void {
-  for (const [id, v] of Object.entries(ev)) {
+export function updateBelief(track: Track, ev: Record<string, number>, alpha = 0.35, now = performance.now()): void {
+  for (const id of new Set([...Object.keys(track.belief), ...Object.keys(ev)])) {
+    const v = Number.isFinite(ev[id]) ? clamp01(ev[id]) : 0;
     track.belief[id] = (1 - alpha) * (track.belief[id] ?? 0) + alpha * v;
   }
+  track.lastEvidenceAt = now;
+  track.claimed = null;
 }
 
 export interface Resolution {
@@ -174,12 +176,15 @@ export function topBelief(track: Track): Resolution | null {
 /** Best eligible player, for the live label. Null when the top belief is not a shootable player. */
 export function bestBelief(track: Track, eligible: Set<string>): Resolution | null {
   const t = topBelief(track);
-  return t && eligible.has(t.id) ? t : null;
+  return t && !track.identityConflict && eligible.has(t.id) ? t : null;
 }
 
+export const IDENTITY_TTL_MS = 1500;
+
 /** A hit only registers when the top candidate is a live opponent, confident, and clearly ahead of everyone else. */
-export function resolveHit(track: Track, eligible: Set<string>, threshold: number, margin: number): Resolution | null {
+export function resolveHit(track: Track, eligible: Set<string>, threshold: number, margin: number, now = performance.now()): Resolution | null {
+  if (!Number.isFinite(track.lastEvidenceAt) || now < track.lastEvidenceAt || now - track.lastEvidenceAt > IDENTITY_TTL_MS) return null;
   const b = bestBelief(track, eligible);
-  if (!b || b.score < threshold || b.margin < margin) return null;
+  if (!b || !Number.isFinite(b.score) || !Number.isFinite(b.margin) || b.score < threshold || b.margin < margin || b.margin <= 0) return null;
   return b;
 }

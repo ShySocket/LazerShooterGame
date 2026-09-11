@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { backend } from '../net';
 import { authAvailable, signInGoogle, type Account } from '../net/auth';
 import type { DeepProfile } from '../types';
-import { FACE_MODEL } from '../vision/human';
+import { isCurrentFaceScan } from '../vision/human';
 import { haptic, sfx, unlockAudio } from '../audio/sfx';
 import { clearIncident, readIncident } from '../diag';
 
@@ -22,7 +22,7 @@ export function Home({ initialCode, account, deep, notice, onProfile, onCreate, 
   useEffect(() => {
     if (account) setName(account.name);
   }, [account]);
-  const scanReady = Boolean(deep && deep.faceModel === FACE_MODEL);
+  const scanReady = isCurrentFaceScan(deep);
   const [code, setCode] = useState(initialCode);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);

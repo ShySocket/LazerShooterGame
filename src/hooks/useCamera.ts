@@ -1,12 +1,47 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 export type Facing = 'user' | 'environment';
 
 const describe = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/** Turn the browser's camera errors into something a player can act on. */
+function explain(e: unknown): string {
+  const name = e instanceof DOMException ? e.name : '';
+  switch (name) {
+    case 'NotAllowedError':
+    case 'SecurityError':
+      return 'Camera permission was denied. Allow the camera for this site in your browser settings, then tap Retry.';
+    case 'NotFoundError':
+    case 'OverconstrainedError':
+      return 'No usable camera was found on this device.';
+    case 'NotReadableError':
+    case 'AbortError':
+      return 'The camera is busy in another app or tab (or the home-screen copy of this game). Close it, then tap Retry.';
+    default:
+      return describe(e);
+  }
+}
+
+const withTimeout = <T,>(p: Promise<T>, ms: number, what: string): Promise<T> =>
+  new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(`${what} did not respond for ${Math.round(ms / 1000)} s. Tap Retry.`)), ms);
+    p.then(
+      (v) => {
+        window.clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        window.clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+
 /**
  * Owns one camera stream. The returned ref attaches the stream to whichever <video> is currently
  * mounted, so screens may unmount and remount the element (or mount it late) without losing the feed.
+ * Every way a phone camera can silently stay black (busy in another tab, Low Power Mode refusing
+ * autoplay, a stream that never delivers metadata) ends in a readable error plus retry() instead.
  */
 export function useCamera(facing: Facing, enabled = true) {
   const elRef = useRef<HTMLVideoElement | null>(null);
@@ -14,6 +49,8 @@ export function useCamera(facing: Facing, enabled = true) {
   const attachRef = useRef<(v: HTMLVideoElement) => void>(() => undefined);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const retry = useCallback(() => setAttempt((n) => n + 1), []);
 
   const videoRef = useMemo(
     () => ({
@@ -37,34 +74,83 @@ export function useCamera(facing: Facing, enabled = true) {
     const attach = async (v: HTMLVideoElement) => {
       const stream = streamRef.current;
       if (!stream) return;
+      const live = () => !cancelled && streamRef.current === stream;
       try {
         v.srcObject = stream;
         v.muted = true;
         v.setAttribute('playsinline', 'true');
-        if (v.readyState < 1) await new Promise<void>((res) => v.addEventListener('loadedmetadata', () => res(), { once: true }));
-        await v.play();
-        if (!cancelled && streamRef.current === stream) setReady(true);
+        if (v.readyState < 1) {
+          await withTimeout(new Promise<void>((res) => v.addEventListener('loadedmetadata', () => res(), { once: true })), 8000, 'The camera');
+        }
+        if (!live()) return;
+        try {
+          await v.play();
+        } catch (e) {
+          // iOS Low Power Mode refuses to autoplay even a muted video; the next tap anywhere starts it.
+          if (!(e instanceof DOMException && e.name === 'NotAllowedError')) throw e;
+          setError('Tap anywhere to start the camera (Low Power Mode stops it starting by itself).');
+          await new Promise<void>((res) => {
+            const once = () => {
+              document.removeEventListener('pointerdown', once);
+              res();
+            };
+            document.addEventListener('pointerdown', once);
+          });
+          if (!live()) return;
+          await v.play();
+          setError(null);
+        }
+        if (!live()) return;
+        const track = stream.getVideoTracks()[0];
+        // A muted track delivers no frames: another tab or app owns the camera, or the page is in the background.
+        const onMute = () => {
+          if (!live()) return;
+          setReady(false);
+          setError('The camera stopped sending frames. If another tab, app, or the home-screen copy of this game is using it, close that, then tap Retry.');
+        };
+        const onUnmute = () => {
+          if (!live()) return;
+          setError(null);
+          setReady(true);
+        };
+        track?.addEventListener('mute', onMute);
+        track?.addEventListener('unmute', onUnmute);
+        track?.addEventListener('ended', onMute);
+        if (track?.muted) onMute();
+        else setReady(true);
       } catch (e) {
-        if (!cancelled) setError(describe(e));
+        if (!cancelled) setError(explain(e));
       }
     };
     attachRef.current = (v) => void attach(v);
 
     (async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } },
-        });
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
+      const preferred: MediaStreamConstraints = { audio: false, video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } } };
+      const fallbacks: MediaStreamConstraints[] = [{ audio: false, video: { facingMode: facing } }, { audio: false, video: true }];
+      let stream: MediaStream | null = null;
+      let lastError: unknown = null;
+      for (const constraints of [preferred, ...fallbacks]) {
+        try {
+          if (!navigator.mediaDevices?.getUserMedia) throw new Error('This browser cannot open the camera here. The page must be served over HTTPS.');
+          stream = await withTimeout(navigator.mediaDevices.getUserMedia(constraints), 20000, 'The camera permission prompt');
+          break;
+        } catch (e) {
+          lastError = e;
+          // A denied permission will not change by relaxing constraints; a busy or over-constrained camera might.
+          if (e instanceof DOMException && (e.name === 'NotAllowedError' || e.name === 'SecurityError')) break;
         }
-        streamRef.current = stream;
-        if (elRef.current) await attach(elRef.current);
-      } catch (e) {
-        if (!cancelled) setError(describe(e));
+        if (cancelled) return;
       }
+      if (cancelled) {
+        stream?.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      if (!stream) {
+        setError(explain(lastError));
+        return;
+      }
+      streamRef.current = stream;
+      if (elRef.current) await attach(elRef.current);
     })();
 
     return () => {
@@ -74,7 +160,7 @@ export function useCamera(facing: Facing, enabled = true) {
       attachRef.current = () => undefined;
       setReady(false);
     };
-  }, [facing, enabled]);
+  }, [facing, enabled, attempt]);
 
-  return { videoRef, ready, error };
+  return { videoRef, ready, error, retry };
 }

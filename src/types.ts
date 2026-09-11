@@ -32,6 +32,7 @@ export interface DeepProfile {
   faceModel: string;
   face: number[][];
   body: BodyProps | null;
+  bodyModel?: string;
   updatedAt: number;
 }
 
@@ -48,7 +49,11 @@ export interface Profile {
   face: number[][];
   outfit: OutfitSides;
   body?: BodyProps | null;
+  bodyModel?: string;
 }
+
+/** Body ratios measured in pixels, independent of the camera's aspect ratio. */
+export const BODY_MODEL = 'movenet-multipose-pixel-v1';
 
 export interface Player {
   id: string;

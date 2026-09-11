@@ -41,9 +41,18 @@ export function drawOverlay(canvas: HTMLCanvasElement, frame: OverlayFrame, mirr
         label = `${frame.labels?.[best[0]] ?? best[0]} ${(best[1] * 100).toFixed(0)}%`;
         color = frame.colors?.[best[0]] ?? '#ffd23b';
       }
+      // Two bodies reading as the same player: neither can be shot until one pulls ahead.
+      if (track.identityConflict) label += ' (dup)';
+    }
+    // Dashed box: this face or body could belong to more than one person, so it gathers no evidence.
+    if (d.associationAmbiguous) {
+      label = `#${track?.id ?? '?'} ambiguous`;
+      color = '#8892a6';
+      ctx.setLineDash([6, 4]);
     }
     ctx.strokeStyle = color;
     ctx.strokeRect(x, y, w, h);
+    ctx.setLineDash([]);
     if (d.face) {
       const [fx, fy, fw, fh] = toDisplay(toNBox(d.face.boxRaw), frame.vidW, frame.vidH, t);
       ctx.strokeStyle = '#ffffff';

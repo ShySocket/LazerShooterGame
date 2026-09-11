@@ -55,14 +55,15 @@ export function toNBox(b: number[]): NBox {
   return [b[0], b[1], b[2], b[3]];
 }
 
-/** Index of the box with the most overlap with the crosshair, or -1 when nothing is in it. */
+/** Aim at the centre dot. Overlapping people at that point are ambiguous, so neither is selected. */
 export function indexInSight(boxes: NBox[], crosshair: NBox): number {
+  const cx = crosshair[0] + crosshair[2] / 2;
+  const cy = crosshair[1] + crosshair[3] / 2;
   let best = -1;
-  let bestArea = 0;
   for (let i = 0; i < boxes.length; i++) {
-    const a = intersectArea(boxes[i], crosshair);
-    if (a > bestArea) {
-      bestArea = a;
+    const [x, y, w, h] = boxes[i];
+    if (w > 0 && h > 0 && cx >= x && cx <= x + w && cy >= y && cy <= y + h) {
+      if (best !== -1) return -1;
       best = i;
     }
   }

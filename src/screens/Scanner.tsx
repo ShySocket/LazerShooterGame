@@ -1,21 +1,22 @@
-import { useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Human, Result } from '@vladmandic/human';
 import type { BodyProps, OutfitSig } from '../types';
 import { useCamera, type Facing } from '../hooks/useCamera';
-import { useVisionLoop } from '../hooks/useVisionLoop';
+import { useVisionLoop, type VisionFrame } from '../hooks/useVisionLoop';
 import { useHumanStatus } from '../hooks/useHumanStatus';
-import { compactEmbedding, faceSimilarity, faceYawDeg, MAX_YAW_DEG, SAME_PERSON_MIN } from '../vision/human';
+import { compactEmbedding, FACE_SAMPLES, faceSimilarity, faceYawDeg, MAX_YAW_DEG, SAME_PERSON_MIN, isValidEmbedding } from '../vision/human';
 import { averageOutfits, averageProps, bodyProportions, FrameSampler, outfitRegions, outfitSignature } from '../vision/clothing';
 import { drawOverlay } from '../vision/overlay';
-import { toNBox } from '../vision/geometry';
+import { iou, toNBox, type NBox } from '../vision/geometry';
 import { faceRegion, ZoomPass } from '../vision/zoom';
 import type { Detection } from '../vision/tracker';
 import { haptic, sfx } from '../audio/sfx';
 
-const FACE_PROMPTS = [
+/** One prompt per stored head angle; a stored scan is only reused when all FACE_SAMPLES are present. */
+const FACE_PROMPTS: string[] = [
   'Look straight at the camera',
-  'Turn your head to the left',
-  'Turn your head to the right',
+  'Turn your head slightly to the left',
+  'Turn your head slightly to the right',
   'Turn a little further left',
   'Turn a little further right',
   'Tilt your chin up',
@@ -24,6 +25,7 @@ const FACE_PROMPTS = [
 ];
 const BODY_SAMPLES = 12;
 const PROP_COUNTDOWN = 5;
+const BODY_SAMPLE_INTERVAL_MS = 150;
 
 export interface ScanResult {
   face: number[][];
@@ -64,18 +66,33 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
   const recordingRef = useRef(false);
   const [countdown, setCountdown] = useState<number | null>(null);
   const facing: Facing = stage === 'face' || bodyMode === 'prop' ? 'user' : 'environment';
-  const { videoRef, ready: camReady, error: camError } = useCamera(facing, stage !== 'saving');
+  const { videoRef, ready: camReady, error: camError, retry: retryCamera } = useCamera(facing, stage !== 'saving');
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const faces = useRef<number[][]>([]);
   const outfits = useRef<OutfitSig[]>([]);
   const props = useRef<BodyProps[]>([]);
+  const stageProps = useRef<BodyProps[]>([]);
+  const lastBody = useRef<NBox | null>(null);
+  const lastBodySample = useRef(0);
+  const generation = useRef(0);
+  const mounted = useRef(true);
   const front = useRef<OutfitSig | null>(null);
   const stageStart = useRef(performance.now());
   const sampler = useRef(new FrameSampler());
   const zoom = useRef(new ZoomPass());
   const countdownTimer = useRef<number | undefined>(undefined);
 
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      generation.current++;
+      window.clearInterval(countdownTimer.current);
+    };
+  }, []);
+
   const go = (s: Stage) => {
+    generation.current++;
     stageRef.current = s;
     stageStart.current = performance.now();
     setStageState(s);
@@ -95,6 +112,7 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
         outfit: outfit && front.current && back ? { front: front.current, back } : null,
       });
     } catch (e) {
+      if (!mounted.current) return;
       setErrMsg(e instanceof Error ? e.message : String(e));
       go('error');
     }
@@ -105,6 +123,9 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
     faces.current = [];
     outfits.current = [];
     props.current = [];
+    stageProps.current = [];
+    lastBody.current = null;
+    lastBodySample.current = 0;
     front.current = null;
     setFaceIdx(0);
     setProgress(0);
@@ -115,6 +136,11 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
 
   /** Helper mode: a friend taps Record. Prop mode: a countdown gives you time to step back. */
   const beginScan = () => {
+    outfits.current = [];
+    stageProps.current = [];
+    lastBody.current = null;
+    lastBodySample.current = 0;
+    setProgress(0);
     haptic();
     if (bodyMode === 'helper') {
       setRecording(true);
@@ -146,12 +172,15 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
     go('bodyFront');
   };
 
-  const onFrame = async (res: Result, human: Human) => {
+  const onFrame = async (res: Result, human: Human, context: VisionFrame) => {
     const v = videoRef.current;
     const canvas = canvasRef.current;
     if (!v) return;
-    const now = performance.now();
+    const now = context.capturedAt;
     const s = stageRef.current;
+    const epoch = generation.current;
+    const isCurrent = () => mounted.current && context.isCurrent() && generation.current === epoch && stageRef.current === s;
+    if (!isCurrent()) return;
     if (canvas) {
       const dets: Detection[] = res.body.map((b) => ({ box: toNBox(b.boxRaw), body: b }));
       res.face.forEach((f) => dets.push({ box: toNBox(f.boxRaw), face: f }));
@@ -163,45 +192,73 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
       if (res.face.length > 1) return setHint('Only one face in frame please.');
       const detected = res.face[0];
       if (detected.score < 0.7) return setHint('Hold still');
-      if (faceYawDeg(detected) > MAX_YAW_DEG + 15) return setHint('Turned too far. Bring your face back a little.');
-      // The embedding is taken from a square crop, the same way the game reads faces (see ZoomPass).
-      const crops = await zoom.current.run(human, v, faceRegion(toNBox(detected.boxRaw), res.width / res.height));
-      const f = crops[0]?.face;
-      if (!f?.embedding?.length) return setHint('Hold still');
+      if (Math.min(detected.boxRaw[2] * res.width, detected.boxRaw[3] * res.height) < 64) {
+        return setHint('Move closer so your face is clear.');
+      }
+      // The embedding, and the head angle, come from a square crop, the same way the game reads faces (see
+      // ZoomPass): the full-frame pass only finds boxes, so it cannot judge the angle.
+      const crops = await zoom.current.run(human, context.frame, faceRegion(toNBox(detected.boxRaw), res.width / res.height));
+      if (!isCurrent()) return;
+      // A magnified crop can include a neighbour. Never take an arbitrary first face.
+      if (crops.length !== 1 || iou(crops[0].box, toNBox(detected.boxRaw)) < 0.25) {
+        return setHint('Keep just your face in frame and hold still.');
+      }
+      const f = crops[0].face;
+      if (!isValidEmbedding(f.embedding) || f.score < 0.7 || faceYawDeg(f) > MAX_YAW_DEG) return setHint('Hold still and face the camera a little more.');
+      if (faces.current.length === 0 && faceYawDeg(f) > 15) return setHint('Look straight at the camera for the first sample.');
       if (faces.current.length > 0 && faceSimilarity(f.embedding, faces.current[0]) < SAME_PERSON_MIN) {
         return setHint('That does not look like the same person as frame 1.');
       }
       faces.current.push(compactEmbedding(f.embedding));
       sfx.tick();
-      stageStart.current = now;
+      stageStart.current = performance.now();
       setHint('');
-      if (faces.current.length >= FACE_PROMPTS.length) {
+      if (faces.current.length >= FACE_SAMPLES) {
         if (body) go('bodyMode');
         else void finish(null);
       } else setFaceIdx(faces.current.length);
     } else if (s === 'bodyFront' || s === 'bodyBack') {
-      const b = [...res.body].sort((a, c) => c.boxRaw[2] * c.boxRaw[3] - a.boxRaw[2] * a.boxRaw[3])[0];
-      const regions = b ? outfitRegions(b, 0.3) : null;
+      const clearSamples = () => {
+        outfits.current = [];
+        stageProps.current = [];
+        lastBody.current = null;
+        lastBodySample.current = 0;
+        setProgress(0);
+      };
+      if (res.body.length > 1 || res.face.length > 1) {
+        clearSamples();
+        setHint('Only the player being scanned should be in frame.');
+        return;
+      }
+      const b = res.body[0];
+      const regions = b ? outfitRegions(b, 0.4, res.width / res.height) : null;
       if (!b || !regions?.top) {
+        if (lastBodySample.current && now - lastBodySample.current > 1500) clearSamples();
         setHint('Shoulders and hips must both be visible. Step back so the whole body fits.');
         return;
       }
-      const wholeBody = Boolean(regions.shins);
+      const wholeBody = Boolean(regions.shins?.length === 2);
       if (!recordingRef.current) {
         setHint(wholeBody ? 'Whole body in frame. Ready to scan.' : 'Head to feet should be in frame for the best scan.');
         return;
       }
-      if (now - stageStart.current < 800) return;
-      const img = sampler.current.grab(v);
-      const sig = img ? outfitSignature(img, b, 0.3) : null;
+      if (now - stageStart.current < 800 || now - lastBodySample.current < BODY_SAMPLE_INTERVAL_MS) return;
+      const box = toNBox(b.boxRaw);
+      if (lastBody.current && (iou(lastBody.current, box) < 0.25 || now - lastBodySample.current > 1500)) clearSamples();
+      const img = sampler.current.grab(context.frame);
+      const sig = img ? outfitSignature(img, b, 0.4) : null;
       if (!sig) return;
       outfits.current.push(sig);
-      const bp = bodyProportions(b, 0.3);
-      if (bp) props.current.push(bp);
+      lastBody.current = box;
+      lastBodySample.current = now;
+      const bp = bodyProportions(b, 0.4);
+      if (bp) stageProps.current.push(bp);
       setProgress(outfits.current.length / BODY_SAMPLES);
       setHint(wholeBody ? '' : 'Feet are out of frame. Still scanning, but legs will not count.');
       if (outfits.current.length >= BODY_SAMPLES) {
         const avg = averageOutfits(outfits.current);
+        props.current.push(...stageProps.current);
+        stageProps.current = [];
         outfits.current = [];
         setProgress(0);
         setRecording(false);
@@ -220,7 +277,7 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
   const copy = ((): { heading: string; prompt: string } => {
     switch (stage) {
       case 'face':
-        return { heading: `Face ${faceIdx + 1} of ${FACE_PROMPTS.length}`, prompt: FACE_PROMPTS[faceIdx] };
+        return { heading: `Face ${faceIdx + 1} of ${FACE_SAMPLES}`, prompt: FACE_PROMPTS[Math.min(faceIdx, FACE_PROMPTS.length - 1)] };
       case 'bodyMode':
         return { heading: 'Body scan', prompt: 'The scan needs your whole body, head to feet. Who is holding the phone?' };
       case 'bodyFront':
@@ -234,7 +291,7 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
       case 'bodyBack':
         return {
           heading: 'Body scan: back',
-          prompt: bodyMode === 'helper' ? 'Player turns around. Friend taps Record again.' : 'Turn around so the camera sees your back, then tap Scan.',
+          prompt: bodyMode === 'helper' ? 'Player turns around. Friend taps Record again.' : 'Tap Scan, then turn around during the countdown so the camera sees your back.',
         };
       case 'saving':
         return { heading: 'Saving', prompt: savingText ?? 'Uploading your signature.' };
@@ -269,7 +326,19 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
           </div>
         )}
         {hint && <p className="hint">{hint}</p>}
-        {stage !== 'bodyMode' && (!camReady || !humanReady) && <p className="hint">{camError ?? (camReady ? status : 'Starting camera')}</p>}
+        {stage !== 'bodyMode' && (!camReady || !humanReady) && (
+          <p className="hint">
+            {camError ?? (camReady ? status : 'Starting camera')}
+            {camError && (
+              <>
+                {' '}
+                <button className="btn" onClick={retryCamera}>
+                  Retry camera
+                </button>
+              </>
+            )}
+          </p>
+        )}
         {stage === 'bodyMode' && (
           <div className="mode-pick">
             <button className="btn primary big" onClick={() => chooseMode('helper')}>

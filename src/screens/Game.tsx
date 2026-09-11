@@ -3,29 +3,17 @@ import type { Human, Result } from '@vladmandic/human';
 import { backend, MIN_PLAYERS } from '../net';
 import { alivePlayers, enrolledPlayers, livesLabel, UNKNOWN_ID, type Player, type Room } from '../types';
 import { useCamera } from '../hooks/useCamera';
-import { useVisionLoop } from '../hooks/useVisionLoop';
+import { useVisionLoop, type VisionFrame } from '../hooks/useVisionLoop';
 import { useHumanStatus } from '../hooks/useHumanStatus';
 import { useWakeLock } from '../hooks/useWakeLock';
 import { useTorch } from '../hooks/useTorch';
-import { Tracker, type Detection, type Track } from '../vision/tracker';
-import { clampBox, crosshairRect, indexInSight, toNBox, type NBox } from '../vision/geometry';
+import { buildDetections, type Track } from '../vision/tracker';
+import { crosshairRect, toNBox, type NBox } from '../vision/geometry';
 import { bodyProportions, FrameSampler, outfitSignature } from '../vision/clothing';
-import {
-  assignIdentities,
-  bestBelief,
-  bodyEvidence,
-  clothingEvidence,
-  combineEvidence,
-  faceEvidence,
-  resolveHit,
-  topBelief,
-  updateBelief,
-  updateFaceMean,
-  type Candidate,
-  type Resolution,
-} from '../vision/scoring';
-import { FACE_CALIB, FACE_MODEL, faceYawDeg, MAX_YAW_DEG, unitEmbedding, unitSimilarity } from '../vision/human';
+import { topBelief, type Candidate } from '../vision/scoring';
+import { faceYawDeg, isCurrentFaceScan, isValidEmbedding, MAX_YAW_DEG, unitEmbedding } from '../vision/human';
 import { faceRegion, ZoomPass } from '../vision/zoom';
+import { VisionPipeline, type FaceObservation, type LockState, type ShotSettlement } from '../vision/pipeline';
 import { shotLog } from '../debug/shotLog';
 import { rangeTest } from '../debug/rangeTest';
 import { drawOverlay } from '../vision/overlay';
@@ -39,37 +27,17 @@ interface Props {
   onLeave: () => void;
 }
 
-interface Latest {
-  dets: Detection[];
-  tracks: Track[];
-  vidW: number;
-  vidH: number;
-  t: number;
-}
-
-/** A shot that was not decidable at the tap; it waits for a few more frames of evidence. */
-interface PendingShot {
-  trackId: number;
-  startedAt: number;
-  deadline: number;
-  framesLeft: number;
-  zoom: boolean;
+interface ShotContext {
+  practice: boolean;
+  distance: number;
+  expectedId: string;
 }
 
 type Kind = 'info' | 'good' | 'warn' | 'bad';
 
-/** A frame older than this is not trusted for a shot. */
-const STALE_FRAME_MS = 800;
-/** Clothing is only re-sampled for tracks whose face has not been seen this recently. */
-const FACE_FRESH_MS = 1500;
-/** Every Nth frame pays for the pixel readback that clothing sampling needs. */
-const CLOTHING_EVERY = 3;
-/** A borderline shot may wait this long, or this many frames, before it is called unclear. */
-const BURST_MS = 300;
-const BURST_FRAMES = 4;
-/** Besides the crosshair target, this many other bodies get a face crop per frame, round-robin. */
-const EXTRA_CROPS = 1;
 const RANGE_DISTANCES = [2, 4, 6, 8];
+/** Faces smaller than this in the full frame are too blurry for a trustworthy embedding. */
+const MIN_FACE_PX = 24;
 
 export function Game({ room, me, pid, onLeave }: Props) {
   const isHost = room.hostId === pid;
@@ -78,7 +46,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
   const playing = room.status === 'playing';
 
   const { ready: humanReady, status } = useHumanStatus();
-  const { videoRef, ready: camReady, error: camError } = useCamera('environment', !spectating);
+  const { videoRef, ready: camReady, error: camError, retry: retryCamera } = useCamera('environment', !spectating);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   useWakeLock(true);
@@ -88,11 +56,8 @@ export function Game({ room, me, pid, onLeave }: Props) {
   const debugRef = useRef(debug);
   debugRef.current = debug;
   const [rangeMode, setRangeMode] = useState(false);
-  const rangeModeRef = useRef(rangeMode);
-  rangeModeRef.current = rangeMode;
   const [rangeDist, setRangeDist] = useState(4);
-  const rangeDistRef = useRef(rangeDist);
-  rangeDistRef.current = rangeDist;
+  const [rangeTargetId, setRangeTargetId] = useState('');
   const [rangeTick, setRangeTick] = useState(0);
   const [banner, setBanner] = useState<{ text: string; kind: Kind } | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
@@ -101,24 +66,51 @@ export function Game({ room, me, pid, onLeave }: Props) {
   const [lock, setLock] = useState<{ text: string; kind: Kind } | null>(null);
   const [fps, setFps] = useState(0);
 
-  const tracker = useRef(new Tracker());
+  const pipeline = useRef(new VisionPipeline<ShotContext>({ candidates: [], exclusiveIds: new Set(), eligible: new Set(), hitThreshold: 1, hitMargin: 1 }));
   const sampler = useRef(new FrameSampler());
   const zoom = useRef(new ZoomPass());
   const frameNo = useRef(0);
   const fpsWindow = useRef<number[]>([]);
-  const latest = useRef<Latest | null>(null);
   const coolRef = useRef(0);
   const bannerTimer = useRef<number | undefined>(undefined);
   const lockKey = useRef('');
-  const pending = useRef<PendingShot | null>(null);
-  const cropCursor = useRef(0);
+  const pendingTimer = useRef<number | undefined>(undefined);
+  const settleRef = useRef<(s: ShotSettlement<ShotContext>) => void>(() => undefined);
+
+  useEffect(() => {
+    const invalidate = () => {
+      pipeline.current.invalidate();
+      window.clearTimeout(pendingTimer.current);
+      lockKey.current = '';
+      setLock(null);
+    };
+    invalidate();
+    // The crosshair rectangle depends on the viewport, so a real size change (rotation, split view)
+    // discards frames measured against the old one. Mobile browsers also fire resize when the address
+    // bar slides, which leaves the game area untouched and must not reset tracking mid-shot.
+    let lastSize = `${wrapRef.current?.clientWidth}x${wrapRef.current?.clientHeight}`;
+    const onResize = () => {
+      const size = `${wrapRef.current?.clientWidth}x${wrapRef.current?.clientHeight}`;
+      if (size === lastSize) return;
+      lastSize = size;
+      invalidate();
+    };
+    document.addEventListener('visibilitychange', invalidate);
+    window.addEventListener('resize', onResize);
+    return () => {
+      document.removeEventListener('visibilitychange', invalidate);
+      window.removeEventListener('resize', onResize);
+      pipeline.current.invalidate();
+      window.clearTimeout(pendingTimer.current);
+    };
+  }, [room.status, spectating, camReady]);
 
   // Everyone enrolled with a compatible profile, including eliminated players and the shooter themself.
   // The shooter's own profile is a decoy: a mirror or a look-alike resolves to "me" and never counts.
   const candidates: Candidate[] = useMemo(
     () =>
       Object.values(room.players)
-        .filter((p) => p.enrolled && room.profiles[p.id]?.outfit && room.profiles[p.id].faceModel === FACE_MODEL)
+        .filter((p) => p.enrolled && room.profiles[p.id]?.outfit && isCurrentFaceScan(room.profiles[p.id]))
         .map((p) => ({ id: p.id, profile: room.profiles[p.id] })),
     [room.players, room.profiles],
   );
@@ -129,6 +121,12 @@ export function Game({ room, me, pid, onLeave }: Props) {
     [room.players, pid],
   );
   const colors = useMemo(() => Object.fromEntries(Object.values(room.players).map((p) => [p.id, p.color])), [room.players]);
+  pipeline.current.configure({ candidates, exclusiveIds, eligible, hitThreshold: settings.hitThreshold, hitMargin: settings.hitMargin });
+
+  // A range-test target who was eliminated or left would otherwise keep being "expected" silently.
+  useEffect(() => {
+    if (rangeTargetId && rangeTargetId !== UNKNOWN_ID && !eligible.has(rangeTargetId)) setRangeTargetId('');
+  }, [rangeTargetId, eligible]);
 
   const show = (text: string, kind: Kind, ms = 1400) => {
     setBanner({ text, kind });
@@ -168,8 +166,8 @@ export function Game({ room, me, pid, onLeave }: Props) {
         shotLog.clear();
         sfx.go();
         show('GO!', 'good', 1000);
-        tracker.current.reset();
-        pending.current = null;
+        pipeline.current.invalidate();
+        window.clearTimeout(pendingTimer.current);
       }
     }
   }, [room.status]);
@@ -231,22 +229,14 @@ export function Game({ room, me, pid, onLeave }: Props) {
       ...extra,
     });
 
-  /** Fold a face seen on a track into its running mean and belief. */
-  const applyFace = (t: Track, emb: number[], now: number) => {
-    const mean = updateFaceMean(t, emb);
-    const fe = faceEvidence(mean, candidates, unitSimilarity, FACE_CALIB);
-    const ev = combineEvidence({ face: fe, cloth: null, body: null });
-    if (ev) updateBelief(t, ev);
-    t.via = 'face';
-    t.lastFaceAt = now;
-  };
-
   /** A shot has a verdict: either register it, or in range-test mode just record how the lock behaved. */
-  const settleShot = (track: Track, r: Resolution | null, resolveMs: number, zoomed: boolean) => {
-    if (rangeModeRef.current) {
+  const settleShot = ({ track, resolution: r, elapsedMs: resolveMs, zoomed, context }: ShotSettlement<ShotContext>) => {
+    if (context.practice) {
       rangeTest.add({
         t: Date.now(),
-        distance: rangeDistRef.current,
+        distance: context.distance,
+        expectedId: context.expectedId,
+        targetId: r?.id,
         locked: Boolean(r),
         targetName: r ? labels[r.id] : undefined,
         score: r ? roundTo(r.score, 2) : undefined,
@@ -264,8 +254,14 @@ export function Game({ room, me, pid, onLeave }: Props) {
       }
       return;
     }
+    if (!r && !track) {
+      // The target left the crosshair, or was replaced by somebody else, before the burst could confirm it.
+      sfx.unclear();
+      logShot('miss', null, { resolveMs, zoom: zoomed });
+      return show('MISS', 'info');
+    }
     if (!r) {
-      const top = topBelief(track);
+      const top = topBelief(track!);
       sfx.unclear();
       logShot('unclear', track, { resolveMs, zoom: zoomed });
       if (top?.id === pid && top.score > 0.3) return show('THAT IS YOU', 'warn');
@@ -290,148 +286,78 @@ export function Game({ room, me, pid, onLeave }: Props) {
         show('NO CONNECTION, SHOT LOST', 'warn', 2000);
       });
   };
+  settleRef.current = settleShot;
 
-  const onFrame = async (res: Result, human: Human) => {
+  const lockLabel = (lock: LockState | null): { text: string; kind: Kind } | null => {
+    if (!lock) return null;
+    // Scores are shown in 10% steps so the label (and the re-render it costs) only changes when something moved.
+    switch (lock.kind) {
+      case 'lock':
+        return { text: `LOCK ${labels[lock.id] ?? ''}`, kind: 'good' };
+      case 'maybe':
+        return { text: `${labels[lock.id] ?? ''}? ${Math.round(lock.score * 10) * 10}%`, kind: 'warn' };
+      case 'top':
+        return { text: labels[lock.id] ?? 'UNKNOWN', kind: 'info' };
+      default:
+        return { text: 'UNKNOWN', kind: 'info' };
+    }
+  };
+
+  const onFrame = async (res: Result, human: Human, frame: VisionFrame) => {
     const v = videoRef.current;
     const wrap = wrapRef.current;
-    if (!v || !wrap) return;
-    const now = performance.now();
+    if (!v || !wrap || !frame.isCurrent()) return;
+    const now = frame.capturedAt;
     frameNo.current++;
     fpsWindow.current.push(now);
     while (fpsWindow.current.length && now - fpsWindow.current[0] > 1000) fpsWindow.current.shift();
     if (debugRef.current && frameNo.current % 10 === 0) setFps(fpsWindow.current.length);
 
-    // Bodies first, each claiming the face inside its upper half. Faces with no body become their own detection.
-    const dets: Detection[] = [];
-    const usedFaces = new Set<number>();
-    for (const b of res.body) {
-      const box = toNBox(b.boxRaw);
-      let faceIdx = -1;
-      res.face.forEach((f, i) => {
-        if (usedFaces.has(i) || faceIdx >= 0) return;
-        const cx = f.boxRaw[0] + f.boxRaw[2] / 2;
-        const cy = f.boxRaw[1] + f.boxRaw[3] / 2;
-        if (cx >= box[0] && cx <= box[0] + box[2] && cy >= box[1] && cy <= box[1] + box[3] * 0.55) faceIdx = i;
-      });
-      if (faceIdx >= 0) usedFaces.add(faceIdx);
-      dets.push({ box, body: b, face: faceIdx >= 0 ? res.face[faceIdx] : undefined });
-    }
-    res.face.forEach((f, i) => {
-      if (usedFaces.has(i)) return;
-      const [x, y, w, h] = toNBox(f.boxRaw);
-      dets.push({ box: clampBox([x - w * 0.5, y - h * 0.3, w * 2, h * 3.5]), face: f });
-    });
-
-    const tracks = tracker.current.update(dets, now);
-    const img = frameNo.current % CLOTHING_EVERY === 0 ? sampler.current.grab(v) : null;
-    dets.forEach((d, i) => {
-      const t = tracks[i];
-      // Clothing and body ratios only matter while the face is not carrying the identity.
-      const faceFresh = now - t.lastFaceAt < FACE_FRESH_MS && (topBelief(t)?.margin ?? 0) >= 0.3;
-      if (img && d.body && !faceFresh) {
-        let ce: Record<string, number> | null = null;
-        let be: Record<string, number> | null = null;
-        const sig = outfitSignature(img, d.body);
-        if (sig) ce = clothingEvidence(sig, candidates);
-        const bp = bodyProportions(d.body);
-        if (bp) be = bodyEvidence(bp, candidates);
-        const ev = combineEvidence({ face: null, cloth: ce, body: be });
-        if (ev) {
-          updateBelief(t, ev);
-          if (t.via !== 'face' || now - t.lastFaceAt > 3000) t.via = 'clothing';
-        }
-      }
-    });
-
-    // Face embeddings come only from square crops (see ZoomPass). The crosshair target gets one every
-    // frame; the other bodies take turns so the frame rate stays predictable.
+    const dets = buildDetections(res.body, res.face);
     const ch = crosshairRect(res.width, res.height, wrap.clientWidth, wrap.clientHeight);
-    const idx = indexInSight(
-      dets.map((d) => d.box),
-      ch,
-    );
-    const inSight: Track | null = idx >= 0 ? tracks[idx] : null;
-    let zoomed = false;
-    const order: number[] = [];
-    if (idx >= 0) order.push(idx);
-    if (dets.length > 1) {
-      for (let k = 0; k < dets.length && order.length < 1 + EXTRA_CROPS; k++) {
-        const j = (cropCursor.current + k) % dets.length;
-        if (j !== idx && dets[j].face) order.push(j);
-      }
-      cropCursor.current = (cropCursor.current + 1) % dets.length;
-    }
     const aspect = res.width / res.height;
-    for (const j of order) {
-      const d = dets[j];
-      const region: NBox = d.face ? faceRegion(toNBox(d.face.boxRaw), aspect) : d.box;
-      const faces = await zoom.current.run(human, v, region);
-      if (j === idx) zoomed = true;
-      const stamp = performance.now();
-      for (const zf of faces) {
-        if (!zf.face.embedding?.length || faceYawDeg(zf.face) > MAX_YAW_DEG) continue;
-        const cx = zf.box[0] + zf.box[2] / 2;
-        const cy = zf.box[1] + zf.box[3] / 2;
-        const inside = (t: Track) => cx >= t.box[0] && cx <= t.box[0] + t.box[2] && cy >= t.box[1] && cy <= t.box[1] + t.box[3];
-        // Attach to the body the crop was taken for when the face lands inside it, else whichever body contains it.
-        const owner = (inside(tracks[j]) ? tracks[j] : undefined) ?? tracks.find(inside);
-        if (owner) applyFace(owner, unitEmbedding(zf.face.embedding), stamp);
-      }
+    let img: ImageData | null | undefined;
+    const outcome = await pipeline.current.processFrame(dets, now, res.width, res.height, ch, {
+      // The pixel readback is paid once per frame, and only when some track still needs clothing evidence.
+      sampleOutfit: (d) => {
+        if (!d.body) return null;
+        if (img === undefined) img = sampler.current.grab(frame.frame);
+        if (!img) return null;
+        return { sig: outfitSignature(img, d.body), props: bodyProportions(d.body) };
+      },
+      cropFaces: async (_region, d): Promise<FaceObservation[]> => {
+        const region: NBox = d.face ? faceRegion(toNBox(d.face.boxRaw), aspect) : d.box;
+        const faces = await zoom.current.run(human, frame.frame, region);
+        return faces
+          .filter((zf) => isValidEmbedding(zf.face.embedding) && zf.face.score >= 0.7 && faceYawDeg(zf.face) <= MAX_YAW_DEG && Math.min(zf.box[2] * res.width, zf.box[3] * res.height) >= MIN_FACE_PX)
+          .map((zf) => ({ box: zf.box, embedding: unitEmbedding(zf.face.embedding!) }));
+      },
+      isCurrent: frame.isCurrent,
+    });
+    if (!outcome) return;
+    if (outcome.settled) {
+      window.clearTimeout(pendingTimer.current);
+      settleShot(outcome.settled);
     }
 
-    // One body per player, decided across every live track.
-    assignIdentities(tracker.current.live(), exclusiveIds);
-    latest.current = { dets, tracks, vidW: res.width, vidH: res.height, t: performance.now() };
-
-    // A borderline shot waits here for the next few frames of evidence.
-    const p = pending.current;
-    if (p) {
-      const t = tracker.current.get(p.trackId);
-      const elapsed = Math.round(performance.now() - p.startedAt);
-      const r = t ? resolveHit(t, eligible, settings.hitThreshold, settings.hitMargin) : null;
-      p.framesLeft--;
-      p.zoom ||= zoomed;
-      if (!t) {
-        pending.current = null;
-        logShot('miss', null, { resolveMs: elapsed, zoom: p.zoom });
-        show('MISS', 'info');
-      } else if (r || performance.now() >= p.deadline || p.framesLeft <= 0) {
-        pending.current = null;
-        settleShot(t, r, elapsed, p.zoom);
-      }
-    }
-
-    // Live lock indicator so the shooter knows what a shot would do. Scores are shown in 10% steps
-    // so the label (and the re-render it costs) only changes when something meaningful moved.
-    let next: { text: string; kind: Kind } | null = null;
-    if (inSight) {
-      const hit = resolveHit(inSight, eligible, settings.hitThreshold, settings.hitMargin);
-      if (hit) next = { text: `LOCK ${labels[hit.id] ?? ''}`, kind: 'good' };
-      else {
-        const b = bestBelief(inSight, eligible);
-        const top = topBelief(inSight);
-        if (b && b.score > 0.2) next = { text: `${labels[b.id] ?? ''}? ${Math.round(b.score * 10) * 10}%`, kind: 'warn' };
-        else if (top && top.score > 0.3) next = { text: labels[top.id] ?? 'UNKNOWN', kind: 'info' };
-        else next = { text: 'UNKNOWN', kind: 'info' };
-      }
-    }
+    const next = lockLabel(outcome.lock);
     const key = next ? next.text + next.kind : '';
     if (key !== lockKey.current) {
       lockKey.current = key;
       setLock(next);
     }
 
-    if (debugRef.current && canvasRef.current) drawOverlay(canvasRef.current, { dets, tracks, vidW: res.width, vidH: res.height, labels, colors }, false);
+    if (debugRef.current && canvasRef.current) drawOverlay(canvasRef.current, { dets, tracks: outcome.tracks, vidW: res.width, vidH: res.height, labels, colors }, false);
   };
 
   useVisionLoop(videoRef, camReady && humanReady && !spectating, onFrame);
 
-  const canFire = (playing || rangeMode) && !spectating && camReady && humanReady;
+  const canFire = (playing || rangeMode) && !spectating && camReady && humanReady && (!rangeMode || Boolean(rangeTargetId));
 
   const fire = () => {
     unlockAudio();
     const now = Date.now();
-    if (now < coolRef.current || !canFire || pending.current) return;
+    if (now < coolRef.current || !canFire || pipeline.current.hasPending()) return;
     coolRef.current = now + settings.cooldownMs;
     setCooling(true);
     window.setTimeout(() => setCooling(false), settings.cooldownMs);
@@ -439,28 +365,39 @@ export function Game({ room, me, pid, onLeave }: Props) {
     haptic();
     torch(120);
     flashScreen('rgba(255,255,255,0.9)', 90);
+    const context: ShotContext = { practice: rangeMode, distance: rangeDist, expectedId: rangeTargetId };
 
-    const L = latest.current;
+    const L = pipeline.current.getLatest();
     const wrap = wrapRef.current;
-    if (!L || !wrap || performance.now() - L.t > STALE_FRAME_MS) {
-      logShot('no camera', null);
-      return show('NO CAMERA LOCK', 'warn');
+    const usable = Boolean(L && wrap && !document.hidden && L.width === videoRef.current?.videoWidth && L.height === videoRef.current?.videoHeight);
+    const ch = L && wrap ? crosshairRect(L.width, L.height, wrap.clientWidth, wrap.clientHeight) : ([0, 0, 0, 0] as NBox);
+    const result = pipeline.current.fire(context, ch, usable);
+    switch (result.kind) {
+      case 'busy':
+        return;
+      case 'no-camera':
+      case 'stale': {
+        if (context.practice) return settleShot({ track: null, resolution: null, elapsedMs: 0, zoomed: false, context });
+        // The shot log records the frame age next to the allowance, which is the number to compare with staleMs().
+        if (result.kind === 'stale') logShot('stale frame', null, { resolveMs: result.frameAgeMs, allowanceMs: result.allowanceMs });
+        else logShot('no camera', null, { resolveMs: 0 });
+        return show(result.kind === 'stale' ? 'CAMERA TOO SLOW' : 'NO CAMERA LOCK', 'warn');
+      }
+      case 'miss':
+        if (context.practice) return settleShot({ track: null, resolution: null, elapsedMs: 0, zoomed: false, context });
+        logShot('miss', null, { resolveMs: 0 });
+        return show('MISS', 'info');
+      case 'instant':
+        return settleShot(result.settlement);
+      case 'pending': {
+        const { token, burstMs } = result;
+        pendingTimer.current = window.setTimeout(() => {
+          const settlement = pipeline.current.expirePending(token);
+          if (settlement) settleRef.current(settlement);
+        }, burstMs);
+        show('LOCKING', 'info', burstMs + 100);
+      }
     }
-    const ch = crosshairRect(L.vidW, L.vidH, wrap.clientWidth, wrap.clientHeight);
-    const idx = indexInSight(
-      L.dets.map((d) => d.box),
-      ch,
-    );
-    const best = idx >= 0 ? L.tracks[idx] : null;
-    if (!best) {
-      logShot('miss', null, { resolveMs: 0 });
-      return show('MISS', 'info');
-    }
-    // Instant when the evidence gathered before the tap already decides it; otherwise wait a few frames.
-    const r = resolveHit(best, eligible, settings.hitThreshold, settings.hitMargin);
-    if (r) return settleShot(best, r, 0, false);
-    pending.current = { trackId: best.id, startedAt: performance.now(), deadline: performance.now() + BURST_MS, framesLeft: BURST_FRAMES, zoom: false };
-    show('LOCKING', 'info', BURST_MS + 100);
   };
 
   const alive = alivePlayers(room);
@@ -504,10 +441,27 @@ export function Game({ room, me, pid, onLeave }: Props) {
 
       {banner && <div className={`banner ${banner.kind}`}>{banner.text}</div>}
       {countdown !== null && <div className="countdown">{countdown > 0 ? countdown : 'GO'}</div>}
-      {!spectating && (!camReady || !humanReady) && <div className="status-pill">{camError ?? (camReady ? status : 'Starting camera')}</div>}
+      {!spectating && (!camReady || !humanReady) && (
+        <div className="status-pill">
+          {camError ?? (camReady ? status : 'Starting camera')}
+          {camError && (
+            <button className="hud-btn" style={{ marginLeft: 8 }} onClick={retryCamera}>
+              retry
+            </button>
+          )}
+        </div>
+      )}
 
       {rangeMode && !spectating && (
         <div className="range-panel">
+          <label className="row">
+            Aim at
+            <select aria-label="Expected range test target" value={rangeTargetId} onChange={(event) => setRangeTargetId(event.target.value)}>
+              <option value="">Choose target</option>
+              {candidates.filter((c) => eligible.has(c.id)).map((c) => <option key={c.id} value={c.id}>{labels[c.id]}</option>)}
+              <option value={UNKNOWN_ID}>Not a player / empty space</option>
+            </select>
+          </label>
           <div className="row">
             <span>Target at</span>
             {RANGE_DISTANCES.map((d) => (
@@ -531,9 +485,9 @@ export function Game({ room, me, pid, onLeave }: Props) {
                 <tr>
                   <th>dist</th>
                   <th>shots</th>
-                  <th>lock</th>
-                  <th>ms</th>
-                  <th>zoom</th>
+                  <th>correct</th>
+                  <th>wrong</th>
+                  <th>missed</th>
                 </tr>
               </thead>
               <tbody>
@@ -541,9 +495,9 @@ export function Game({ room, me, pid, onLeave }: Props) {
                   <tr key={s.distance}>
                     <td>{s.distance} m</td>
                     <td>{s.shots}</td>
-                    <td>{Math.round(s.lockRate * 100)}%</td>
-                    <td>{Math.round(s.meanResolveMs)}</td>
-                    <td>{Math.round(s.zoomRate * 100)}%</td>
+                    <td>{s.correct}/{s.evaluated}</td>
+                    <td>{s.wrongPlayer + s.falseLocks}</td>
+                    <td>{s.missed}</td>
                   </tr>
                 ))}
               </tbody>

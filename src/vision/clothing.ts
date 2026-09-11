@@ -9,9 +9,15 @@ type Pt = [number, number];
 type Quad = [Pt, Pt, Pt, Pt];
 type Part = BodyResult['keypoints'][number]['part'];
 
-function keypoints(body: BodyResult, minScore: number): Partial<Record<string, Pt>> {
+function keypoints(body: BodyResult, minScore: number, pixels = false): Partial<Record<string, Pt>> {
   const pts: Partial<Record<string, Pt>> = {};
-  for (const kp of body.keypoints) if (kp.score >= minScore) pts[kp.part] = [kp.positionRaw[0], kp.positionRaw[1]];
+  for (const kp of body.keypoints) {
+    // The pose model can extrapolate joints outside the image. Those do not describe visible clothing.
+    if (!Number.isFinite(kp.score) || kp.score < minScore || ![kp.positionRaw[0], kp.positionRaw[1]].every((v) => Number.isFinite(v) && v >= 0 && v <= 1)) continue;
+    const point = pixels ? kp.position : kp.positionRaw;
+    if (!point.slice(0, 2).every(Number.isFinite)) continue;
+    pts[kp.part] = [point[0], point[1]];
+  }
   return pts;
 }
 
@@ -22,6 +28,21 @@ function quadOf(pts: Partial<Record<string, Pt>>, a: Part, b: Part, c: Part, d: 
 
 const dist = (a: Pt, b: Pt) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 const mid = (a: Pt, b: Pt): Pt => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+
+/** Crossing or collapsed joints cannot define a reliable clothing patch. */
+function convexQuad(quad: Quad): boolean {
+  let sign = 0;
+  for (let i = 0; i < 4; i++) {
+    const a = quad[i];
+    const b = quad[(i + 1) % 4];
+    const c = quad[(i + 2) % 4];
+    const cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+    if (!Number.isFinite(cross) || Math.abs(cross) < 1e-8) return false;
+    if (sign && Math.sign(cross) !== sign) return false;
+    sign = Math.sign(cross);
+  }
+  return true;
+}
 
 /** A quad around a limb segment, widened to roughly the limb's thickness. */
 function limbQuad(top: Pt, bottom: Pt, halfWidth: number): Quad {
@@ -42,14 +63,17 @@ function limbQuad(top: Pt, bottom: Pt, halfWidth: number): Quad {
  * Sampling regions for every clothing area the pose makes visible. Legs are sampled from both
  * sides when available; hair is the band above the eyes and ears.
  */
-export function outfitRegions(body: BodyResult, minScore = 0.3): Partial<Record<keyof OutfitSig, Quad[]>> {
+export function outfitRegions(body: BodyResult, minScore = 0.4, aspect = 1): Partial<Record<keyof OutfitSig, Quad[]>> {
   const p = keypoints(body, minScore);
   const out: Partial<Record<keyof OutfitSig, Quad[]>> = {};
+  if (!Number.isFinite(aspect) || aspect <= 0) return out;
+  // Work in units of frame height: x/y must have the same scale for limb normals and hair height.
+  for (const point of Object.values(p)) if (point) point[0] *= aspect;
   const torso = quadOf(p, 'leftShoulder', 'rightShoulder', 'rightHip', 'leftHip');
-  if (!torso) return out;
+  if (!torso || !convexQuad(torso)) return out;
   out.top = [torso];
   const shoulderW = dist(p.leftShoulder!, p.rightShoulder!);
-  const legW = Math.max(0.01, shoulderW * 0.22);
+  const legW = shoulderW * 0.22;
   const thighs: Quad[] = [];
   const shins: Quad[] = [];
   for (const side of ['left', 'right'] as const) {
@@ -77,6 +101,10 @@ export function outfitRegions(body: BodyResult, minScore = 0.3): Partial<Record<
         [c[0] - w * 0.55, botY],
       ],
     ];
+  }
+  // Return normalized coordinates for sampling and overlays. Points are shared by some quads.
+  for (const region of Object.keys(out) as (keyof OutfitSig)[]) {
+    out[region] = out[region]!.map((q) => q.map(([x, y]): Pt => [x / aspect, y]) as Quad);
   }
   return out;
 }
@@ -122,9 +150,11 @@ function smoothHues(hist: Float32Array): Float32Array {
   return out;
 }
 
-function sampleQuad(img: ImageData, quad: Quad, hist: Float32Array, G = 14): number {
+function sampleQuad(img: ImageData, quad: Quad, hist: Float32Array, minPixels: number, G = 14): number {
+  if (!convexQuad(quad)) return 0;
   const [ls, rs, rh, lh] = quad;
-  let n = 0;
+  const pixels = new Set<number>();
+  let visible = 0;
   for (let i = 0; i < G; i++) {
     const u = 0.15 + (0.7 * (i + 0.5)) / G;
     for (let j = 0; j < G; j++) {
@@ -137,31 +167,40 @@ function sampleQuad(img: ImageData, quad: Quad, hist: Float32Array, G = 14): num
       const y = Math.round((ty + (by - ty) * v) * (img.height - 1));
       if (x < 0 || y < 0 || x >= img.width || y >= img.height) continue;
       const k = (y * img.width + x) * 4;
-      hist[hsvBin(img.data[k], img.data[k + 1], img.data[k + 2])]++;
-      n++;
+      if (img.data[k + 3] === 0) continue;
+      visible++;
+      pixels.add(k);
     }
   }
-  return n;
+  // A tiny or mostly clipped patch can repeat one background pixel hundreds of times and appear certain.
+  if (visible < G * G * 0.8 || pixels.size < minPixels) return 0;
+  for (const k of pixels) hist[hsvBin(img.data[k], img.data[k + 1], img.data[k + 2])]++;
+  return pixels.size;
 }
 
 /** Colour histogram of one or more quads sampled from a small frame. */
-function regionSignature(img: ImageData, quads: Quad[]): number[] {
+function regionSignature(img: ImageData, quads: Quad[], minPixels: number): number[] | null {
   const hist = new Float32Array(SIG_LEN);
   let n = 0;
-  for (const q of quads) n += sampleQuad(img, q, hist);
-  if (n === 0) return new Array(SIG_LEN).fill(0);
+  for (const q of quads) n += sampleQuad(img, q, hist, minPixels);
+  if (n === 0) return null;
   const sm = smoothHues(hist);
   return Array.from(sm, (v) => roundTo(v / n, 4));
 }
 
 /** Every visible clothing region of one body in one frame. */
-export function outfitSignature(img: ImageData, body: BodyResult, minScore = 0.3): OutfitSig | null {
-  const regions = outfitRegions(body, minScore);
+export function outfitSignature(img: ImageData, body: BodyResult, minScore = 0.4): OutfitSig | null {
+  if (img.width < 2 || img.height < 2 || img.data.length < img.width * img.height * 4) return null;
+  const regions = outfitRegions(body, minScore, img.width / img.height);
   if (!regions.top) return null;
-  const sig: OutfitSig = { top: regionSignature(img, regions.top) };
-  if (regions.thighs) sig.thighs = regionSignature(img, regions.thighs);
-  if (regions.shins) sig.shins = regionSignature(img, regions.shins);
-  if (regions.hair) sig.hair = regionSignature(img, regions.hair);
+  const top = regionSignature(img, regions.top, 32);
+  if (!top) return null;
+  const sig: OutfitSig = { top };
+  for (const region of ['thighs', 'shins', 'hair'] as const) {
+    const quads = regions[region];
+    const sample = quads ? regionSignature(img, quads, 12) : null;
+    if (sample) sig[region] = sample;
+  }
   return sig;
 }
 
@@ -227,13 +266,16 @@ export function outfitConflict(a: OutfitSides, b: OutfitSides): number {
  * Scale-free body ratios. Only meaningful when the body is roughly square to the camera, which
  * is true for the enrollment scans and for most shots at range.
  */
-export function bodyProportions(body: BodyResult, minScore = 0.3): BodyProps | null {
-  const p = keypoints(body, minScore);
+export function bodyProportions(body: BodyResult, minScore = 0.4): BodyProps | null {
+  // positionRaw normalizes each axis separately, so its ratios change when the camera rotates.
+  const p = keypoints(body, minScore, true);
   if (!p.leftShoulder || !p.rightShoulder || !p.leftHip || !p.rightHip) return null;
+  const torso = quadOf(p, 'leftShoulder', 'rightShoulder', 'rightHip', 'leftHip');
+  if (!torso || !convexQuad(torso)) return null;
   const shoulderW = dist(p.leftShoulder, p.rightShoulder);
   const hipW = dist(p.leftHip, p.rightHip);
   const torsoL = dist(mid(p.leftShoulder, p.rightShoulder), mid(p.leftHip, p.rightHip));
-  if (shoulderW < 0.02 || torsoL < 0.02) return null;
+  if (shoulderW < 8 || torsoL < 8) return null;
   const legs: number[] = [];
   for (const side of ['left', 'right'] as const) {
     const hip = p[`${side}Hip`];
@@ -280,14 +322,17 @@ export class FrameSampler {
   private canvas = document.createElement('canvas');
   private ctx = this.canvas.getContext('2d', { willReadFrequently: true })!;
 
-  grab(video: HTMLVideoElement, width = 192): ImageData | null {
-    if (!video.videoWidth || !video.videoHeight) return null;
-    const h = Math.max(1, Math.round((width * video.videoHeight) / video.videoWidth));
+  grab(source: HTMLVideoElement | HTMLCanvasElement, width = 192): ImageData | null {
+    const sourceWidth = 'videoWidth' in source ? source.videoWidth : source.width;
+    const sourceHeight = 'videoHeight' in source ? source.videoHeight : source.height;
+    if (!sourceWidth || !sourceHeight || !Number.isFinite(width) || width < 2) return null;
+    width = Math.round(width);
+    const h = Math.max(1, Math.round((width * sourceHeight) / sourceWidth));
     if (this.canvas.width !== width || this.canvas.height !== h) {
       this.canvas.width = width;
       this.canvas.height = h;
     }
-    this.ctx.drawImage(video, 0, 0, width, h);
+    this.ctx.drawImage(source, 0, 0, width, h);
     return this.ctx.getImageData(0, 0, width, h);
   }
 }

@@ -11,7 +11,7 @@ Real-life laser tag played with phones. Everyone opens the same link, enrolls th
 
 Each body the camera sees gets a running belief of who it is, built from four signals:
 
-1. **Face recognition** with an InsightFace (ArcFace-family) model against the 8 head angles captured at enrollment. Strongest signal, only works within ~3 m and within about 45° of face-on. Cosine similarity, thresholds in `src/vision/human.ts`.
+1. **Face recognition** with an InsightFace (ArcFace-family) model against the 8 head angles captured at enrollment. Strongest signal, only works within ~3 m and within about 45° of face-on. Cosine similarity, thresholds in `src/vision/embedding.ts`.
 2. **Identity tracking**: once a body is recognised it stays recognised while it remains in frame, even when it turns around.
 3. **Outfit signature**: colour histograms of the top, thighs, shins, and hair, captured front and back at enrollment. This is what makes back-shots and long-range shots work. The lobby refuses to start if two players' whole outfits look too alike.
 4. **Body proportions**: shoulder, hip, leg, and head ratios from the pose model. A weak tiebreaker that survives a change of clothes.
@@ -52,6 +52,32 @@ Signing in lets a player do the deep scan once and reuse it on any phone. Guests
 
 Account data lives at `users/{uid}` and holds the name plus the deep scan: face embeddings and body ratios as numbers, never photos.
 
+### 2c. Tests
+
+```bash
+npm test
+```
+
+Typechecks and runs the vision unit tests (tracking, scoring, clothing, shot timing) plus a simulated laser-tag round with Node's built-in test runner. Needs Node 22.15 or newer. The Pages workflow runs them before every deploy.
+
+The simulation (`tests/sim/`) plays whole rounds through the real shooting pipeline (`src/vision/pipeline.ts`) against a synthetic detector with distance-dependent dropouts, jitter, and face/outfit similarity levels chosen to match the phone models. Scenarios cover a close duel, back shots, 8 m, an approaching target, crossing players, look-alike and identical tops, a stranger, a mirror, a 400 ms-per-frame phone, a flaky pose model, and dim light. To see the table instead of pass/fail:
+
+```bash
+npm run sim
+```
+
+`hit` is the share of shots that registered on the aimed player, `wrong` counts shots that registered on anybody else (the outcome the game must avoid), and `tracks` is how many track ids the target went through in a run (1 means the tracker never lost them). The acceptance thresholds live in `tests/sim.test.ts`.
+
+### 2d. Tracking bench on a real phone
+
+Open the game with `?bench` added to the URL, for example `https://your-app.vercel.app/?bench`. The bench scans a photo the way the lobby scans players, then points a virtual, slowly drifting camera at it and fires every 1.3 s, all through the real models and the real game pipeline, so it shows what that phone will do in a round with nobody else present:
+
+- **period** is the time between finished frames on this phone. The stale-frame and burst allowances scale with it automatically (`src/vision/shot.ts`).
+- **lock on target** is the share of frames with a green LOCK on the right name while the person is under the dot; **tracks** should stay at 1 while they are in view.
+- **hits / wrong / unclear / miss / off-target** classify every automatic shot. Off-target means the drifting camera had the aim point off the person, so nothing should have happened.
+
+Use **Sample person** for a quick check or **Photo from this phone** with a photo of the people you play with. Keep the tab in the foreground: browsers pause the camera and the vision loop in background tabs.
+
 ### 3. Run on your phones over Wi-Fi
 
 ```bash
@@ -81,7 +107,9 @@ Vite prints a `https://192.168.x.x:5173` address. Open it on each phone on the s
 - Good light matters more than anything. Face recognition needs the face to be at least the size of a thumbnail on screen.
 - The clothing signature carries hits from behind and at range. Bright, solid, distinct tops work best. Avoid tops that match the walls.
 - Tap **debug** during a game to see boxes, names, and confidence live. Handy for tuning **Hit confidence** in the lobby.
-- If close-range faces are confused or never lock, adjust `FACE_CALIB` in `src/vision/human.ts` using the similarity numbers from the shot log.
+- If close-range faces are confused or never lock, adjust `FACE_CALIB` in `src/vision/embedding.ts` using the similarity numbers from the shot log.
+- If shots keep saying CAMERA TOO SLOW, the phone's frames are older than the allowance in `src/vision/shot.ts`, which already grows with the measured frame period up to a ceiling. The shot log records the frame age and the allowance of each refused shot; run the bench (`?bench`) to see the phone's frame period directly.
+- **Range test**: with debug on, tap **range**, pick who you are aiming at (or "Not a player") and the distance, then fire. Shots deal no damage. The table counts correct, wrong-player, and missed decisions per distance, so a change to thresholds can be compared on the same set of people.
 
 ## Stack
 

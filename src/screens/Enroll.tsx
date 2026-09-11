@@ -1,6 +1,6 @@
 import { backend } from '../net';
-import type { DeepProfile, Player } from '../types';
-import { FACE_MODEL } from '../vision/human';
+import { BODY_MODEL, type DeepProfile, type Player } from '../types';
+import { FACE_MODEL, isCurrentFaceScan } from '../vision/human';
 import { Scanner } from './Scanner';
 
 interface Props {
@@ -14,7 +14,7 @@ interface Props {
 
 /** Per-room enrollment. Guests do the full scan; account holders with a current deep scan do the outfit only. */
 export function Enroll({ code, pid, me, deep, onLeave }: Props) {
-  const useDeep = Boolean(deep && deep.faceModel === FACE_MODEL && deep.face.length > 0);
+  const useDeep = isCurrentFaceScan(deep);
   return (
     <Scanner
       face={!useDeep}
@@ -31,10 +31,11 @@ export function Enroll({ code, pid, me, deep, onLeave }: Props) {
         if (!r.outfit) throw new Error('Outfit scan missing');
         await backend.setProfile(code, pid, {
           faceModel: FACE_MODEL,
+          bodyModel: BODY_MODEL,
           face: useDeep ? deep!.face : r.face,
           outfit: r.outfit,
-          // Fresh ratios from today's frames, falling back to the stored ones.
-          body: r.body ?? deep?.body ?? null,
+          // Use current-frame ratios; older saved scans may use a different geometry convention.
+          body: r.body ?? null,
         });
       }}
     />

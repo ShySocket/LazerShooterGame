@@ -1,10 +1,12 @@
 import type { BodyResult, FaceResult } from '@vladmandic/human';
-import { iou, type NBox } from './geometry';
+import { clampBox, intersectArea, iou, toNBox, type NBox } from './geometry';
 
 export interface Detection {
   box: NBox;
   body?: BodyResult;
   face?: FaceResult;
+  /** More than one person could own this face/body; no identity evidence or shots are safe. */
+  associationAmbiguous?: boolean;
 }
 
 export interface Track {
@@ -13,48 +15,216 @@ export interface Track {
   lastSeen: number;
   /** Per-player identity belief in 0..1, updated by face and clothing evidence. */
   belief: Record<string, number>;
-  /** Belief with identities claimed by stronger tracks removed. Refreshed every frame by assignIdentities. */
+  /** Identity assignment view, refreshed every frame by assignIdentities. */
   claimed: Record<string, number> | null;
+  identityConflict?: boolean;
   via: 'face' | 'clothing' | 'none';
   lastFaceAt: number;
-  /** Running mean of the unit face embeddings seen on this track, so matching uses many frames rather than one. */
+  lastEvidenceAt: number;
+  /** Running mean of the unit face embeddings seen on this track. */
   faceMean: number[] | null;
   faceSamples: number;
 }
 
-/** Keeps identities attached to bodies across frames using box overlap. */
+const validBox = (b: number[]): boolean => b.length === 4 && b.every(Number.isFinite) && b[2] > 0 && b[3] > 0;
+const center = (b: NBox): [number, number] => [b[0] + b[2] / 2, b[1] + b[3] / 2];
+const ASSOCIATION_MARGIN = 0.18;
+
+/** Confidence that a face belongs to a detection, using the actual head landmarks when present. */
+function faceAssociationScore(faceBox: NBox, d: Detection): number {
+  if (!validBox(faceBox) || !validBox(d.box)) return 0;
+  const [cx, cy] = center(faceBox);
+  if (d.face) {
+    const expected = toNBox(d.face.boxRaw);
+    const overlap = intersectArea(faceBox, expected) / Math.min(faceBox[2] * faceBox[3], expected[2] * expected[3]);
+    const [ex, ey] = center(expected);
+    const distance = Math.hypot((cx - ex) / Math.max(faceBox[2], expected[2]), (cy - ey) / Math.max(faceBox[3], expected[3]));
+    if (overlap >= 0.45 && distance < 0.75) return 0.8 + 0.2 * iou(faceBox, expected);
+    // A crop containing a different face must never overwrite this detection's face.
+    return 0;
+  }
+  if (!d.body) return 0;
+  const head = d.body.keypoints.filter((p) =>
+    ['nose', 'leftEye', 'rightEye', 'leftEar', 'rightEar', 'head'].includes(p.part)
+    && p.score >= 0.4 && p.positionRaw.slice(0, 2).every(Number.isFinite));
+  if (head.length) {
+    const nose = head.find((p) => p.part === 'nose');
+    const x = nose ? nose.positionRaw[0] : head.reduce((sum, p) => sum + p.positionRaw[0], 0) / head.length;
+    const y = nose ? nose.positionRaw[1] : head.reduce((sum, p) => sum + p.positionRaw[1], 0) / head.length;
+    const distance = Math.hypot((cx - x) / faceBox[2], (cy - y) / faceBox[3]);
+    return distance < 0.9 ? 0.55 + 0.4 * (1 - distance / 0.9) : 0;
+  }
+  // Weak fallback for backs/partial poses. It can only win when ownership is unique.
+  const [x, y, w, h] = d.box;
+  if (cx < x - w * 0.1 || cx > x + w * 1.1 || cy < y - h * 0.1 || cy > y + h * 0.45) return 0;
+  return 0.35 + 0.1 * Math.max(0, 1 - Math.abs(cx - x - w / 2) / (w / 2));
+}
+
+function faceCandidates(faceBox: NBox, dets: Detection[]): { index: number; score: number }[] {
+  return dets.map((d, index) => ({ index, score: faceAssociationScore(faceBox, d) }))
+    .filter((c) => c.score > 0).sort((a, b) => b.score - a.score);
+}
+
+/** Unique owner of a full-frame or zoom face; -1 means missing or ambiguous ownership. */
+export function faceOwner(faceBox: NBox, dets: Detection[]): number {
+  const candidates = faceCandidates(faceBox, dets);
+  const best = candidates[0];
+  if (!best || dets[best.index].associationAmbiguous) return -1;
+  if (candidates[1] && best.score - candidates[1].score < ASSOCIATION_MARGIN) return -1;
+  return best.index;
+}
+
+/**
+ * Where a standing person's body is, given only their face. Shaped like the pose model's box so a
+ * body the pose model skips for a frame keeps its track instead of turning into a new person.
+ */
+export function faceBodyBox(face: NBox): NBox {
+  const [x, y, w, h] = face;
+  return clampBox([x + w / 2 - w * 1.5, y - h * 0.35, w * 3, h * 7.6]);
+}
+
+/** Assemble people without attaching the first face found inside an overlapping body box. */
+export function buildDetections(bodies: BodyResult[], faces: FaceResult[]): Detection[] {
+  const dets: Detection[] = bodies.filter((b) => validBox(b.boxRaw) && b.score >= 0.25)
+    .map((body) => ({ box: clampBox(toNBox(body.boxRaw)), body }))
+    .filter((d) => validBox(d.box));
+  const usableFaces = faces.filter((f) => validBox(f.boxRaw) && f.boxScore >= 0.5)
+    .sort((a, b) => b.boxScore - a.boxScore)
+    .filter((face, index, all) => !all.slice(0, index).some((other) => iou(toNBox(face.boxRaw), toNBox(other.boxRaw)) > 0.65));
+  // Score against the original bodies: adding one face must not bias subsequent assignments.
+  const owners = usableFaces.map((face) => faceCandidates(toNBox(face.boxRaw), dets));
+  const claims = new Map<number, FaceResult[]>();
+  usableFaces.forEach((face, i) => {
+    const matches = owners[i];
+    const best = matches[0];
+    if (!best) return;
+    if (matches[1] && best.score - matches[1].score < ASSOCIATION_MARGIN) {
+      for (const match of matches) if (best.score - match.score < ASSOCIATION_MARGIN) dets[match.index].associationAmbiguous = true;
+      return;
+    }
+    claims.set(best.index, [...(claims.get(best.index) ?? []), face]);
+  });
+  for (const [index, claimedFaces] of claims) {
+    if (claimedFaces.length !== 1) dets[index].associationAmbiguous = true;
+    else if (!dets[index].associationAmbiguous) dets[index].face = claimedFaces[0];
+  }
+  usableFaces.forEach((face, i) => {
+    // Ambiguous faces must not also become duplicate, independently shootable bodies.
+    if (owners[i].length) return;
+    if (validBox(faceBodyBox(toNBox(face.boxRaw)))) dets.push({ box: faceBodyBox(toNBox(face.boxRaw)), face });
+  });
+  return dets;
+}
+
+/** Discard all accumulated identity evidence when continuity is no longer trustworthy. */
+export function resetIdentity(track: Track): void {
+  track.belief = {};
+  track.claimed = null;
+  track.identityConflict = false;
+  track.via = 'none';
+  track.lastFaceAt = 0;
+  track.lastEvidenceAt = 0;
+  track.faceMean = null;
+  track.faceSamples = 0;
+}
+
+interface Motion {
+  vx: number;
+  vy: number;
+  samples: number;
+}
+
+/**
+ * A person the pose model skipped for a frame or two is still the same person. Longer gaps, or any
+ * gap where somebody else could have stepped into the box, require fresh identity evidence.
+ */
+export const TRACK_GAP_MS = 450;
+export const MAX_TRACK_GAP_MS = 1100;
+
+/** Two skipped frames on this device, whatever its frame rate, within fixed bounds. */
+export function trackGapMs(periodMs: number): number {
+  if (!Number.isFinite(periodMs) || periodMs <= 0) return TRACK_GAP_MS;
+  return Math.max(TRACK_GAP_MS, Math.min(MAX_TRACK_GAP_MS, Math.round(periodMs * 3.2)));
+}
+
+/** Where a track is expected now, from its last box and motion; used for coasting through a dropout. */
+export function containsPoint(box: NBox, x: number, y: number): boolean {
+  return box[2] > 0 && box[3] > 0 && x >= box[0] && x <= box[0] + box[2] && y >= box[1] && y <= box[1] + box[3];
+}
+
+/** Spatial continuity is accepted only while visible and clearly matched in both directions. */
 export class Tracker {
   private tracks: Track[] = [];
+  private motion = new Map<number, Motion>();
   private nextId = 1;
+  private lastUpdate: number | null = null;
 
-  update(dets: Detection[], now: number, ttlMs = 1500): Track[] {
-    const assigned: (Track | null)[] = dets.map(() => null);
-    const used = new Set<Track>();
-    const pairs: { d: number; t: Track; v: number }[] = [];
-    dets.forEach((d, di) => {
-      for (const t of this.tracks) {
-        const v = iou(d.box, t.box);
-        if (v > 0.2) pairs.push({ d: di, t, v });
-      }
-    });
-    pairs.sort((a, b) => b.v - a.v);
-    for (const p of pairs) {
-      if (assigned[p.d] || used.has(p.t)) continue;
-      assigned[p.d] = p.t;
-      used.add(p.t);
-    }
+  update(dets: Detection[], now: number, ttlMs = 1500, gapMs = TRACK_GAP_MS): Track[] {
+    if (this.lastUpdate !== null && now <= this.lastUpdate) this.reset();
+    // Expire before matching: an old person at the same position must not be revived.
+    this.tracks = this.tracks.filter((t) => now - t.lastSeen < ttlMs);
+    const liveIds = new Set(this.tracks.map((t) => t.id));
+    for (const id of this.motion.keys()) if (!liveIds.has(id)) this.motion.delete(id);
+    // People seen in the previous frame are matched first. Only detections nobody live could claim
+    // may then revive a track the detector skipped, so a stale duplicate never competes with a live one.
+    const assigned = new Map<number, Track>();
+    const seenLastFrame = this.tracks.filter((t) => t.lastSeen === this.lastUpdate);
+    this.match(dets, seenLastFrame, now, false, assigned);
+    const skipped = this.tracks.filter((t) => t.lastSeen !== this.lastUpdate && now - t.lastSeen <= gapMs);
+    if (skipped.length) this.match(dets, skipped, now, true, assigned);
     const out = dets.map((d, i) => {
-      let t = assigned[i];
+      let t = assigned.get(i);
       if (!t) {
-        t = { id: this.nextId++, box: d.box, lastSeen: now, belief: {}, claimed: null, via: 'none', lastFaceAt: 0, faceMean: null, faceSamples: 0 };
+        t = { id: this.nextId++, box: [...d.box], lastSeen: now, belief: {}, claimed: null, via: 'none', lastFaceAt: 0, lastEvidenceAt: 0, faceMean: null, faceSamples: 0 };
         this.tracks.push(t);
+        this.motion.set(t.id, { vx: 0, vy: 0, samples: 1 });
+      } else {
+        const m = this.motion.get(t.id)!;
+        const dt = now - t.lastSeen;
+        const [oldX, oldY] = center(t.box);
+        const [newX, newY] = center(d.box);
+        const alpha = m.samples === 1 ? 1 : 0.7;
+        m.vx = (1 - alpha) * m.vx + alpha * (newX - oldX) / dt;
+        m.vy = (1 - alpha) * m.vy + alpha * (newY - oldY) / dt;
+        m.samples++;
       }
-      t.box = d.box;
+      t.box = [...d.box];
       t.lastSeen = now;
       return t;
     });
-    this.tracks = this.tracks.filter((t) => now - t.lastSeen < ttlMs);
+    this.lastUpdate = now;
     return out;
+  }
+
+  /** Mutual-best matching of unassigned detections against candidate tracks. */
+  private match(dets: Detection[], candidates: Track[], now: number, gapped: boolean, assigned: Map<number, Track>): void {
+    const scores = dets.map((d, i) => candidates.map((t) => {
+      if (assigned.has(i) || d.associationAmbiguous || !validBox(d.box)) return 0;
+      const shape = Math.min(d.box[2] / t.box[2], t.box[2] / d.box[2], d.box[3] / t.box[3], t.box[3] / d.box[3]);
+      if (shape < (gapped ? 0.55 : 0.4)) return 0;
+      const m = this.motion.get(t.id)!;
+      const dt = Math.min(250, now - t.lastSeen);
+      const dx = Math.max(-t.box[2] * 0.75, Math.min(t.box[2] * 0.75, m.vx * dt));
+      const dy = Math.max(-t.box[3] * 0.75, Math.min(t.box[3] * 0.75, m.vy * dt));
+      const predicted: NBox = [t.box[0] + dx, t.box[1] + dy, t.box[2], t.box[3]];
+      const overlap = iou(d.box, predicted);
+      const [cx, cy] = center(d.box);
+      const [px, py] = center(predicted);
+      const distance = Math.hypot((cx - px) / Math.max(d.box[2], t.box[2]), (cy - py) / Math.max(d.box[3], t.box[3]));
+      // After a missed frame the person must reappear close to where they were expected.
+      if (overlap < (gapped ? 0.3 : 0.1) || distance > (gapped ? 0.5 : 0.8)) return 0;
+      return overlap * 0.75 + Math.max(0, 1 - distance) * 0.25;
+    }));
+    const uniqueBest = (values: number[]): number => {
+      const order = values.map((score, index) => ({ score, index })).filter((p) => p.score >= 0.3).sort((a, b) => b.score - a.score);
+      return order.length && (!order[1] || order[0].score - order[1].score >= 0.12) ? order[0].index : -1;
+    };
+    const bestTrack = scores.map(uniqueBest);
+    const bestDetection = candidates.map((_, ti) => uniqueBest(scores.map((row) => row[ti])));
+    dets.forEach((_, i) => {
+      const ti = bestTrack[i];
+      if (ti >= 0 && bestDetection[ti] === i) assigned.set(i, candidates[ti]);
+    });
   }
 
   /** Every track still within its time-to-live, including ones not matched this frame. */
@@ -68,5 +238,7 @@ export class Tracker {
 
   reset(): void {
     this.tracks = [];
+    this.motion.clear();
+    this.lastUpdate = null;
   }
 }

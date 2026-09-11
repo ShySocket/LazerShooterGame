@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { clearDeep, saveDeep, signOut, type Account } from '../net/auth';
-import type { DeepProfile } from '../types';
-import { FACE_MODEL } from '../vision/human';
+import { BODY_MODEL, type DeepProfile } from '../types';
+import { FACE_MODEL, isCurrentFaceScan } from '../vision/human';
 import { Scanner } from './Scanner';
 
 interface Props {
@@ -15,7 +15,8 @@ interface Props {
 export function Profile({ account, deep, onDeepChange, onBack }: Props) {
   const [scanning, setScanning] = useState(false);
   const [busy, setBusy] = useState(false);
-  const current = deep && deep.faceModel === FACE_MODEL;
+  // The same test Enroll applies, so "scan saved" here never turns into a surprise face scan in a room.
+  const current = isCurrentFaceScan(deep);
 
   if (scanning) {
     return (
@@ -27,7 +28,7 @@ export function Profile({ account, deep, onDeepChange, onBack }: Props) {
         savingText="Saving your scan to your account."
         onCancel={() => setScanning(false)}
         onDone={async (r) => {
-          const d: DeepProfile = { faceModel: FACE_MODEL, face: r.face, body: r.body, updatedAt: Date.now() };
+          const d: DeepProfile = { faceModel: FACE_MODEL, bodyModel: BODY_MODEL, face: r.face, body: r.body, updatedAt: Date.now() };
           await saveDeep(account.uid, account.name, d);
           onDeepChange(d);
           setScanning(false);

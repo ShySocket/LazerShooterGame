@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { backend, MIN_PLAYERS } from '../net';
 import { CLOTHING_CONFLICT, type Player, type Room, type RoomSettings } from '../types';
 import { outfitConflict } from '../vision/clothing';
-import { FACE_MODEL } from '../vision/human';
+import { isCurrentFaceScan } from '../vision/human';
 import { haptic, sfx, unlockAudio } from '../audio/sfx';
 import { useAudioState } from '../hooks/useAudioState';
 
@@ -23,8 +23,9 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
   const players = Object.values(room.players).sort((a, b) => a.joinedAt - b.joinedAt);
   const connected = players.filter((p) => p.connected);
   const enrolled = connected.filter((p) => p.enrolled && room.profiles[p.id]);
-  // Profiles made by an older build lack the outfit or use another face model. They must re-enroll.
-  const stale = enrolled.filter((p) => !room.profiles[p.id].outfit?.front?.top || room.profiles[p.id].faceModel !== FACE_MODEL);
+  // Profiles made by an older build lack the outfit, use another face model, or carry damaged embeddings
+  // that could never match. They must re-enroll rather than play as an unhittable target.
+  const stale = enrolled.filter((p) => !room.profiles[p.id].outfit?.front?.top || !isCurrentFaceScan(room.profiles[p.id]));
 
   const conflicts: { a: Player; b: Player; sim: number }[] = [];
   for (let i = 0; i < enrolled.length; i++) {
