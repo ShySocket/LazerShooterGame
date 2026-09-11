@@ -24,6 +24,8 @@ export interface FaceObservation {
   /** Face box in full-frame normalised coordinates. */
   box: NBox;
   embedding: number[];
+  /** 0..1 from faceQuality(): how much a blurred, small face may be trusted. */
+  quality: number;
 }
 
 export interface OutfitObservation {
@@ -110,6 +112,8 @@ const FACE_FRESH_MS = 1500;
 export const CLOTHING_INTERVAL_MS = 250;
 /** Besides the crosshair target, this many other bodies get a face crop per frame, round-robin. */
 const EXTRA_CROPS = 1;
+/** Belief step per face frame; two frames of a good match are enough for a lock. */
+const FACE_BELIEF_ALPHA = 0.45;
 
 /**
  * Everything between detector output and a shot verdict: tracking, evidence fusion, identity
@@ -166,16 +170,17 @@ export class VisionPipeline<C = unknown> {
   }
 
   /** Fold a face seen on a track into its running mean and belief. */
-  private applyFace(t: Track, emb: number[], now: number): void {
+  private applyFace(t: Track, emb: number[], quality: number, now: number): void {
     const { candidates } = this.config;
     const current = topBelief(t);
-    const raw = faceEvidence(emb, candidates, unitSimilarity, FACE_CALIB);
+    const raw = faceEvidence(emb, candidates, unitSimilarity, FACE_CALIB, quality);
     const ranked = Object.entries(raw).sort((a, b) => b[1] - a[1]);
     if (current && ranked[0] && ranked[0][0] !== current.id && ranked[0][1] >= 0.8 && (raw[current.id] ?? 0) < 0.2) resetIdentity(t);
     const mean = updateFaceMean(t, emb);
-    const fe = faceEvidence(mean, candidates, unitSimilarity, FACE_CALIB);
+    const fe = faceEvidence(mean, candidates, unitSimilarity, FACE_CALIB, quality);
     const ev = combineEvidence({ face: fe, cloth: null, body: null });
-    if (ev) updateBelief(t, ev, 0.35, now);
+    // The running mean already smooths frame noise, so the belief may follow it quickly.
+    if (ev) updateBelief(t, ev, FACE_BELIEF_ALPHA, now);
     t.via = 'face';
     t.lastFaceAt = now;
   }
@@ -244,7 +249,7 @@ export class VisionPipeline<C = unknown> {
       }
       for (const [owner, matched] of owned) {
         if (matched.length !== 1) continue;
-        this.applyFace(tracks[owner], matched[0].embedding, now);
+        this.applyFace(tracks[owner], matched[0].embedding, matched[0].quality, now);
         faced.add(owner);
       }
     }

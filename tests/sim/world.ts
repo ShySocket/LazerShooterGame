@@ -1,7 +1,7 @@
 import type { BodyResult, FaceResult } from '@vladmandic/human';
 import type { BodyProps, OutfitSig, Profile } from '../../src/types';
 import { BODY_MODEL } from '../../src/types';
-import { FACE_MODEL } from '../../src/vision/embedding';
+import { FACE_MODEL, faceQuality } from '../../src/vision/embedding';
 import type { NBox } from '../../src/vision/geometry';
 import type { Detection } from '../../src/vision/tracker';
 import type { FaceObservation, OutfitObservation } from '../../src/vision/pipeline';
@@ -74,7 +74,8 @@ const lerp = (d: number, pts: [number, number][]): number => {
 const pBody = (d: number) => lerp(d, [[2, 0.97], [4, 0.93], [6, 0.86], [8, 0.72], [10, 0.5]]);
 const pFaceBox = (d: number) => lerp(d, [[2, 0.95], [4, 0.8], [6, 0.4], [8, 0.1]]);
 const pCrop = (d: number) => lerp(d, [[2, 0.95], [4, 0.9], [6, 0.7], [8, 0.35], [10, 0.1]]);
-const simOwn = (d: number) => lerp(d, [[2, 0.62], [4, 0.58], [6, 0.5], [8, 0.42]]);
+/** Live-vs-enrolment similarity by distance: clean faces measure ~0.5 median, blur at 30 px keeps ~0.7 of it. */
+const simOwn = (d: number) => lerp(d, [[2, 0.55], [4, 0.5], [6, 0.42], [8, 0.36]]);
 
 function unit(v: number[]): number[] {
   const n = Math.hypot(...v) || 1;
@@ -217,15 +218,15 @@ export function cropFaces(rng: Rng, scene: Scene, region: NBox, model: DetectorM
     const cx = fb[0] + fb[2] / 2;
     const cy = fb[1] + fb[3] / 2;
     if (cx < r[0] || cx > r[0] + r[2] || cy < r[1] || cy > r[1] + r[3]) continue;
-    // The zoom doubles the effective resolution, and the yaw filter drops most side views.
-    if (facePx(p) * 2 < 24) continue;
+    // The head crop magnifies the face, and the yaw filter drops most side views.
+    if (facePx(p) < 34) continue;
     const availability = pCrop(p.distance) * (p.facing === 'side' ? 0.35 : 1) * model.faceAvailability;
     if (!rng.chance(availability)) continue;
     // Similarity to the true face, so that similarity to the enrolled samples lands near simOwn.
     const target = (simOwn(p.distance) + model.faceSimShift) / 0.78;
     const cos = Math.max(0.1, Math.min(0.98, target + rng.gauss(0, 0.07)));
     const jitter = () => rng.gauss(0, 0.01) * fb[3];
-    out.push({ box: [fb[0] + jitter(), fb[1] + jitter(), fb[2], fb[3]], embedding: withCosine(rng, p.face, cos) });
+    out.push({ box: [fb[0] + jitter(), fb[1] + jitter(), fb[2], fb[3]], embedding: withCosine(rng, p.face, cos), quality: faceQuality(facePx(p)) });
   }
   return out;
 }

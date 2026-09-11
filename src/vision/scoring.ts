@@ -26,16 +26,21 @@ export function faceEvidence(
   cands: Candidate[],
   sim: (a: number[], b: number[]) => number,
   calib: FaceCalib,
+  quality = 1,
 ): Record<string, number> {
   const ev: Record<string, number> = {};
   let top = 0;
+  // A small, blurred face may still name somebody, but never with full confidence, and its failure
+  // to match is equally uncertain: the stranger vote shrinks with it rather than winning by default.
+  const weight = 0.6 + 0.4 * clamp01(quality);
   for (const c of cands) {
     let best = 0;
     for (const f of c.profile.face ?? []) best = Math.max(best, sim(embedding, f));
     ev[c.id] = clamp01((best - calib.reject) / (calib.accept - calib.reject));
     top = Math.max(top, ev[c.id]);
   }
-  ev[UNKNOWN_ID] = clamp01(1 - top);
+  for (const id of Object.keys(ev)) ev[id] *= weight;
+  ev[UNKNOWN_ID] = weight * clamp01(1 - top);
   return ev;
 }
 

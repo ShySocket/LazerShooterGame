@@ -26,13 +26,15 @@ export function Enroll({ code, pid, me, deep, onLeave }: Props) {
         </span>
       }
       savingText={useDeep ? 'Uploading your outfit for this game.' : 'Uploading your face, outfit, and body signature.'}
+      referenceFace={useDeep ? deep!.face[0] : undefined}
       onCancel={onLeave}
       onDone={async (r) => {
         if (!r.outfit) throw new Error('Outfit scan missing');
         await backend.setProfile(code, pid, {
           faceModel: FACE_MODEL,
           bodyModel: BODY_MODEL,
-          face: useDeep ? deep!.face : r.face,
+          // Close selfie angles plus the samples taken from metres away during the body scan.
+          face: [...(useDeep ? deep!.face : r.face), ...r.farFace],
           outfit: r.outfit,
           // Use current-frame ratios; older saved scans may use a different geometry convention.
           body: r.body ?? null,

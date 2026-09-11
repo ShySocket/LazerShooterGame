@@ -6,8 +6,8 @@ import { useHumanStatus } from '../hooks/useHumanStatus';
 import { buildDetections, containsPoint, type Detection } from '../vision/tracker';
 import { toNBox, type NBox } from '../vision/geometry';
 import { bodyProportions, FrameSampler, outfitSignature } from '../vision/clothing';
-import { compactEmbedding, configurePass, FACE_MODEL, faceYawDeg, getHuman, isValidEmbedding, MAX_YAW_DEG, unitEmbedding } from '../vision/human';
-import { faceRegion, ZoomPass } from '../vision/zoom';
+import { compactEmbedding, configurePass, FACE_MODEL, faceQuality, faceYawDeg, getHuman, isValidEmbedding, MAX_YAW_DEG, MIN_FACE_PX, unitEmbedding } from '../vision/human';
+import { faceRegion, headRegion, ZoomPass } from '../vision/zoom';
 import { VisionPipeline, type FaceObservation, type LockState } from '../vision/pipeline';
 import { drawOverlay } from '../vision/overlay';
 import { topBelief } from '../vision/scoring';
@@ -65,7 +65,6 @@ export interface BenchStats {
   shots: Shot[];
 }
 
-const MIN_FACE_PX = 24;
 const FIRE_EVERY_MS = 1300;
 
 function emptyStats(): BenchStats {
@@ -302,11 +301,12 @@ export function Bench() {
         return img ? { sig: outfitSignature(img, d.body), props: bodyProportions(d.body) } : null;
       },
       cropFaces: async (_region, d): Promise<FaceObservation[]> => {
-        const region: NBox = d.face ? faceRegion(toNBox(d.face.boxRaw), aspect) : d.box;
+        const region: NBox = d.face ? faceRegion(toNBox(d.face.boxRaw), aspect) : d.body ? headRegion(d.body, d.box, aspect) : d.box;
         const faces = await zoom.current.run(human, frame.frame, region);
         return faces
-          .filter((zf) => isValidEmbedding(zf.face.embedding) && zf.face.score >= 0.7 && faceYawDeg(zf.face) <= MAX_YAW_DEG && Math.min(zf.box[2] * res.width, zf.box[3] * res.height) >= MIN_FACE_PX)
-          .map((zf) => ({ box: zf.box, embedding: unitEmbedding(zf.face.embedding!) }));
+          .map((zf) => ({ zf, px: Math.min(zf.box[2] * res.width, zf.box[3] * res.height) }))
+          .filter(({ zf, px }) => isValidEmbedding(zf.face.embedding) && zf.face.score >= 0.7 && faceYawDeg(zf.face) <= MAX_YAW_DEG && px >= MIN_FACE_PX)
+          .map(({ zf, px }) => ({ box: zf.box, embedding: unitEmbedding(zf.face.embedding!), quality: faceQuality(px) }));
       },
       isCurrent: frame.isCurrent,
     });

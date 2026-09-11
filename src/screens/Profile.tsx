@@ -28,7 +28,7 @@ export function Profile({ account, deep, onDeepChange, onBack }: Props) {
         savingText="Saving your scan to your account."
         onCancel={() => setScanning(false)}
         onDone={async (r) => {
-          const d: DeepProfile = { faceModel: FACE_MODEL, bodyModel: BODY_MODEL, face: r.face, body: r.body, updatedAt: Date.now() };
+          const d: DeepProfile = { faceModel: FACE_MODEL, bodyModel: BODY_MODEL, face: [...r.face, ...r.farFace], body: r.body, updatedAt: Date.now() };
           await saveDeep(account.uid, account.name, d);
           onDeepChange(d);
           setScanning(false);

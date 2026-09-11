@@ -11,8 +11,8 @@ import { buildDetections, type Track } from '../vision/tracker';
 import { crosshairRect, toNBox, type NBox } from '../vision/geometry';
 import { bodyProportions, FrameSampler, outfitSignature } from '../vision/clothing';
 import { topBelief, type Candidate } from '../vision/scoring';
-import { faceYawDeg, isCurrentFaceScan, isValidEmbedding, MAX_YAW_DEG, unitEmbedding } from '../vision/human';
-import { faceRegion, ZoomPass } from '../vision/zoom';
+import { faceQuality, faceYawDeg, isCurrentFaceScan, isValidEmbedding, MAX_YAW_DEG, MIN_FACE_PX, unitEmbedding } from '../vision/human';
+import { faceRegion, headRegion, ZoomPass } from '../vision/zoom';
 import { VisionPipeline, type FaceObservation, type LockState, type ShotSettlement } from '../vision/pipeline';
 import { shotLog } from '../debug/shotLog';
 import { rangeTest } from '../debug/rangeTest';
@@ -36,8 +36,6 @@ interface ShotContext {
 type Kind = 'info' | 'good' | 'warn' | 'bad';
 
 const RANGE_DISTANCES = [2, 4, 6, 8];
-/** Faces smaller than this in the full frame are too blurry for a trustworthy embedding. */
-const MIN_FACE_PX = 24;
 
 export function Game({ room, me, pid, onLeave }: Props) {
   const isHost = room.hostId === pid;
@@ -326,11 +324,12 @@ export function Game({ room, me, pid, onLeave }: Props) {
         return { sig: outfitSignature(img, d.body), props: bodyProportions(d.body) };
       },
       cropFaces: async (_region, d): Promise<FaceObservation[]> => {
-        const region: NBox = d.face ? faceRegion(toNBox(d.face.boxRaw), aspect) : d.box;
+        const region: NBox = d.face ? faceRegion(toNBox(d.face.boxRaw), aspect) : d.body ? headRegion(d.body, d.box, aspect) : d.box;
         const faces = await zoom.current.run(human, frame.frame, region);
         return faces
-          .filter((zf) => isValidEmbedding(zf.face.embedding) && zf.face.score >= 0.7 && faceYawDeg(zf.face) <= MAX_YAW_DEG && Math.min(zf.box[2] * res.width, zf.box[3] * res.height) >= MIN_FACE_PX)
-          .map((zf) => ({ box: zf.box, embedding: unitEmbedding(zf.face.embedding!) }));
+          .map((zf) => ({ zf, px: Math.min(zf.box[2] * res.width, zf.box[3] * res.height) }))
+          .filter(({ zf, px }) => isValidEmbedding(zf.face.embedding) && zf.face.score >= 0.7 && faceYawDeg(zf.face) <= MAX_YAW_DEG && px >= MIN_FACE_PX)
+          .map(({ zf, px }) => ({ box: zf.box, embedding: unitEmbedding(zf.face.embedding!), quality: faceQuality(px) }));
       },
       isCurrent: frame.isCurrent,
     });

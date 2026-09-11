@@ -4,7 +4,7 @@ import type { BodyProps, OutfitSig } from '../types';
 import { useCamera, type Facing } from '../hooks/useCamera';
 import { useVisionLoop, type VisionFrame } from '../hooks/useVisionLoop';
 import { useHumanStatus } from '../hooks/useHumanStatus';
-import { compactEmbedding, FACE_SAMPLES, faceSimilarity, faceYawDeg, MAX_YAW_DEG, SAME_PERSON_MIN, isValidEmbedding } from '../vision/human';
+import { compactEmbedding, FACE_SAMPLES, faceSimilarity, faceYawDeg, MAX_YAW_DEG, MIN_FACE_PX, SAME_PERSON_MIN, isValidEmbedding } from '../vision/human';
 import { averageOutfits, averageProps, bodyProportions, FrameSampler, outfitRegions, outfitSignature } from '../vision/clothing';
 import { drawOverlay } from '../vision/overlay';
 import { iou, toNBox, type NBox } from '../vision/geometry';
@@ -24,11 +24,15 @@ const FACE_PROMPTS: string[] = [
   'Smile, or make a face',
 ];
 const BODY_SAMPLES = 12;
+const FAR_FACE_SAMPLES = 6;
+const FAR_FACE_INTERVAL_MS = 350;
 const PROP_COUNTDOWN = 5;
 const BODY_SAMPLE_INTERVAL_MS = 150;
 
 export interface ScanResult {
   face: number[][];
+  /** Face samples taken during the body scan, i.e. from 2 to 3 m: what the game sees in a round. */
+  farFace: number[][];
   body: BodyProps | null;
   outfit: { front: OutfitSig; back: OutfitSig } | null;
 }
@@ -44,6 +48,8 @@ interface Props {
   header?: ReactNode;
   /** Text while the result is being saved. */
   savingText?: string;
+  /** A known face sample of this player, so far samples taken during the body scan are verified as theirs. */
+  referenceFace?: number[];
   onDone: (r: ScanResult) => Promise<void>;
   onCancel?: () => void;
 }
@@ -52,7 +58,7 @@ type Stage = 'face' | 'bodyMode' | 'bodyFront' | 'bodyBack' | 'saving' | 'error'
 type BodyMode = 'helper' | 'prop';
 
 /** Camera-driven capture of face angles, outfit colours, and body ratios. Which parts run is up to the caller. */
-export function Scanner({ face, body, outfit, header, savingText, onDone, onCancel }: Props) {
+export function Scanner({ face, body, outfit, header, savingText, referenceFace, onDone, onCancel }: Props) {
   const { ready: humanReady, status } = useHumanStatus();
   const first: Stage = face ? 'face' : 'bodyMode';
   const [stage, setStageState] = useState<Stage>(first);
@@ -69,6 +75,8 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
   const { videoRef, ready: camReady, error: camError, retry: retryCamera } = useCamera(facing, stage !== 'saving');
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const faces = useRef<number[][]>([]);
+  const farFaces = useRef<number[][]>([]);
+  const lastFarFace = useRef(0);
   const outfits = useRef<OutfitSig[]>([]);
   const props = useRef<BodyProps[]>([]);
   const stageProps = useRef<BodyProps[]>([]);
@@ -108,6 +116,7 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
     try {
       await onDone({
         face: faces.current,
+        farFace: farFaces.current,
         body: averageProps(props.current),
         outfit: outfit && front.current && back ? { front: front.current, back } : null,
       });
@@ -121,6 +130,7 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
   const restart = () => {
     window.clearInterval(countdownTimer.current);
     faces.current = [];
+    farFaces.current = [];
     outfits.current = [];
     props.current = [];
     stageProps.current = [];
@@ -231,6 +241,21 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
         return;
       }
       const b = res.body[0];
+      // The body scan is the one moment the enrolment camera is metres away, like an opponent's phone.
+      // Face samples from here match a round far better than the close selfie set alone.
+      if (recordingRef.current && res.face.length === 1 && farFaces.current.length < FAR_FACE_SAMPLES && now - lastFarFace.current > FAR_FACE_INTERVAL_MS) {
+        lastFarFace.current = now;
+        const fb = toNBox(res.face[0].boxRaw);
+        if (Math.min(fb[2] * res.width, fb[3] * res.height) >= MIN_FACE_PX) {
+          const crops = await zoom.current.run(human, context.frame, faceRegion(fb, res.width / res.height));
+          if (!isCurrent()) return;
+          const f = crops.length === 1 ? crops[0].face : null;
+          const reference = referenceFace ?? faces.current[0];
+          if (f && isValidEmbedding(f.embedding) && f.score >= 0.7 && faceYawDeg(f) <= MAX_YAW_DEG && (!reference || faceSimilarity(f.embedding, reference) >= SAME_PERSON_MIN)) {
+            farFaces.current.push(compactEmbedding(f.embedding));
+          }
+        }
+      }
       const regions = b ? outfitRegions(b, 0.4, res.width / res.height) : null;
       if (!b || !regions?.top) {
         if (lastBodySample.current && now - lastBodySample.current > 1500) clearSamples();

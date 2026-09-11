@@ -3,8 +3,23 @@ import { roundTo } from '../util/num';
 /** Square-padded InsightFace embeddings; older distorted scans must be repeated. */
 export const FACE_MODEL = 'insightface-mobilenet-swish-sq';
 export const FACE_EMBEDDING_SIZE = 512;
-export const FACE_CALIB = { reject: 0.28, accept: 0.6 };
-export const SAME_PERSON_MIN = 0.25;
+/**
+ * Measured on InsightFace MobileNet-Swish with square crops (real photos, ~100 px faces): impostor
+ * pairs median 0.12, 90th percentile 0.27, worst 0.43; the same person across photos median 0.49,
+ * 90th percentile 0.57. `reject` sits at the impostor 90th percentile, `accept` at a solid genuine match.
+ */
+export const FACE_CALIB = { reject: 0.26, accept: 0.5 };
+export const SAME_PERSON_MIN = 0.3;
+/** Faces smaller than this in the full frame are too blurred for a trustworthy embedding. */
+export const MIN_FACE_PX = 34;
+/** Above this size a face embedding gets full weight; between, blur discounts it. */
+export const FULL_QUALITY_FACE_PX = 56;
+
+/** 0..1 confidence discount for a face of `px` pixels: a 30 px face keeps only ~0.7 of its similarity. */
+export function faceQuality(px: number): number {
+  if (!Number.isFinite(px) || px < MIN_FACE_PX) return 0;
+  return Math.max(0, Math.min(1, (px - MIN_FACE_PX) / (FULL_QUALITY_FACE_PX - MIN_FACE_PX)));
+}
 export const MAX_YAW_DEG = 45;
 
 /** Reject corrupt, missing, wrong-model, or zero-vector profile samples. */

@@ -1,4 +1,4 @@
-import type { FaceResult, Human } from '@vladmandic/human';
+import type { BodyResult, FaceResult, Human } from '@vladmandic/human';
 import { clampBox, type NBox } from './geometry';
 import { configurePass } from './human';
 
@@ -62,6 +62,24 @@ export class ZoomPass {
       box: [r[0] + f.boxRaw[0] * kx * r[2], r[1] + f.boxRaw[1] * ky * r[3], f.boxRaw[2] * kx * r[2], f.boxRaw[3] * ky * r[3]],
     }));
   }
+}
+
+/**
+ * Where to look for the face of a body the face detector missed: around the head landmarks when
+ * the pose has them, else the top of the body box. Far smaller than the whole body box, so the
+ * face is magnified several times more, which is what finds a face at 5 to 8 m.
+ */
+export function headRegion(body: Pick<BodyResult, 'keypoints'>, box: NBox, aspect: number): NBox {
+  const head = body.keypoints.filter((p) => ['nose', 'leftEye', 'rightEye', 'leftEar', 'rightEar'].includes(p.part) && p.score >= 0.3 && [p.positionRaw[0], p.positionRaw[1]].every((v) => typeof v === 'number' && Number.isFinite(v)));
+  if (head.length >= 2) {
+    const cx = head.reduce((s, p) => s + p.positionRaw[0], 0) / head.length;
+    const cy = head.reduce((s, p) => s + p.positionRaw[1], 0) / head.length;
+    // Head height is about a third of shoulder width; take a generous square around it.
+    const h = Math.max(box[3] * 0.22, box[2] * aspect * 0.6);
+    const w = h / aspect;
+    return [cx - w / 2, cy - h / 2, w, h];
+  }
+  return [box[0], box[1], box[2], Math.min(box[3], box[2] * aspect * 1.2)];
 }
 
 /**
