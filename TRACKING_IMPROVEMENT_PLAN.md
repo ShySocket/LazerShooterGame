@@ -407,6 +407,18 @@ One commit per item, tests written with the code; `npm test`, `npm run typecheck
 7. **Elapsed-time smoothing** in `updateBelief` and time-spaced live-enrolment samples; slow-phone stays at or above 95%. _(done in fb1e22f; items 5 and 6 in 6d038b3 and a9d620b; lookalike-faces 76% to 89%.)_
 8. **Track states and scale velocity** on the existing predictor (tentative, confirmed, lost, retired; lost tracks match but never lock or hit); tests at 100, 200 and 400 ms for constant motion, dropout, pause, reversal, approach, and under the pan scenario. _(done in e5b1bb2: plus a stationary hypothesis and a tentative-win margin found by replaying the pan-crossing traces; range-8m 2.5 to 1.0 ids, occlusion 3.0 to 2.3.)_
 9. **Continuity target on the sweep**: occlusion misses under 15%, range-8m under 12%, crossing under 10%, with zero wrong hits and zero wrong locks.
+   Done (140cecc, c7c7a3c). The miss column has included off-torso aims since item 4a, so the targets are read as hit rate over possible shots. Before is the item 7 tree, after is the item 9 tree, 100 seeds each, zero wrong hits and zero wrong locks throughout:
+
+   | Scenario | hit before | hit after | misses before | misses after | track ids per run before | after |
+   | --- | --- | --- | --- | --- | --- | --- |
+   | occlusion | 96% | 100% | 404 | 334 | 3.0 | 2.3 |
+   | range-8m | 87% | 91% | 545 | 418 | 2.5 | 1.0 |
+   | crossing | 84% | 85% | 193 | 175 | 1.5 | 1.5 |
+   | pan-crossing | 55% | 76% | 505 | 285 | 3.2 | 2.2 |
+   | crossing-backs | 84% | 84% | 203 | 186 | 1.8 | 1.7 |
+   | hiccups | 91% | 92% | 35 | 13 | 1.2 | 1.0 |
+
+   Root causes fixed, in order: a tentative neighbour track turning a good match into a tie (item 8), the velocity prediction overshooting a pan reversal (stationary hypothesis, item 8), Bob's body inheriting Alice's track as he emerged from behind her (face-presence cue and the crossing rule), and FIRE answering miss from a period-old frame while everybody had moved (motion-predicted nomination, still confirmed only by a post-tap sighting). What remains in crossing is the ambiguity refusal when two bodies cover the dot: 20 of the 24 misses in 12 seeds, plus 4 bursts refused for the same reason. That rule stays.
 10. **Frame timing**: `requestVideoFrameCallback` with fallback, drop superseded work, per-stage profile (9.1 to 9.3); 9.4 only if the profile says so.
 11. **Detector-output recording and replay** (former 2.6), numbers only.
 12. **Real-phone validation set** (section 10) and threshold selection on it (7.7, 7.8), plus 8.6 and 8.7.
