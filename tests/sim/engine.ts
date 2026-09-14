@@ -226,6 +226,10 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
     const raw = detect(rng, scene, opts.detector);
     const dets = buildDetections(raw.bodies, raw.faces);
     const crosshair = aim();
+    // The lock is judged against the scene as it was when the frame was captured. The label appears
+    // one inference period later, but it describes what the detector saw; judging it against a
+    // scene the taps have since advanced would penalise display latency, not recognition.
+    const captureTruth = underDot(crosshair);
     const crops = dets.length > 1 ? 2 : dets.length;
     const slow = rng.chance(opts.hiccupChance) ? opts.hiccupFactor : 1;
     const completeAt = capturedAt + (opts.inferenceMs + crops * opts.cropMs) * slow;
@@ -273,7 +277,7 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
     if (targetDet >= 0) seenTrackIds.add(outcome.tracks[targetDet].id);
     const lock: LockState | null = outcome.lock;
     if (lock?.kind === 'lock') {
-      const truth = underDot(crosshair);
+      const truth = captureTruth;
       if (!lockOk(truth, lock.id)) {
         result.wrongLockFrames++;
         recordWrong(capturedAt, `LOCK ${lock.id} shown while visible under the dot: ${truth.visible?.id ?? 'nobody'}`);
