@@ -16,7 +16,12 @@ import { Rng } from './rng';
 
 export const FRAME_W = 720;
 export const FRAME_H = 1280;
-const DIM = 64;
+/**
+ * Face vector length. Close to the real model's 512 so the random-cosine spread between unrelated
+ * faces (about 1/sqrt(DIM)) matches reality, but not exactly 512: that length would make the game
+ * apply the real model's mean-centring to these synthetic vectors, which is meaningless for them.
+ */
+const DIM = 511;
 /** Vertical field of view of a phone rear camera in portrait, in metres of scene per metre of distance. */
 const FOV_M_PER_M = 1.15;
 const PERSON_H = 1.7;
@@ -39,13 +44,25 @@ export interface PersonSpec {
   topHue: number;
   /** Saturation/value bin 0..3 of the top; set it to make two tops identical, otherwise random. */
   topShade?: number;
+  /** Hue bin of the trousers; random unless set (set it equal to make two outfits identical). */
+  bottomHue?: number;
+  /** Hair colour bin 0..2; random unless set. */
+  hairBin?: number;
   /** Optional: this person's face and outfit are copies of another id (a mirror, a twin). */
   copyOf?: string;
+  /** Optional: this person's face resembles another id's at this cosine (siblings, a look-alike). */
+  faceLike?: { id: string; cos: number };
+  /** Optional: this person wears exactly the same outfit (top, trousers, hair) as another id. */
+  outfitOf?: string;
+  /** Changes of behaviour during the round, applied once the scene clock passes `at` seconds. */
+  script?: { at: number; facing?: Facing; vx?: number; vd?: number }[];
 }
 
 export interface Person extends PersonSpec {
   face: number[];
   top: number[];
+  bottom: number[];
+  hair: number[];
   props: BodyProps;
   faceSamples: number[][];
   outfitFront: OutfitSig;
@@ -113,6 +130,8 @@ function perturb(rng: Rng, h: number[], amount: number): number[] {
 
 export interface Scene {
   people: Person[];
+  /** Scene clock in seconds, advanced by step(). */
+  time: number;
   profiles: Record<string, Profile>;
   /** The shooter's own profile; it is a candidate decoy like everyone else's. */
   selfId: string;
@@ -125,15 +144,19 @@ export function buildScene(rng: Rng, specs: PersonSpec[], selfId = 'me'): Scene 
   const byId = new Map<string, Person>();
   const make = (spec: PersonSpec): Person => {
     const src = spec.copyOf ? byId.get(spec.copyOf) : undefined;
-    const face = src ? src.face : unit(randomUnit(rng).map((x, i) => x + 0.5 * common[i]));
+    const like = spec.faceLike ? byId.get(spec.faceLike.id) : undefined;
+    const face = src ? src.face : like ? withCosine(rng, like.face, spec.faceLike!.cos) : unit(randomUnit(rng).map((x, i) => x + 0.5 * common[i]));
+    const twin = spec.outfitOf ? byId.get(spec.outfitOf) : undefined;
     const shade = src ? 0 : spec.topShade ?? Math.floor(rng.next() * 4);
-    const top = src ? src.top : topHistogram(spec.topHue, shade);
+    const top = src ? src.top : twin ? twin.top : topHistogram(spec.topHue, shade);
+    const bottom = src ? src.bottom : twin ? twin.bottom : topHistogram(spec.bottomHue ?? Math.floor(rng.next() * 12), Math.floor(rng.next() * 4));
+    const hair = src ? src.hair : twin ? twin.hair : topHistogram(spec.hairBin ?? Math.floor(rng.next() * 3), Math.floor(rng.next() * 2));
     const props: BodyProps = src
       ? src.props
       : { shoulderTorso: 0.75 + rng.gauss(0, 0.12), hipShoulder: 0.85 + rng.gauss(0, 0.1), legTorso: 1.8 + rng.gauss(0, 0.25), headShoulder: 0.42 + rng.gauss(0, 0.06) };
     const faceSamples = src ? src.faceSamples : Array.from({ length: 8 }, () => withCosine(rng, face, 0.78 + rng.gauss(0, 0.04)));
-    const sides = () => ({ top: perturb(rng, top, 0.12) });
-    const person: Person = { ...spec, face, top, props, faceSamples, outfitFront: src ? src.outfitFront : sides(), outfitBack: src ? src.outfitBack : sides() };
+    const sides = (): OutfitSig => ({ top: perturb(rng, top, 0.12), thighs: perturb(rng, bottom, 0.12), shins: perturb(rng, bottom, 0.15), hair: perturb(rng, hair, 0.15) });
+    const person: Person = { ...spec, face, top, bottom, hair, props, faceSamples, outfitFront: src ? src.outfitFront : sides(), outfitBack: src ? src.outfitBack : sides() };
     byId.set(spec.id, person);
     return person;
   };
@@ -143,7 +166,7 @@ export function buildScene(rng: Rng, specs: PersonSpec[], selfId = 'me'): Scene 
     if (!p.player) continue;
     profiles[p.id] = { faceModel: FACE_MODEL, face: p.faceSamples, outfit: { front: p.outfitFront, back: p.outfitBack }, body: p.props, bodyModel: BODY_MODEL };
   }
-  return { people, profiles, selfId };
+  return { people, profiles, selfId, time: 0 };
 }
 
 /** Where a person appears in the frame right now. */
@@ -169,6 +192,32 @@ export interface DetectedFrame {
   owner: WeakMap<object, Person | null>;
 }
 
+/** Fraction of `box` covered by `other`. */
+function covered(box: NBox, other: NBox): number {
+  const x1 = Math.max(box[0], other[0]);
+  const y1 = Math.max(box[1], other[1]);
+  const x2 = Math.min(box[0] + box[2], other[0] + other[2]);
+  const y2 = Math.min(box[1] + box[3], other[1] + other[3]);
+  return Math.max(0, x2 - x1) * Math.max(0, y2 - y1) / (box[2] * box[3]);
+}
+
+/** How much of this person is hidden behind people standing nearer to the camera. */
+export function occlusion(scene: Scene, p: Person): number {
+  let worst = 0;
+  for (const q of scene.people) if (q !== p && q.distance < p.distance) worst = Math.max(worst, covered(personBox(p), personBox(q)));
+  return worst;
+}
+
+/** Whether a point on this person is hidden by somebody nearer. */
+function pointHidden(scene: Scene, p: Person, x: number, y: number): boolean {
+  for (const q of scene.people) {
+    if (q === p || q.distance >= p.distance) continue;
+    const [bx, by, bw, bh] = personBox(q);
+    if (x >= bx && x <= bx + bw && y >= by && y <= by + bh) return true;
+  }
+  return false;
+}
+
 /** Full-frame detector output for this instant: bodies and face boxes, no embeddings. */
 export function detect(rng: Rng, scene: Scene, model: DetectorModel): { bodies: BodyResult[]; faces: FaceResult[]; owner: Map<object, Person | null> } {
   const bodies: BodyResult[] = [];
@@ -178,7 +227,10 @@ export function detect(rng: Rng, scene: Scene, model: DetectorModel): { bodies: 
     const box = personBox(p);
     if (box[0] + box[2] < 0 || box[0] > 1) continue;
     const jitter = () => rng.gauss(0, 0.015) * box[3];
-    if (rng.chance(pBody(p.distance) * (1 - model.bodyDropout))) {
+    // A person mostly hidden behind somebody nearer is usually not found; half hidden, found less often.
+    const hidden = occlusion(scene, p);
+    const pVisible = hidden > 0.7 ? 0.1 : hidden > 0.35 ? 1 - hidden : 1;
+    if (rng.chance(pBody(p.distance) * (1 - model.bodyDropout) * pVisible)) {
       const raw: NBox = [box[0] + jitter(), box[1] + jitter(), box[2] * (1 + rng.gauss(0, 0.05)), box[3] * (1 + rng.gauss(0, 0.04))];
       const fb = faceBox(p);
       const nose: [number, number] = [fb[0] + fb[2] / 2, fb[1] + fb[3] * 0.6];
@@ -192,8 +244,10 @@ export function detect(rng: Rng, scene: Scene, model: DetectorModel): { bodies: 
       owner.set(body, p);
     }
     const facing = p.facing === 'front' ? 1 : p.facing === 'side' ? 0.5 : 0;
-    if (facing > 0 && facePx(p) >= 18 && rng.chance(pFaceBox(p.distance) * facing)) {
-      const fb = faceBox(p);
+    const fbox = faceBox(p);
+    const faceHidden = pointHidden(scene, p, fbox[0] + fbox[2] / 2, fbox[1] + fbox[3] / 2);
+    if (facing > 0 && !faceHidden && facePx(p) >= 18 && rng.chance(pFaceBox(p.distance) * facing)) {
+      const fb = fbox;
       const face = { boxRaw: [fb[0] + jitter() * 0.3, fb[1] + jitter() * 0.3, fb[2], fb[3]], boxScore: 0.6 + rng.next() * 0.35 } as unknown as FaceResult;
       faces.push(face);
       owner.set(face, p);
@@ -218,6 +272,7 @@ export function cropFaces(rng: Rng, scene: Scene, region: NBox, model: DetectorM
     const cx = fb[0] + fb[2] / 2;
     const cy = fb[1] + fb[3] / 2;
     if (cx < r[0] || cx > r[0] + r[2] || cy < r[1] || cy > r[1] + r[3]) continue;
+    if (pointHidden(scene, p, cx, cy)) continue;
     // The head crop magnifies the face, and the yaw filter drops most side views.
     if (facePx(p) < 34) continue;
     const availability = pCrop(p.distance) * (p.facing === 'side' ? 0.35 : 1) * model.faceAvailability;
@@ -241,12 +296,24 @@ export function sampleOutfit(rng: Rng, p: Person | null): OutfitObservation | nu
     legTorso: p.props.legTorso + rng.gauss(0, 0.12),
     headShoulder: p.props.headShoulder + rng.gauss(0, 0.03),
   };
-  return { sig: { top: perturb(rng, p.top, lighting) }, props: p.facing === 'side' ? null : props };
+  // Legs and hair are seen less reliably than the top: about a third of samples miss them.
+  const sig: OutfitSig = { top: perturb(rng, p.top, lighting) };
+  if (rng.chance(0.7)) sig.thighs = perturb(rng, p.bottom, lighting);
+  if (rng.chance(0.55)) sig.shins = perturb(rng, p.bottom, lighting + 0.05);
+  if (rng.chance(0.6)) sig.hair = perturb(rng, p.hair, lighting);
+  return { sig, props: p.facing === 'side' ? null : props };
 }
 
-/** Advance every person by dt seconds. */
+/** Advance every person by dt seconds, applying any scripted changes whose time has come. */
 export function step(scene: Scene, dtSec: number): void {
+  scene.time += dtSec;
   for (const p of scene.people) {
+    for (const s of p.script ?? []) {
+      if (s.at > scene.time || s.at <= scene.time - dtSec) continue;
+      if (s.facing) p.facing = s.facing;
+      if (s.vx !== undefined) p.vx = s.vx;
+      if (s.vd !== undefined) p.vd = s.vd;
+    }
     if (p.vx) p.x += p.vx * dtSec;
     if (p.vd) p.distance = Math.max(1.2, p.distance + p.vd * dtSec);
   }

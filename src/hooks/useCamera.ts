@@ -125,14 +125,22 @@ export function useCamera(facing: Facing, enabled = true) {
     attachRef.current = (v) => void attach(v);
 
     (async () => {
-      const preferred: MediaStreamConstraints = { audio: false, video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } } };
+      // 1080p when the phone offers it: the detectors resize the frame to their own input size, so the
+      // full-frame pass costs the same, but the magnified face crops read from the sharper frame and a
+      // face keeps full weight (see FULL_QUALITY_FACE_PX) about 1.5x farther away. Phones that only
+      // stream 720p (older iPhones) simply get 720p.
+      const preferred: MediaStreamConstraints = { audio: false, video: { facingMode: { ideal: facing }, width: { ideal: 1920 }, height: { ideal: 1080 } } };
       const fallbacks: MediaStreamConstraints[] = [{ audio: false, video: { facingMode: facing } }, { audio: false, video: true }];
       let stream: MediaStream | null = null;
       let lastError: unknown = null;
       for (const constraints of [preferred, ...fallbacks]) {
         try {
           if (!navigator.mediaDevices?.getUserMedia) throw new Error('This browser cannot open the camera here. The page must be served over HTTPS.');
-          stream = await withTimeout(navigator.mediaDevices.getUserMedia(constraints), 20000, 'The camera permission prompt');
+          const request = navigator.mediaDevices.getUserMedia(constraints);
+          // A request that resolves after the timeout (or after this effect was cancelled) must not
+          // leave a live camera stream running that nothing owns.
+          request.then((late) => { if (late !== stream && (cancelled || streamRef.current !== late)) late.getTracks().forEach((t) => t.stop()); }, () => undefined);
+          stream = await withTimeout(request, 20000, 'The camera permission prompt');
           break;
         } catch (e) {
           lastError = e;
@@ -149,6 +157,7 @@ export function useCamera(facing: Facing, enabled = true) {
         setError(explain(lastError));
         return;
       }
+      streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = stream;
       if (elRef.current) await attach(elRef.current);
     })();

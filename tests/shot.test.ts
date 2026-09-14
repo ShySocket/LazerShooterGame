@@ -4,8 +4,11 @@ import { crosshairRect, indexInSight } from '../src/vision/geometry';
 import { burstAllowanceMs, canConfirmShot, FramePeriod, freshFrame, MAX_STALE_FRAME_MS, snapshotTrack, STALE_FRAME_MS, staleAllowanceMs } from '../src/vision/shot';
 import { Tracker } from '../src/vision/tracker';
 
-test('the centre dot selects one person, never a larger neighbour touching the reticle edge', () => {
-  assert.equal(indexInSight([[0, 0, 0.49, 1], [0.49, 0.4, 0.1, 0.2]], [0.29, 0.35, 0.42, 0.3]), 1);
+test('the centre dot selects one person; a neighbour whose edge is within jitter of the dot makes the aim ambiguous', () => {
+  // A large neighbour ending clearly short of the dot does not steal or block the small person under it.
+  assert.equal(indexInSight([[0, 0, 0.45, 1], [0.49, 0.4, 0.1, 0.2]], [0.29, 0.35, 0.42, 0.3]), 1);
+  // The same neighbour ending 1% from the dot may really cover it: refuse rather than guess.
+  assert.equal(indexInSight([[0, 0, 0.49, 1], [0.49, 0.4, 0.1, 0.2]], [0.29, 0.35, 0.42, 0.3]), -1);
   assert.equal(indexInSight([[0, 0, 0.49, 1]], [0.29, 0.35, 0.42, 0.3]), -1);
 });
 

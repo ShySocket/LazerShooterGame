@@ -2,9 +2,10 @@ import { useEffect, useState } from 'react';
 import { backend, MIN_PLAYERS } from '../net';
 import { CLOTHING_CONFLICT, type Player, type Room, type RoomSettings } from '../types';
 import { outfitConflict } from '../vision/clothing';
-import { isCurrentFaceScan } from '../vision/human';
+import { FACE_CONFLICT, faceSimilarity, isCurrentFaceScan } from '../vision/human';
 import { haptic, sfx, unlockAudio } from '../audio/sfx';
 import { useAudioState } from '../hooks/useAudioState';
+import { ShotReview } from '../feedback/ShotReview';
 
 interface Props {
   room: Room;
@@ -33,6 +34,17 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
       if (!room.profiles[enrolled[i].id].outfit || !room.profiles[enrolled[j].id].outfit) continue;
       const sim = outfitConflict(room.profiles[enrolled[i].id].outfit, room.profiles[enrolled[j].id].outfit);
       if (sim > CLOTHING_CONFLICT) conflicts.push({ a: enrolled[i], b: enrolled[j], sim });
+    }
+  }
+
+  // Faces that read alike at this model's resolution: not a blocker (the outfit still separates them),
+  // but the players should know that a look-alike hit resolves by clothing alone.
+  const faceAlike: { a: Player; b: Player; sim: number }[] = [];
+  for (let i = 0; i < enrolled.length; i++) {
+    for (let j = i + 1; j < enrolled.length; j++) {
+      let best = 0;
+      for (const fa of room.profiles[enrolled[i].id].face ?? []) for (const fb of room.profiles[enrolled[j].id].face ?? []) best = Math.max(best, faceSimilarity(fa, fb));
+      if (best > FACE_CONFLICT) faceAlike.push({ a: enrolled[i], b: enrolled[j], sim: best });
     }
   }
 
@@ -89,6 +101,8 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
         </button>
       )}
 
+      <ShotReview room={room} pid={pid} />
+
       <h3>Players ({connected.length})</h3>
       <ul className="players">
         {players.map((p) => (
@@ -114,6 +128,13 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
           ) : (
             'They need to redo it.'
           )}
+        </div>
+      ))}
+
+      {faceAlike.map((c) => (
+        <div key={'face' + c.a.id + c.b.id} className="note">
+          {c.a.name} and {c.b.name} have faces the camera finds alike ({Math.round(c.sim * 100)}%). Hits between them will lean on outfits, so
+          keep those clearly different.
         </div>
       ))}
 

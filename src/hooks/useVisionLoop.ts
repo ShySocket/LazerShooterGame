@@ -70,7 +70,10 @@ export function useVisionLoop(
           console.warn('vision frame failed', e);
           await sleep(200);
         }
-        if (running) await new Promise(requestAnimationFrame);
+        // Yield so the page can paint, but never wait on requestAnimationFrame alone: an occluded but
+        // visible document (a webview behind another pane, a PWA in split view) stalls it to 1 Hz while
+        // timers keep running, and the loop would drop to one frame per second for no reason.
+        if (running) await Promise.race([new Promise(requestAnimationFrame), sleep(40)]);
       }
     })();
     return () => {

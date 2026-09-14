@@ -55,17 +55,36 @@ export function toNBox(b: number[]): NBox {
   return [b[0], b[1], b[2], b[3]];
 }
 
-/** Aim at the centre dot. Overlapping people at that point are ambiguous, so neither is selected. */
-export function indexInSight(boxes: NBox[], crosshair: NBox): number {
+/** Detector boxes jitter by a few percent of their size; a dot this close to another body's edge may really be on that body. */
+export const AIM_EDGE_BAND = { x: 0.05, y: 0.03 };
+
+/**
+ * Aim at the centre dot. Exactly one box must contain it; any other box whose edge is within the
+ * jitter band of the dot makes the aim ambiguous, so neither is selected: the detector cannot tell
+ * whose pixels are under the dot there, and a wrong hit costs more than a refused one.
+ */
+export function indexInSight(boxes: NBox[], crosshair: NBox, hits?: NBox[]): number {
   const cx = crosshair[0] + crosshair[2] / 2;
   const cy = crosshair[1] + crosshair[3] / 2;
   let best = -1;
+  let near = 0;
   for (let i = 0; i < boxes.length; i++) {
     const [x, y, w, h] = boxes[i];
-    if (w > 0 && h > 0 && cx >= x && cx <= x + w && cy >= y && cy <= y + h) {
+    if (!(w > 0 && h > 0)) continue;
+    if (cx >= x && cx <= x + w && cy >= y && cy <= y + h) {
       if (best !== -1) return -1;
       best = i;
+    } else {
+      const gx = w * AIM_EDGE_BAND.x;
+      const gy = h * AIM_EDGE_BAND.y;
+      if (cx >= x - gx && cx <= x + w + gx && cy >= y - gy && cy <= y + h + gy) near++;
     }
+  }
+  if (near > 0 || best < 0) return -1;
+  // The dot must also be on a part of that person the detector actually observed (head or torso).
+  if (hits) {
+    const [x, y, w, h] = hits[best];
+    if (!(w > 0 && h > 0 && cx >= x && cx <= x + w && cy >= y && cy <= y + h)) return -1;
   }
   return best;
 }

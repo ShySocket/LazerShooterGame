@@ -7,6 +7,14 @@ import type { Track } from './tracker';
  */
 export const STALE_FRAME_MS = 350;
 export const MAX_STALE_FRAME_MS = 1100;
+/**
+ * Geometry budget for an instant hit: a position older than this cannot say who is under the dot
+ * now, however well the person is known. Older frames only nominate a candidate for a burst that
+ * must see them under the dot again in a frame captured after the tap. Unlike the stale allowance
+ * this does not grow with a slow phone's frame period: slow inference widens the identity memory,
+ * not the aim.
+ */
+export const GEOMETRY_FRESH_MS = 250;
 
 /** How old a finished frame may be for a device that produces one every `periodMs`. */
 export function staleAllowanceMs(periodMs: number): number {
@@ -16,6 +24,11 @@ export function staleAllowanceMs(periodMs: number): number {
 
 export function freshFrame(capturedAt: number, now: number, maxAgeMs = STALE_FRAME_MS): boolean {
   return Number.isFinite(capturedAt) && now >= capturedAt && now - capturedAt <= maxAgeMs;
+}
+
+/** Whether a frame's positions are recent enough to decide a shot on their own. */
+export function geometryFresh(capturedAt: number, now: number): boolean {
+  return freshFrame(capturedAt, now, GEOMETRY_FRESH_MS);
 }
 
 /** A borderline shot may wait this long for more frames: at least two more frames on a slow phone. */
@@ -57,7 +70,7 @@ export class FramePeriod {
 
 /** Freeze beliefs as well as geometry so an in-flight frame cannot change the published shot target. */
 export function snapshotTrack(t: Track): Track {
-  return { ...t, box: [...t.box], belief: { ...t.belief }, claimed: t.claimed ? { ...t.claimed } : null, faceMean: t.faceMean?.slice() ?? null };
+  return { ...t, box: [...t.box], hit: [...t.hit], belief: { ...t.belief }, claimed: t.claimed ? { ...t.claimed } : null, faceMean: t.faceMean?.slice() ?? null };
 }
 
 /** A burst may only confirm the same still-visible target in a fresh frame captured after the tap. */

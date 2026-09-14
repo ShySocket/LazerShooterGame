@@ -90,3 +90,19 @@ test('poor face matches leave the stranger candidate ahead', () => {
   assert.equal(ev.alice, 0);
   assert.equal(ev[UNKNOWN_ID], 1);
 });
+
+test('a 512-d running face mean compares up to date after every update (no stale centred cache)', async () => {
+  const { centredSimilarity } = await import('../src/vision/embedding');
+  const { Tracker } = await import('../src/vision/tracker');
+  const { updateFaceMean } = await import('../src/vision/scoring');
+  const unit = (v: number[]) => { const n = Math.hypot(...v); return v.map((x) => x / n); };
+  const a = unit(Array.from({ length: 512 }, (_, i) => Math.sin(i * 0.37) + 0.3));
+  const b = unit(Array.from({ length: 512 }, (_, i) => Math.cos(i * 0.11) + 0.3));
+  const [track] = new Tracker().update([{ box: [0.3, 0.1, 0.2, 0.7] }], 100);
+  updateFaceMean(track, a);
+  for (let k = 0; k < 6; k++) {
+    const mean = updateFaceMean(track, b);
+    assert.equal(centredSimilarity(mean, b), centredSimilarity(mean.slice(), b));
+  }
+  assert.ok(centredSimilarity(track.faceMean!, b) > 0.95);
+});

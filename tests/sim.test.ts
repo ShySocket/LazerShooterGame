@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aggregate, SCENARIOS, type Aggregate } from './sim/engine';
+import { aggregate, SCENARIOS, simulate, type Aggregate } from './sim/engine';
 
 /**
  * Whole-round simulation of the shooting pipeline against a synthetic detector (tests/sim/world.ts).
@@ -15,7 +15,8 @@ const run = async (name: string): Promise<Aggregate> => {
   if (!results.has(name)) results.set(name, await aggregate(scenario, SEEDS));
   return results.get(name)!;
 };
-const hitRate = (a: Aggregate) => a.correct / Math.max(1, a.shots);
+/** Hits per shot that could have hit: the target was the visible person under the dot at the tap. */
+const hitRate = (a: Aggregate) => a.correct / Math.max(1, a.possible);
 const describe = (a: Aggregate) => `${a.name}: ${JSON.stringify(a)}`;
 
 test('face-on at close range nearly every shot lands and the target keeps one track', async () => {
@@ -89,4 +90,65 @@ test('dim light lowers confidence, not correctness', async () => {
   const a = await run('dim-light');
   assert.ok(hitRate(a) >= 0.8, describe(a));
   assert.equal(a.wrong, 0, describe(a));
+});
+
+test('a crossing with both players facing away never swaps their identities', async () => {
+  const a = await run('crossing-backs');
+  assert.equal(a.wrong, 0, describe(a));
+  assert.equal(a.wrongLockFrames, 0, describe(a));
+  assert.ok(hitRate(a) >= 0.75, describe(a));
+});
+
+test('a player walking in front of the target does not become the target', async () => {
+  const a = await run('occlusion');
+  assert.equal(a.wrong, 0, describe(a));
+  assert.equal(a.wrongLockFrames, 0, describe(a));
+  assert.ok(hitRate(a) >= 0.8, describe(a));
+});
+
+test('a target who turns their back and then faces the shooter again stays hittable throughout', async () => {
+  const a = await run('turn-around');
+  assert.equal(a.wrong, 0, describe(a));
+  assert.ok(hitRate(a) >= 0.85, describe(a));
+  assert.ok(a.trackChurn <= 2, describe(a));
+});
+
+test('a phone with occasional slow frames still fires and hits instead of refusing shots as stale', async () => {
+  const a = await run('hiccups');
+  assert.ok(a.stale <= 1, describe(a));
+  assert.ok(hitRate(a) >= 0.85, describe(a));
+  assert.equal(a.wrong, 0, describe(a));
+});
+
+test('players with look-alike faces are never confused with each other', async () => {
+  const a = await run('lookalike-faces');
+  assert.equal(a.wrong, 0, describe(a));
+  assert.equal(a.wrongLockFrames, 0, describe(a));
+});
+
+/**
+ * Seeds that once produced a wrong hit or a wrong lock in a 100-seed sweep (2026-09-13 review). The
+ * occlusion ones were instant hits from a frame whose geometry predated the nearer player moving out
+ * from under the dot; the stranger ones were single false player-lock frames.
+ */
+const REGRESSION_SEEDS: [string, number][] = [
+  ['occlusion', 60],
+  ['stranger', 23],
+  ['occlusion', 39],
+  ['stranger', 45],
+  ['stranger', 61],
+];
+for (const [name, seed] of REGRESSION_SEEDS) {
+  test(`regression: ${name} seed ${seed} has no wrong hit and no wrong lock`, async () => {
+    const scenario = SCENARIOS.find((s) => s.name === name)!;
+    const r = await simulate(scenario, { seed });
+    assert.equal(r.counts.wrong, 0, r.wrongTraces.map((t) => t.join('\n')).join('\n\n'));
+    assert.equal(r.wrongLockFrames, 0, r.wrongTraces.map((t) => t.join('\n')).join('\n\n'));
+  });
+}
+
+test('a stranger wearing the same top as a player is never hit', async () => {
+  const a = await run('same-shirt-stranger');
+  assert.equal(a.correct + a.wrong, 0, describe(a));
+  assert.equal(a.wrongLockFrames, 0, describe(a));
 });
