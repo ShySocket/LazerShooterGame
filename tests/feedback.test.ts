@@ -6,8 +6,8 @@ import type { Candidate } from '../src/vision/scoring';
 import type { NBox } from '../src/vision/geometry';
 import { ShotRecorder } from '../src/feedback/recorder';
 import { IdMap, pickReviewShot, roundKey, trimSample, type ShotSample } from '../src/feedback/sample';
-import { agreement, asPlayed, collectSamples, evaluate, judge, replayShot, sweep } from '../src/feedback/replay';
-import { FeedbackStore, MAX_SHOTS_PER_ROUND, MemoryBacking } from '../src/feedback/store';
+import { agreement, asPlayed, collectSamples, evaluate, judge, normaliseSample, replayShot, sweep } from '../src/feedback/replay';
+import { FeedbackStore, MAX_SHOTS_PER_ROUND, MAX_UPLOAD_ATTEMPTS, MemoryBacking } from '../src/feedback/store';
 import { DEFAULT_SETTINGS } from '../src/types';
 
 /**
@@ -182,6 +182,23 @@ test('a burst records the frames after the tap and the replay reproduces the ver
   assert.ok(rows.length > 5 && rows[0].result.score <= rows[rows.length - 1].result.score, 'sweep is sorted by score');
   assert.equal(collectSamples({ rounds: { [sample.round.key]: { profiles: {}, samples: { a: labelled, b: none } } } }).length, 2);
   assert.equal(collectSamples({ feedback: { rounds: { x: { samples: { a: labelled } } } } }).length, 1);
+
+  // The database drops nulls and empty arrays/objects; an export must replay like the original.
+  const exported = JSON.parse(JSON.stringify({ ...labelled, frames: [{ t: -900, tracks: [], lock: null }, ...labelled.frames] }, (_k, v) => {
+    if (v === null) return undefined;
+    if (Array.isArray(v) && v.length === 0) return undefined;
+    if (typeof v === 'object' && v !== null && !Array.isArray(v) && Object.keys(v).length === 0) return undefined;
+    return v;
+  }));
+  const back = collectSamples({ samples: { a: exported } })[0];
+  assert.equal(back.frames.length, 8);
+  assert.deepEqual(back.frames[0], { t: -900, tracks: [], lock: null });
+  assert.equal(back.shot.resolvedTo, bob);
+  assert.equal(replayShot({ ...back, shot: { ...back.shot, decidedAtFrame: 7 } }).resolved, bob);
+  assert.equal(agreement([{ ...back, shot: { ...back.shot, decidedAtFrame: 7 } }]), 1);
+  const missNone = normaliseSample(JSON.parse(JSON.stringify({ ...none, shot: { ...none.shot, resolvedTo: null } }, (_k, v) => (v === null ? undefined : v))));
+  assert.equal(asPlayed(missNone), null);
+  assert.equal(replayShot({ ...labelled, frames: labelled.frames.map((f, i) => (i === 6 ? { ...f, tracks: f.tracks.map((t) => ({ ...t, conflict: true })) } : f)) }).resolved, null, 'an identity conflict at decision time refuses the hit');
 });
 
 test('a sample that grows past the upload budget loses its oldest frames first', () => {
@@ -237,4 +254,8 @@ test('the on-phone store caps failed shots per round, keeps only the newest roun
   assert.equal(await store.flush(async () => { calls++; }), 1);
   assert.equal(calls, 2);
   assert.deepEqual(await store.queued(), []);
+
+  await store.enqueue({ id: 'u2', round: 'R1', sample: sample('u2'), profiles: null });
+  for (let i = 0; i < MAX_UPLOAD_ATTEMPTS; i++) await store.flush(async () => { throw new Error('refused'); });
+  assert.deepEqual(await store.queued(), [], 'an upload refused every time is not kept forever');
 });

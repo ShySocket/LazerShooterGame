@@ -186,8 +186,8 @@ export class VisionPipeline<C = unknown> {
     return Object.fromEntries([...this.liveFaces].map(([id, list]) => [id, list.length]));
   }
 
-  /** The configured candidates with this round's live face samples appended. */
-  private galleries(): Candidate[] {
+  /** The configured candidates with this round's live face samples appended: what evidence is scored against. */
+  galleries(): Candidate[] {
     const source = this.config.candidates;
     if (this.augmented && this.augmented.source === source) return this.augmented.candidates;
     const candidates = source.map((c) => {

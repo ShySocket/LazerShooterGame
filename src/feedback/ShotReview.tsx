@@ -17,6 +17,21 @@ type State =
   | { phase: 'done'; round: StoredRound; remaining: number; uploaded: boolean | null };
 
 const SAID: Record<string, string> = { unclear: 'UNCLEAR TARGET', miss: 'MISS', 'stale frame': 'CAMERA TOO SLOW' };
+/** Firebase writes never reject while offline, they wait; past this the upload is queued and retried later instead. */
+const UPLOAD_TIMEOUT_MS = 6000;
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const tm = setTimeout(() => reject(new Error('upload timed out')), ms);
+    p.then((v) => {
+      clearTimeout(tm);
+      resolve(v);
+    }, (e: unknown) => {
+      clearTimeout(tm);
+      reject(e);
+    });
+  });
+}
 
 const fmtRound = (ms: number) => {
   const s = Math.max(0, Math.round(ms / 1000));
@@ -50,7 +65,7 @@ export function ShotReview({ room, pid }: Props) {
     alive.current = true;
     void load();
     // Samples that could not be uploaded last time (no connection at the venue) go out now.
-    void feedbackStore.flush((u) => backend.submitShotFeedback(u.round, u.sample, u.profiles));
+    void feedbackStore.flush((u) => withTimeout(backend.submitShotFeedback(u.round, u.sample, u.profiles), UPLOAD_TIMEOUT_MS));
     return () => {
       alive.current = false;
     };
@@ -77,13 +92,13 @@ export function ShotReview({ room, pid }: Props) {
     return remaining;
   };
 
-  const answer = async (round: StoredRound, shot: StoredShot, shownAt: number, label: ShotLabel | null) => {
+  const answer = async (round: StoredRound, shot: StoredShot, label: ShotLabel | null) => {
     setState({ phase: 'loading' });
     let uploaded: boolean | null = null;
     if (label) {
       const sample = trimSample({ ...shot.sample, label });
       try {
-        await backend.submitShotFeedback(round.key, sample, round.profiles);
+        await withTimeout(backend.submitShotFeedback(round.key, sample, round.profiles), UPLOAD_TIMEOUT_MS);
         uploaded = true;
       } catch (e) {
         console.warn('feedback upload deferred', e);
@@ -91,7 +106,6 @@ export function ShotReview({ room, pid }: Props) {
         uploaded = false;
       }
     }
-    void shownAt;
     await feedbackStore.deleteShot(shot.id);
     const remaining = await finishIfEmpty(round);
     if (alive.current) setState({ phase: 'done', round, remaining, uploaded });
@@ -138,15 +152,15 @@ export function ShotReview({ room, pid }: Props) {
       </p>
       <div className="review-answers">
         {others.map((id) => (
-          <button key={id} className="btn" onClick={() => void answer(round, shot, shownAt, label('player', id))}>
+          <button key={id} className="btn" onClick={() => void answer(round, shot, label('player', id))}>
             <span className="dot" style={{ background: room.players[id]?.color ?? '#8892a6' }} />
             Yes, I shot {name(id)}
           </button>
         ))}
-        <button className="btn none" onClick={() => void answer(round, shot, shownAt, label('none'))}>
+        <button className="btn none" onClick={() => void answer(round, shot, label('none'))}>
           No, this should not count
         </button>
-        <button className="btn" onClick={() => void answer(round, shot, shownAt, null)}>
+        <button className="btn" onClick={() => void answer(round, shot, null)}>
           I can't tell from this photo
         </button>
       </div>
