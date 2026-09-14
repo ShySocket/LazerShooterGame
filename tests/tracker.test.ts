@@ -432,3 +432,27 @@ test('a box whose centre jumped more than half its width in one step keeps its i
   assert.equal(b.id, a.id);
   assert.equal(b.unconfirmed, false, 'a quarter of a box width is ordinary motion');
 });
+
+
+test('a track anticipates a turning pan: constant acceleration keeps continuity and the trusted acceleration is exposed', () => {
+  const W = 0.2;
+  const b = (x: number): Detection => ({ box: [x, 0.15, W, 0.7] });
+  // A sinusoidal pan of 15% amplitude every 3 s at 220 ms frames; the box reverses around 750 ms.
+  const tracker = new Tracker();
+  let id = -1;
+  let last!: ReturnType<Tracker['update']>[number];
+  for (let i = 0; i < 12; i++) {
+    const t = i * 220;
+    [last] = tracker.update([b(0.4 + 0.15 * Math.sin((2 * Math.PI * t) / 3000))], t, 1500, 700);
+    if (id >= 0) assert.equal(last.id, id, `frame ${i}`);
+    id = last.id;
+  }
+  assert.notEqual(last.ax, 0, 'acceleration is trusted after several samples');
+  // The sign of the acceleration follows the pan: past the peak it points back towards the centre.
+  assert.ok(last.ax * last.vx <= 0 || Math.abs(last.vx) < 1e-5, `ax ${last.ax} vx ${last.vx}`);
+  // With only two samples the acceleration is not trusted.
+  const young = new Tracker();
+  young.update([b(0.3)], 0);
+  const [y] = young.update([b(0.32)], 220);
+  assert.equal(y.ax, 0);
+});

@@ -1,5 +1,5 @@
 import type { BodyResult, FaceResult } from '@vladmandic/human';
-import { ASSOCIATION_MARGIN, CENTRE_JUMP_CONFIRM, CONFIRMED_OBSERVATIONS, CROSSING_IOU, FACE_CUE, FACE_CUE_FRESH_MS, LIVE_RIVAL_MIN, LOST_RECLAIM, MATCH_MIN_SCORE, MATCH_WIN_MARGIN, STATIONARY_HYPOTHESIS, TENTATIVE_WIN_MARGIN, HEIGHT_CONFIRM_MIN, HEIGHT_MATCH_MIN, LOST_TRACK_MS, MAX_TRACK_GAP_MS, TRACK_GAP_MS } from './calibration';
+import { ACCEL_MAX_SHIFT, ACCEL_MIN_SAMPLES, ASSOCIATION_MARGIN, CENTRE_JUMP_CONFIRM, CONFIRMED_OBSERVATIONS, CROSSING_IOU, FACE_CUE, FACE_CUE_FRESH_MS, LIVE_RIVAL_MIN, LOST_RECLAIM, MATCH_MIN_SCORE, MATCH_WIN_MARGIN, STATIONARY_HYPOTHESIS, TENTATIVE_WIN_MARGIN, HEIGHT_CONFIRM_MIN, HEIGHT_MATCH_MIN, LOST_TRACK_MS, MAX_TRACK_GAP_MS, TRACK_GAP_MS } from './calibration';
 import { clampBox, intersectArea, iou, toNBox, type NBox } from './geometry';
 
 export interface Detection {
@@ -49,6 +49,9 @@ export interface Track {
   /** Trusted velocity of the box centre in frame units per ms (0 until the motion has settled). */
   vx: number;
   vy: number;
+  /** Trusted acceleration of the box centre in frame units per ms², 0 until several samples exist. */
+  ax: number;
+  ay: number;
 }
 
 /**
@@ -227,10 +230,27 @@ const motionTrust = (m: Motion): number => (m.samples <= 1 ? 0 : m.samples === 2
 interface Motion {
   vx: number;
   vy: number;
+  /** Change of velocity per ms, smoothed: a pan that slows or turns shows up here a frame early. */
+  ax: number;
+  ay: number;
   /** Fractional width and height growth per ms: an approaching player's box grows, a leaving one shrinks. */
   sw: number;
   sh: number;
   samples: number;
+}
+
+/** Acceleration is trusted only once several velocity samples exist, and then in full. */
+const accelTrust = (m: Motion): number => (m.samples >= ACCEL_MIN_SAMPLES ? 1 : 0);
+/** Where a box centre is expected `dt` ms after its last observation, from velocity and bounded acceleration. */
+function predictShift(m: Motion, dt: number, size: [number, number]): [number, number] {
+  const trust = motionTrust(m);
+  const at = accelTrust(m);
+  const ax = Math.max(-size[0] * ACCEL_MAX_SHIFT, Math.min(size[0] * ACCEL_MAX_SHIFT, 0.5 * m.ax * dt * dt * at));
+  const ay = Math.max(-size[1] * ACCEL_MAX_SHIFT, Math.min(size[1] * ACCEL_MAX_SHIFT, 0.5 * m.ay * dt * dt * at));
+  return [
+    Math.max(-size[0], Math.min(size[0], m.vx * dt * trust + ax)),
+    Math.max(-size[1], Math.min(size[1], m.vy * dt * trust + ay)),
+  ];
 }
 
 /** Two skipped frames on this device, whatever its frame rate, within fixed bounds. */
@@ -270,9 +290,9 @@ export class Tracker {
     const out = dets.map((d, i) => {
       let t = assigned.get(i);
       if (!t) {
-        t = { id: this.nextId++, box: [...d.box], hit: [...(d.hit ?? d.box)], hitObservedAt: d.body ? now : 0, lastSeen: now, belief: {}, claimed: null, via: 'none', lastFaceAt: 0, lastClothingAt: 0, lastEvidenceAt: 0, faceMean: null, faceSamples: 0, lastFaceSampleAt: 0, unconfirmed: false, observations: 1, vx: 0, vy: 0 };
+        t = { id: this.nextId++, box: [...d.box], hit: [...(d.hit ?? d.box)], hitObservedAt: d.body ? now : 0, lastSeen: now, belief: {}, claimed: null, via: 'none', lastFaceAt: 0, lastClothingAt: 0, lastEvidenceAt: 0, faceMean: null, faceSamples: 0, lastFaceSampleAt: 0, unconfirmed: false, observations: 1, vx: 0, vy: 0, ax: 0, ay: 0 };
         this.tracks.push(t);
-        this.motion.set(t.id, { vx: 0, vy: 0, sw: 0, sh: 0, samples: 1 });
+        this.motion.set(t.id, { vx: 0, vy: 0, ax: 0, ay: 0, sw: 0, sh: 0, samples: 1 });
       } else {
         // A box that shrank or grew by more than a quarter in one step, or whose centre jumped more
         // than half a box width, is a suspicious match: the identity is kept but must be confirmed by
@@ -287,14 +307,24 @@ export class Tracker {
         const [oldX, oldY] = center(t.box);
         const [newX, newY] = center(d.box);
         const alpha = m.samples === 1 ? 1 : 0.7;
-        m.vx = (1 - alpha) * m.vx + alpha * (newX - oldX) / dt;
-        m.vy = (1 - alpha) * m.vy + alpha * (newY - oldY) / dt;
+        const vx = (1 - alpha) * m.vx + alpha * (newX - oldX) / dt;
+        const vy = (1 - alpha) * m.vy + alpha * (newY - oldY) / dt;
+        // Acceleration from the change of the smoothed velocity, itself smoothed; meaningless before
+        // the second velocity sample.
+        if (m.samples >= 2) {
+          m.ax = 0.5 * m.ax + 0.5 * (vx - m.vx) / dt;
+          m.ay = 0.5 * m.ay + 0.5 * (vy - m.vy) / dt;
+        }
+        m.vx = vx;
+        m.vy = vy;
         m.sw = (1 - alpha) * m.sw + alpha * (d.box[2] / t.box[2] - 1) / dt;
         m.sh = (1 - alpha) * m.sh + alpha * (d.box[3] / t.box[3] - 1) / dt;
         m.samples++;
         t.observations++;
         t.vx = m.vx * motionTrust(m);
         t.vy = m.vy * motionTrust(m);
+        t.ax = m.ax * accelTrust(m);
+        t.ay = m.ay * accelTrust(m);
       }
       // A frame in which only the face was found keeps the torso observed a moment ago, moved with the
       // box, so one dropped pose does not turn a chest shot into a head-only target. Never longer than
@@ -353,8 +383,7 @@ export class Tracker {
       const dt = now - t.lastSeen;
       const lost = dt > gapMs;
       const trust = motionTrust(m);
-      const dx = Math.max(-t.box[2], Math.min(t.box[2], m.vx * dt * trust));
-      const dy = Math.max(-t.box[3], Math.min(t.box[3], m.vy * dt * trust));
+      const [dx, dy] = predictShift(m, dt, [t.box[2], t.box[3]]);
       // The box also grows or shrinks along its recent trend, within a third either way.
       const pw = t.box[2] * Math.max(0.75, Math.min(1.33, 1 + m.sw * dt * trust));
       const ph = t.box[3] * Math.max(0.75, Math.min(1.33, 1 + m.sh * dt * trust));

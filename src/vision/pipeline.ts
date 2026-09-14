@@ -432,7 +432,10 @@ export class VisionPipeline<C = unknown> {
       // premature miss into a wait, never into a hit from prediction.
       const moved = (b: NBox, t: Track): NBox => {
         const age = now - t.lastSeen;
-        return [b[0] + t.vx * age, b[1] + t.vy * age, b[2], b[3]];
+        // Velocity plus bounded acceleration, the same shift the tracker predicts with.
+        const ax = Math.max(-b[2] * 0.5, Math.min(b[2] * 0.5, 0.5 * t.ax * age * age));
+        const ay = Math.max(-b[3] * 0.5, Math.min(b[3] * 0.5, 0.5 * t.ay * age * age));
+        return [b[0] + t.vx * age + ax, b[1] + t.vy * age + ay, b[2], b[3]];
       };
       const moving = (t: Track) => t.vx !== 0 || t.vy !== 0;
       // The nomination keeps the tap-time rule: the dot has to be on the moved observed torso, not
