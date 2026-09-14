@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { BodyResult, FaceResult } from '@vladmandic/human';
-import { buildDetections, faceOwner, resetIdentity, Tracker, type Detection } from '../src/vision/tracker.ts';
+import { buildDetections, faceBodyBox, faceOwner, hitRegion, resetIdentity, Tracker, type Detection } from '../src/vision/tracker.ts';
 import type { NBox } from '../src/vision/geometry.ts';
 import { resolveHit, updateBelief } from '../src/vision/scoring.ts';
 
@@ -228,4 +228,63 @@ test('a box under 60% of the track\'s height starts a new track; a jump between 
       assert.equal(current.unconfirmed, expected === 'unconfirmed', `height ${h}`);
     }
   }
+});
+
+/*
+ * hitRegion branches (tracker.ts):
+ *   torso landmarks (>= 3 of shoulders/hips) + face box   -> torso box widened to the face, padded
+ *   torso landmarks + head landmarks, no face             -> torso box raised to the head landmarks
+ *   face only, no body                                    -> the face box, slightly enlarged
+ *   body without a usable torso                           -> the middle 60% x 75% of the outer box
+ */
+const kp = (part: string, x: number, y: number, score = 0.9) => ({ part, positionRaw: [x, y], score });
+const pose = (box: NBox, keypoints: ReturnType<typeof kp>[]): BodyResult => ({ boxRaw: box, score: 0.9, keypoints } as unknown as BodyResult);
+const torso = [kp('leftShoulder', 0.35, 0.30), kp('rightShoulder', 0.55, 0.30), kp('leftHip', 0.38, 0.55), kp('rightHip', 0.52, 0.55)];
+const OUTER: NBox = [0.25, 0.1, 0.4, 0.8];
+const inside = (inner: NBox, outer: NBox) => inner[0] >= outer[0] && inner[1] >= outer[1] && inner[0] + inner[2] <= outer[0] + outer[2] && inner[1] + inner[3] <= outer[1] + outer[3];
+
+test('hitRegion: torso landmarks plus a face box give the padded torso reaching up over the face', () => {
+  const faceBox: NBox = [0.41, 0.12, 0.08, 0.1];
+  const [x, y, w, h] = hitRegion(OUTER, pose(OUTER, torso), face(faceBox, 1));
+  const px = 0.2 * 0.12; // shoulder width 0.2, padded by 12%
+  assert.ok(Math.abs(x - (0.35 - px)) < 1e-9 && Math.abs(x + w - (0.55 + px)) < 1e-9, `x range ${x}..${x + w}`);
+  assert.ok(y < faceBox[1] && y + h > 0.55, `y range ${y}..${y + h} must cover the face top and the hips`);
+  assert.ok(y + h < OUTER[1] + OUTER[3] * 0.7, 'the legs are not part of it');
+});
+
+test('hitRegion: torso landmarks with head landmarks and no face box reach up to the head', () => {
+  const head = [kp('nose', 0.45, 0.2), kp('leftEye', 0.43, 0.18), kp('rightEye', 0.47, 0.18)];
+  const noHead = hitRegion(OUTER, pose(OUTER, torso));
+  const withHead = hitRegion(OUTER, pose(OUTER, [...torso, ...head]));
+  assert.ok(withHead[1] < noHead[1], 'the head raises the top edge');
+  assert.ok(withHead[1] < 0.2 && withHead[1] > 0.05, `top ${withHead[1]} sits just above the eyes`);
+  // The bottom pad is 6% of the region height, so it grows by a few thousandths with the head; the hips stay the anchor.
+  assert.ok(Math.abs(withHead[1] + withHead[3] - (noHead[1] + noHead[3])) < 0.02, 'the bottom edge stays at the hips');
+});
+
+test('hitRegion: a face without a body offers only the head', () => {
+  const faceBox: NBox = [0.4, 0.2, 0.1, 0.12];
+  const r = hitRegion(faceBodyBox(faceBox), undefined, face(faceBox, 1));
+  assert.ok(inside(faceBox, r), 'covers the face');
+  assert.ok(r[3] < faceBox[3] * 1.4 && r[2] < faceBox[2] * 1.5, `only slightly larger than the face: ${r}`);
+  assert.ok(r[1] + r[3] < 0.4, 'nothing below the chin');
+});
+
+test('hitRegion: a body without a usable torso falls back to the middle of its box', () => {
+  const cases: BodyResult[] = [
+    pose(OUTER, []),
+    pose(OUTER, torso.slice(0, 2)),
+    pose(OUTER, torso.map((k) => ({ ...k, score: 0.2 }))),
+  ];
+  for (const body of cases) {
+    const [x, y, w, h] = hitRegion(OUTER, body);
+    assert.deepEqual([x, y, w, h].map((v) => +v.toFixed(6)), [OUTER[0] + OUTER[2] * 0.2, OUTER[1], OUTER[2] * 0.6, OUTER[3] * 0.75].map((v) => +v.toFixed(6)));
+  }
+});
+
+test('hitRegion: the observed region is the one Detection.hit carries and a lone face keeps a head-only region', () => {
+  const dets = buildDetections([pose(OUTER, torso)], [face([0.41, 0.12, 0.08, 0.1], 1)]);
+  assert.deepEqual(dets[0].hit, hitRegion(OUTER, dets[0].body, dets[0].face));
+  const lone = buildDetections([], [face([0.4, 0.2, 0.1, 0.12], 2)]);
+  assert.ok(lone[0].hit && lone[0].hit[3] < 0.2, 'a face-only detection is not shootable below the head');
 });
