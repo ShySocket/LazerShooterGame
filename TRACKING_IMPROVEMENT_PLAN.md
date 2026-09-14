@@ -1,5 +1,59 @@
 # Tracking review and improvement instructions
 
+## Investigation of the open cases (2026-09-14, commit 431c32f on `tracking-robustness`)
+
+Run with `/investigate` against the committed tree, then challenged by an independent reviewer whose two disputed claims were settled by deterministic probes. Every number below comes from a command run on this tree.
+
+**Verdict.** Both pinned cases pass on this tree: `npm test` (79 tests) and `npm run typecheck` pass, and `npm run sim -- --seeds 100 --strict` reports zero wrong hits and zero wrong-lock frames across all 18 scenarios. But the sweep passing is not proof the mechanism is closed: the mechanism behind "Bob hit while aiming at Alice" reproduces deterministically outside the simulation (finding 4), and the bulk of the occlusion misses come from a burst bug, not from the tracker (finding 2). Those two are the first items of the locked plan.
+
+| Case | On the review snapshot | On 431c32f |
+| --- | --- | --- |
+| occlusion seed 60 | Bob hit at 9,300 ms, aim on Alice | 11 correct, 1 ambiguous, 3 miss, 0 wrong, 0 wrong lock; the 9,300 ms shot is a miss after 432 ms |
+| stranger seed 23 | one false player-lock frame | 22 unclear, 0 wrong, 0 wrong lock |
+| occlusion 39, stranger 45, 61 | passed after face centring | pass; the 100-seed sweep is clean |
+
+**Finding 1: seed numbers are not a stable reproduction.** The engine now consumes the RNG differently (tap-time world state, ghost bodies, per-shot traces, outfit sampling), so "seed 60" on the snapshot and "seed 60" now are different rounds. The pinned seeds in `tests/sim.test.ts` are a sweep, not a reproduction; they pass vacuously. Mechanisms must be pinned by scripted, RNG-free pipeline tests (findings 2 and 4 give the two scripts).
+
+**Finding 2: the 9,300 ms shot now misses because the burst gives up on its own target.** Trace (frame capture@completion, `#track=truth[box]{top belief}`, `A` = association ambiguous):
+
+```
+8804@9024 #4=alice[0.40,0.37,0.20,0.28] #2=bob[0.50,0.24,0.35,0.61]{bob 1.00 face} aim=0.49,0.50
+9040@9260 #4=alice[0.40,0.37,0.20,0.29]{alice 0.39 face} #2=bob[0.52,0.24,0.38,0.60]F{bob 1.00 face} aim=0.49,0.53
+9276@9496 #5=alice[0.40,0.36,0.21,0.28]A #6=bob[0.54,0.24,0.41,0.59]A aim=0.47,0.49
+9512@9732 #5=alice[0.40,0.36,0.20,0.31]{alice 0.47 face} #6=bob[0.54,0.23,0.43,0.57]F{bob 0.16 clothing} aim=0.48,0.50
+9300 FIRE -> miss after 432ms; visible: alice
+```
+
+Alice reappears at 8,804 ms as a new track; by the tap she has 0.39 belief, below the 0.5 threshold, so FIRE opens a burst. The next frame flags both bodies ambiguous, so the burst's track cannot be selected (`t` is null); `src/vision/pipeline.ts:374` then settles the burst as a miss because *some* detection box contains the dot, even though that box is the burst's own target. Deterministic probe: Bob tracked for six frames with 0.98 belief, a tap 400 ms after the last capture (burst opened, 1,116 ms deadline), then one post-tap frame of the same track that is either association-ambiguous or has the dot outside its observed torso: the burst settles as MISS after 240 ms with 876 ms of deadline left, in both variants. Removing the ambiguity flags entirely (ablation E below) recovers only 2 of 384 occlusion misses, which confirms the misses are this early termination, not tracker churn. The fix is three lines: a burst settles as a miss only when a detection belonging to a *different* track contains the dot; otherwise it keeps waiting for the same track until the deadline.
+
+**Finding 3: the instant-shot path is nearly dead, so the geometry budget debate is moot.** A frame is published about 220 ms after capture (inference), and `GEOMETRY_FRESH_MS` is 250 ms, so the newest frame's geometry is "fresh" for only the first ~30 ms of each 236 ms window; on a 300 ms phone it never is. Nearly every hit already goes through the burst, which is why hits report 300 to 430 ms of latency. Ablation D below (budget 1,100 ms) recovering 121 misses is just re-enabling instant hits, not a tuning result. Decision for the plan: keep the 250 ms budget (an instant hit from geometry older than one frame period cannot describe the present), state plainly that the burst is the product surface, fix finding 2 so bursts do not miss spuriously, and report hit latency in the sim table.
+
+Ablations, each applied alone to a copy of the tree, occlusion seeds 1 to 100 (1,498 shots):
+
+| Ablation | wrong | wrong lock | miss |
+| --- | --- | --- | --- |
+| none (committed tree) | 0 | 0 | 384 |
+| A: whole detector box instead of the observed hit region | 0 | 0 | 306 |
+| B: no aim edge band around neighbouring boxes | 0 | 0 | 338 |
+| C: association ambiguity ignored when choosing the target | 0 | 0 | 384 |
+| D: geometry budget widened from 250 ms to 1,100 ms | 0 | 0 | 263 |
+| E: tracker never flags ambiguous association (margin 0) | 0 | 0 | 382 |
+
+No single safeguard is load-bearing in the sweep. That is partly good (a wrong hit needs two failures) and partly an artifact: the synthetic detector emits only a `nose` keypoint (`tests/sim/world.ts:241`), so `hitRegion` always takes its fallback "middle 60% by 75%" branch in the simulation, the ground-truth oracle uses the full body box, and the 78-miss "cost" of ablation A is that mismatch, not the torso path. The torso and head path of section 4 has zero unit or simulation coverage.
+
+**Finding 4 (corrected after the independent review): a near player's identity transfers onto a far player's body when the near player's detection drops for one frame and the two boxes are concentric.** A first probe with Bob walking rightward found no transfer, and that was reported as "does not occur"; that conclusion was geometry-specific and wrong. With Bob standing still in front of Alice (Bob `[0.36, 0.24, 0.35, 0.61]`, Alice `[0.40, 0.37, 0.20, 0.29]`, default tracker parameters), seven frames of Bob then one frame containing only Alice's box: the tracker keeps Bob's id on Alice's box (IoU 0.27 and centre distance 0.22 score 0.40 against the 0.3 match floor; height ratio 0.475 passes the 0.4 live shape gate at `src/vision/tracker.ts:278`). At pipeline level the track still carries `bob 0.98`, the label says `LOCK bob`, and `fire()` returns an instant hit on Bob with the dot on Alice. This is the seed-60 mechanism, and it is exactly the case section 6 describes: spatial matching hands over the identity before appearance is consulted. The fix does not need Kalman or Hungarian: (a) a live track cannot claim a box whose height ratio is under about 0.6 without appearance confirmation, and (b) a detection whose fresh face or outfit contradicts the track's face mean is rejected before assignment (an appearance veto). Both are unit-testable with this probe.
+
+**Finding 5: the stranger case is far from a false lock, with two caveats.** Over stranger seeds 1 to 100 the highest belief any real player reached on the stranger's track was 0.228 (seed 36, 1,632 ms), against a 0.5 threshold; zero frames above 0.35. Reverting the stranger baseline from 0.95 to 0.9 leaves it at 0.228; removing the clothing coverage scaling raises it to 0.297. Caveats from the independent review, both verified in the code: the synthetic stranger faces sit at about 0.20 cosine on a 511-d vector that bypasses centring, a thinner tail than the measured real centred distribution (90th percentile 0.20, 99th 0.39, crossing `reject` 0.25 in roughly 10% of frames); and the sim's wrong-lock oracle counts only `kind === 'lock'`, so a 0.228 belief already shows the "maybe" label on a stranger and nobody counts it. The sim's face model needs the measured tail, and "maybe on a non-player" should be a reported metric.
+
+**Finding 6: the cost to pay down is continuity, and most of it is one bug.** From the 100-seed table: occlusion misses 384 of 1,498 shots (26%) with 2.9 track ids per run; range-8m misses 434 of 2,205 (20%) with 2.4 ids; crossing misses 202 of 1,100 (18%); lookalike-faces is unclear on 454 of 2,201 (21%). Finding 2 is the first thing to fix; re-measure after it before touching the tracker.
+
+**Finding 7: the simulation cannot validate camera motion.** The engine jitters only the crosshair; people are absolute in the frame. Sections 5 and 6 list "pan the phone during a crossing" as acceptance, and nothing before the phone recordings of section 10 can exercise it. A pan offset applied to every box in `world.ts` is cheap and should exist before tracker work.
+
+**Plan sections already implemented on this tree** (verified in code; the section text is kept below for history): section 2 items 1 to 5; section 3 items 1, 2, 6 and the burst's expected-player binding; section 4 items 1 to 3 and 5 (shared `hitRegion`; overlay not yet drawn); section 5 items 1 and 2; section 7 items 1 and 6 (immutable mean with a 512-d test, empty signal maps absent, suspend on contradiction) and the clothing coverage scaling; section 8 items 1, 3, 4 and 5; section 9 item 4's background acquisition gap (bodies are cropped round-robin) and item 8. Corrections to the first draft of this list: 7.6 and the 9.4 acquisition gap are done; sections 4 and 6 were listed as done or unnecessary and are not (findings 3 and 4). Still open: 2.6 replay, 3.3 (dropped, see review), 4.5 overlay, 5.3 to 5.6, 6 (as an appearance veto), 7.4 to 7.8, 8.6 and 8.7, 9.1 to 9.3 and 9.5 to 9.7, 10.
+
+---
+
+
 Reviewed September 13, 2026 against the working tree, including its existing uncommitted changes. This document proposes changes; this review modified only this document. Findings come from source inspection, existing tests, and additional deterministic probes. Real-phone video accuracy and performance were not measured during this review.
 
 Face-centering and calibration changes appeared from concurrent work during final verification. The earlier simulation failures below belong to the initial snapshot; all three isolated cases pass on the later snapshot. However, the expanded later run still found one wrong hit and one wrong-lock frame, now at different seeds. The review includes those later cases and a separately reproduced cache bug in the new face-centering implementation. Preserve the earlier cases as regressions rather than presenting them as failures of the later code.
@@ -213,3 +267,146 @@ Suggested delivery sequence:
 5. **Performance change:** profile, schedule recognition adaptively, recover weak detections conservatively, and clean up late camera streams.
 
 Run the existing tests and type checks for each change, the expanded simulation for tracking/decision changes, and the same held-out phone recordings before comparing improvements. Keep model replacement as a later measured experiment if detection recall remains the dominant limitation.
+
+---
+
+## GSTACK REVIEW REPORT
+
+`/plan-eng-review` on 2026-09-14 against commit 431c32f (`tracking-robustness`). Baseline: 79 tests pass, typecheck passes, 100-seed strict sweep clean. The run was unattended, so every decision below took the recommended option; each can be reversed at the checkpoint.
+
+### Findings
+
+Correctness (from the investigation and the outside voice, all probe-verified)
+
+- `[P0] (confidence: 10/10)` Identity transfer on dropout — `src/vision/tracker.ts:278` `if (shape < (gapped ? 0.55 : 0.4)) return 0;` lets a live track claim a box less than half its height when the boxes are concentric; the track keeps its belief and `fire()` lands an instant hit on the hidden player's name. **Decision: (a) raise the live shape gate to a height ratio of 0.6 unless the detection carries appearance that matches the track; (b) add an appearance veto in `match()`: a detection whose fresh face embedding is below `FACE_CALIB.reject` against the track's `faceMean`, or whose outfit contradicts an established clothing identity, cannot be assigned to that track. Test: the concentric probe at tracker level (new id) and at pipeline level (no lock, no instant hit).**
+- `[P0] (confidence: 10/10)` Burst early termination — `src/vision/pipeline.ts:374` `const someoneElse = !t && dets.some((d) => containsPoint(d.box, cx, cy));` counts the pending track's own box. **Decision: `someoneElse` is true only for a detection whose track id differs from `p.trackId`; a same-track frame that cannot select the target (ambiguous, coasting-blocked, dot off the torso) keeps the burst waiting until the deadline. Test: the two-variant probe (ambiguous, off-torso) must leave the burst pending; a different track under the dot must still settle a miss.**
+
+Architecture
+
+- `[P1] (confidence: 9/10)` Section 3.3 (frame copied at FIRE) — `src/hooks/useVisionLoop.ts:52` draws the video into the one canvas that `human.detect` reads; a copy at FIRE needs a second canvas, a second session and a queue that jumps the frame in flight. With the burst as the tap-time rule (investigation finding 3) it buys nothing. **Decision: drop 3.3; take capture timestamps from `requestVideoFrameCallback` (9.2).**
+- `[P1] (confidence: 9/10)` Section 5.3 (Kalman) — the tracker already predicts to the observation time with a trust factor and a one-box clamp, and per-frame displacement at 4 to 5 Hz is the same size as box jitter. **Decision: no Kalman; add explicit track states (5.5) and scale velocity (5.4) to the existing predictor, after a sim camera pan exists to measure against.**
+- `[P2] (confidence: 8/10)` Section 6.5 (Hungarian) — mutual-best plus `ASSOCIATION_MARGIN` is the mechanism that matters at six people. **Decision: appearance as a veto only (P0 above); no cost fusion, no solver.**
+- `[P2] (confidence: 8/10)` Section 3.5 (continuity generation) — track ids are never reused (`src/vision/tracker.ts:239` `id: this.nextId++`) and the burst is bound to one (`canConfirmShot`). **Decision: dropped as redundant.**
+- `[P2] (confidence: 8/10)` Section 2.6 (image-based replay) — no capture tool or recordings exist. **Decision: own section after continuity; record detector outputs (boxes, keypoints, embeddings, outfit histograms with quality), never pixels.**
+
+Code quality
+
+- `[P2] (confidence: 7/10)` Section 7.8 (versioned calibration) — tunables spread over `pipeline.ts`, `embedding.ts`, `shot.ts`, `geometry.ts`, `scoring.ts`. **Decision: `src/vision/calibration.ts` with `CALIBRATION_VERSION`, re-exported from the current modules; the shot log records the version.**
+- `[P3] (confidence: 7/10)` Section 7.5 (elapsed-time smoothing) — `updateBelief` (`src/vision/scoring.ts:172`) uses a fixed alpha per call; `LIVE_FACE_MIN_TRACK_SAMPLES` counts frames. **Decision: `alpha = 1 - exp(-dt / tau)` per signal, and the live-enrolment sample gate counts samples at least 150 ms apart; bounded so slow-phone keeps 95%.**
+- `[P2] (confidence: 8/10)` Section 4.5 (overlay) — `src/vision/overlay.ts` draws `d.box` only. **Decision: draw `track.hit` too.**
+
+Test review (matrix below)
+
+- `[P1] (confidence: 10/10)` Synthetic bodies carry only a `nose` keypoint (`tests/sim/world.ts:241`), so `hitRegion`'s torso and head branches never run in the sweep and the oracle's full-box truth mismatches the fallback region. **Decision (regression rule): shoulders and hips on synthetic bodies from `personBox`, with dropout and jitter; unit tests for every `hitRegion` branch; the oracle's "possible" definition uses the same hit region as the pipeline.**
+- `[P1] (confidence: 9/10)` The sim's stranger faces have a thinner tail than the measured model and "maybe" on a non-player is uncounted. **Decision: sample synthetic stranger similarity from the measured centred distribution (median 0, p90 0.20, p99 0.39); report `maybeOnNonPlayer` frames in the table and bound them in `tests/sim.test.ts`.**
+- `[P2] (confidence: 8/10)` Lock oracle timing — the lock is judged against the scene at the last tap or capture, not consistently at capture. **Decision: snapshot the truth at capture time for the lock oracle.**
+- `[P2] (confidence: 8/10)` Seeds pin nothing (investigation finding 1). **Decision: `tests/pipeline.test.ts` with the RNG-free probes listed in the matrix; keep the seeds as a sweep.**
+- `[P2] (confidence: 8/10)` No camera motion in the sim (finding 7). **Decision: a `pan` script in `world.ts` that offsets every box; a `pan-crossing` scenario with the zero-wrong bound.**
+
+Performance
+
+- `[P3] (confidence: 7/10)` Section 9.4 (need-based crops) saves under 10% per frame. **Decision: profile first (9.1); 9.4 only if the crosshair crop shows in the p95.**
+
+No issues found: section 8 items 1, 3, 4, 5; section 9.8; security architecture (rules unchanged; the public Firebase config is reviewed in Stage 5).
+
+Suppressed findings (confidence 3 to 5): the `sleep(40)` race with `requestAnimationFrame` may sample duplicate video frames on 60 Hz displays; the `currentTime` guard likely covers it, unverified on Safari.
+
+### Outside voice (Claude subagent; Codex is not installed, so this is the same model family with fresh context)
+
+Running the outside voice automatically (standard step). Disable: `gstack-config set codex_reviews disabled`.
+
+```
+OUTSIDE VOICE (Claude subagent):
+════════════════════════════════════════════════════════════
+1. Plan Finding 4 is false on this tree. Probe: Bob [x,0.24,0.35,0.61] live 7 frames at 220 ms, then one frame with only Alice's box [0.40,0.37,0.20,0.29]: the tracker keeps id 1 on Alice's box with default parameters; at pipeline level the track still carries bob 0.98, shows LOCK bob, and fire() returns an instant hit on Bob with Alice's box under the dot. The live-track shape gate at tracker.ts:278 is 0.4, and 0.475 passes. No deterministic test covers it.
+2. The instant-shot path is effectively dead, so section 3.2's "150-250 ms" debate is moot. GEOMETRY_FRESH_MS = 250 against a 216-236 ms sim period means the newest frame is fresh only in the first ~30 ms of each window; on a 300 ms phone it is zero. Ablation D is re-enabling instant hits, not a tuning result; the burst is the real product surface.
+3. The dominant miss cause is a burst bug. pipeline.ts:374 settles a burst as miss when any detection box contains the dot, including the pending track's own box, and an ambiguous or coasting-blocked frame nulls t so the same line fires. Both occlusion-60 miss traces settle after one frame with 700+ ms of deadline left. Ablation E recovering 2 of 384 misses shows the tracker is not where the misses come from.
+4. Ablation A's 78-miss "cost of hit regions" is a simulation artifact: world.ts:241 gives bodies only a nose keypoint, so hitRegion always takes the fallback rectangle while ground truth uses the full box. The torso branch has zero coverage.
+5. Finding 5's stranger margin is measured against a thinner tail than the real model (synthetic unrelated faces ~0.20 uncentred, DIM 511 bypasses centring; the real centred tail is 90th 0.20 / 99th 0.39). The wrong-lock oracle counts only kind === 'lock'; 0.228 already exceeds the 0.2 "maybe" threshold.
+6. Section 3.5 (continuity generation) is redundant: bursts are bound to a track id and ids are never reused. Drop it.
+7. Sections 5.3-5.6 and 6.5 are overbuilt for the regime: at 4-5 Hz with 1.5% jitter, per-frame displacement is the same magnitude as jitter; the one-box clamp already bounds extrapolation. Hungarian for ≤6 people changes nothing.
+8. Sequencing is inverted: the sim has no camera motion; sections 5/6 acceptance says "pan the phone during a crossing", yet recordings come last.
+9. Section 2.4 "corrected clock" is still inconsistent for locks: the lock oracle judges against a scene advanced only to the last tap, never to completeAt; burst confirmation uses a freshly rolled aim() each frame.
+10. The pinned regression seeds pin nothing; the deterministic test that would pin the real mechanism is the probe in finding 1, and it does not exist.
+11. The "still open" list is unreliable as sprint input: 9.4's background acquisition is closed, 7.6 is done, while items that are actually broken (findings 1, 3) are listed as implemented.
+12. Section 7.5's elapsed-time smoothing interacts with the live-enrolment gates (LIVE_FACE_MIN_TRACK_SAMPLES counts frames); a fast phone reaches both on near-duplicate frames.
+
+Simplest change with most of the plan's value: fix the burst's early termination at pipeline.ts:372-376 so a pending shot settles as miss only when a detection belonging to a different track contains the dot, and otherwise keeps waiting through ambiguous, blocked, or off-hit-region frames of the same track until the deadline. Pair it with one safety line, raising the live shape gate at tracker.ts:278 (or gating on height), so the finding-1 probe starts a new id, and turn that probe into a pipeline-level test. Everything in sections 5 and 6 should wait until section 10 recordings exist.
+════════════════════════════════════════════════════════════
+```
+
+CROSS-MODEL TENSION, resolved by probes rather than by argument:
+
+- Identity transfer (investigation finding 4): the review said the tracker refuses the swap; the outside voice said it does not. Probe with concentric boxes and default parameters: **transfer occurs, instant hit on Bob with the dot on Alice.** The review was wrong; corrected above and promoted to P0.
+- Burst termination (finding 3 of the outside voice): probe with a post-tap ambiguous frame and with a post-tap off-torso frame of the same track: **the burst settles as MISS after one frame with 876 ms of deadline left, both variants.** Promoted to P0.
+- Continuity generation (3.5): the review proposed it; the outside voice calls it redundant because ids are never reused. Agreed and dropped; the same-track check already binds the burst, and a reset inside the burst rebuilds belief only from fresh evidence on the same pixels.
+- Sequencing of sections 5 and 6: the outside voice would wait for recordings; the review keeps the appearance veto and the height gate before recordings because finding 4 is a live wrong-hit mechanism with a deterministic test. The rest of 5 and 6 (states, scale velocity, cost fusion) waits for a sim camera pan and then recordings.
+
+### Test matrix
+
+```
+CODE PATHS                                                            STATUS
+src/vision/tracker.ts
+  match(): live track cannot swallow a concentric half-height box     [GAP] P0  tests/tracker.test.ts (probe)
+  match(): appearance veto rejects a contradicting face/outfit         [GAP] P0  tests/tracker.test.ts
+  match(): gapped track reclaims a better-fitting box                  [★★  TESTED] tests/tracker.test.ts
+  hitRegion(): torso >= 3 landmarks + face box                         [GAP]     unit
+  hitRegion(): torso + head landmarks, no face                         [GAP]     unit
+  hitRegion(): face only, no body                                      [GAP]     unit
+  hitRegion(): pose without usable torso (fallback)                    [★   sim only]
+src/vision/pipeline.ts
+  burst keeps waiting on a same-track ambiguous frame                  [GAP] P0  tests/pipeline.test.ts (probe)
+  burst keeps waiting on a same-track off-torso frame                  [GAP] P0  tests/pipeline.test.ts (probe)
+  burst settles miss when a different track is under the dot          [GAP] P0  tests/pipeline.test.ts
+  no instant hit / no LOCK after a concentric dropout                  [GAP] P0  tests/pipeline.test.ts (probe)
+  fire(): instant only when geometry fresh + resolveHit                [GAP]     tests/pipeline.test.ts
+  fire(): coasting neighbour under the dot blocks the aim              [GAP]     tests/pipeline.test.ts
+  burst with expectedId refuses another player                         [GAP]     tests/pipeline.test.ts
+  clothing abstains when another box covers the torso                  [GAP]     tests/pipeline.test.ts
+  audit contradiction resets identity                                  [GAP]     tests/pipeline.test.ts
+  lock never shown for a stranger track                                [★★  TESTED] sim 'stranger'
+src/vision/shot.ts
+  geometryFresh 250 ms boundary                                        [★★  TESTED] tests/shot.test.ts
+  canConfirmShot same track, post-tap, in deadline                     [★★★ TESTED] tests/shot.test.ts:41
+src/vision/scoring.ts
+  updateFaceMean 512-d immutable cache                                 [★★★ TESTED] tests/scoring.test.ts:94
+  combineEvidence empty signal maps absent                             [★★  TESTED] tests/scoring.test.ts
+  clothingEvidence coverage / thighs gate                              [★★  TESTED] tests/scoring.test.ts
+  updateBelief elapsed-time alpha (200+200 ms == 400 ms)               [GAP]     unit
+tests/sim
+  18 scenarios x 3 seeds, thresholds                                   [★★★ TESTED] tests/sim.test.ts
+  5 pinned regression seeds (sweep only)                               [★★  TESTED] tests/sim.test.ts:134
+  100-seed --strict gate                                               [★★★ TESTED] npm run sim:full
+  synthetic shoulders/hips so the torso path runs                      [GAP]     world.ts
+  stranger face tail matches the measured centred distribution         [GAP]     world.ts
+  maybeOnNonPlayer counted and bounded                                 [GAP]     engine.ts, sim.test.ts
+  lock oracle judged at capture time                                   [GAP]     engine.ts
+  camera pan scenario, zero wrong                                      [GAP]     world.ts, engine.ts
+  hit latency (elapsedMs) reported                                     [GAP]     report.ts
+USER FLOWS
+  LOCK expires when frames stop (watchdog)                             [GAP] [→E2E] bench or manual
+  Debug overlay shows the hit region                                   [GAP]     manual on phone
+  Shot log records the calibration version                            [GAP]     unit on shotLog
+
+COVERAGE: 9/36 paths tested (25%)  |  GAPS: 27 (6 P0, 1 E2E)
+QUALITY: ★★★:4 ★★:5 ★:1
+```
+
+### Locked implementation order
+
+One commit per item, tests written with the code; `npm test`, `npm run typecheck` and `npm run sim -- --seeds 100 --strict` must pass after every item, and the wrong-hit and wrong-lock bounds never move.
+
+1. **P0 regression tests first, failing.** `tests/pipeline.test.ts` with the concentric-dropout probe (asserts no LOCK, no instant hit, new track id) and the two burst probes (asserts still pending), plus the different-track miss case. Commit them red.
+2. **P0 fix: burst termination.** `someoneElse` counts only detections of a different track; same-track frames keep waiting. Re-run the sweep and record the occlusion, range-8m and crossing miss counts in the plan.
+3. **P0 fix: no identity transfer on dropout.** Height-ratio gate 0.6 for live tracks without appearance, and the appearance veto in `match()`. Tests at tracker and pipeline level.
+4. **Sim realism, so the sweep measures the real code.** Shoulders and hips on synthetic bodies; oracle uses the hit region; stranger face tail from the measured distribution; `maybeOnNonPlayer` and hit latency in the table; lock oracle at capture time; a `pan-crossing` scenario. Re-baseline hit-rate thresholds if they move; never the zero-wrong bounds.
+5. **hitRegion unit tests** for all four branches, and the hit region drawn in the debug overlay.
+6. **Calibration module** with `CALIBRATION_VERSION`, recorded in the shot log.
+7. **Elapsed-time smoothing** in `updateBelief` and time-spaced live-enrolment samples; slow-phone stays at or above 95%.
+8. **Track states and scale velocity** on the existing predictor (tentative, confirmed, lost, retired; lost tracks match but never lock or hit); tests at 100, 200 and 400 ms for constant motion, dropout, pause, reversal, approach, and under the pan scenario.
+9. **Continuity target on the sweep**: occlusion misses under 15%, range-8m under 12%, crossing under 10%, with zero wrong hits and zero wrong locks.
+10. **Frame timing**: `requestVideoFrameCallback` with fallback, drop superseded work, per-stage profile (9.1 to 9.3); 9.4 only if the profile says so.
+11. **Detector-output recording and replay** (former 2.6), numbers only.
+12. **Real-phone validation set** (section 10) and threshold selection on it (7.7, 7.8), plus 8.6 and 8.7.
+
+Dropped: 3.3 (frame copied at FIRE), 3.5 (continuity generation), 5.3 (Kalman), 6.4 and 6.5 (cost fusion, Hungarian), 6.7 (camera-motion compensation; the pan scenario measures it first).
