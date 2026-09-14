@@ -1,5 +1,5 @@
 import type { BodyResult, FaceResult } from '@vladmandic/human';
-import { ASSOCIATION_MARGIN, CONFIRMED_OBSERVATIONS, CROSSING_IOU, FACE_CUE, FACE_CUE_FRESH_MS, STATIONARY_HYPOTHESIS, TENTATIVE_WIN_MARGIN, HEIGHT_CONFIRM_MIN, HEIGHT_MATCH_MIN, LOST_TRACK_MS, MAX_TRACK_GAP_MS, TRACK_GAP_MS } from './calibration';
+import { ASSOCIATION_MARGIN, CONFIRMED_OBSERVATIONS, CROSSING_IOU, FACE_CUE, FACE_CUE_FRESH_MS, LIVE_RIVAL_MIN, LOST_RECLAIM, MATCH_MIN_SCORE, MATCH_WIN_MARGIN, STATIONARY_HYPOTHESIS, TENTATIVE_WIN_MARGIN, HEIGHT_CONFIRM_MIN, HEIGHT_MATCH_MIN, LOST_TRACK_MS, MAX_TRACK_GAP_MS, TRACK_GAP_MS } from './calibration';
 import { clampBox, intersectArea, iou, toNBox, type NBox } from './geometry';
 
 export interface Detection {
@@ -60,9 +60,10 @@ export interface Track {
  *                                                                               gates, comes back unconfirmed
  */
 export type TrackState = 'tentative' | 'confirmed' | 'lost';
+export const isConfirmed = (t: Track): boolean => t.observations >= CONFIRMED_OBSERVATIONS;
 export function trackState(t: Track, now: number): TrackState {
   if (t.lastSeen < now) return 'lost';
-  return t.observations >= CONFIRMED_OBSERVATIONS ? 'confirmed' : 'tentative';
+  return isConfirmed(t) ? 'confirmed' : 'tentative';
 }
 
 const validBox = (b: number[]): boolean => b.length === 4 && b.every(Number.isFinite) && b[2] > 0 && b[3] > 0;
@@ -220,6 +221,9 @@ export function resetIdentity(track: Track): void {
   track.lastFaceSampleAt = 0;
 }
 
+/** How far a velocity estimate is trusted: not at all from one observation, fully once it has settled. */
+const motionTrust = (m: Motion): number => (m.samples <= 1 ? 0 : m.samples === 2 ? 0.6 : 1);
+
 interface Motion {
   vx: number;
   vy: number;
@@ -228,11 +232,6 @@ interface Motion {
   sh: number;
   samples: number;
 }
-
-/**
- * A person the pose model skipped for a frame or two is still the same person. Longer gaps, or any
- * gap where somebody else could have stepped into the box, require fresh identity evidence.
- */
 
 /** Two skipped frames on this device, whatever its frame rate, within fixed bounds. */
 export function trackGapMs(periodMs: number): number {
@@ -292,9 +291,8 @@ export class Tracker {
         m.sh = (1 - alpha) * m.sh + alpha * (d.box[3] / t.box[3] - 1) / dt;
         m.samples++;
         t.observations++;
-        const settled = m.samples <= 1 ? 0 : m.samples === 2 ? 0.6 : 1;
-        t.vx = m.vx * settled;
-        t.vy = m.vy * settled;
+        t.vx = m.vx * motionTrust(m);
+        t.vy = m.vy * motionTrust(m);
       }
       // A frame in which only the face was found keeps the torso observed a moment ago, moved with the
       // box, so one dropped pose does not turn a chest shot into a head-only target. Never longer than
@@ -352,7 +350,7 @@ export class Tracker {
       // beyond that the uncertainty has swallowed the estimate.
       const dt = now - t.lastSeen;
       const lost = dt > gapMs;
-      const trust = m.samples <= 1 ? 0 : m.samples === 2 ? 0.6 : 1;
+      const trust = motionTrust(m);
       const dx = Math.max(-t.box[2], Math.min(t.box[2], m.vx * dt * trust));
       const dy = Math.max(-t.box[3], Math.min(t.box[3], m.vy * dt * trust));
       // The box also grows or shrinks along its recent trend, within a third either way.
@@ -369,7 +367,7 @@ export class Tracker {
         const [px, py] = center(expected);
         const distance = Math.hypot((cx - px) / Math.max(d.box[2], t.box[2]), (cy - py) / Math.max(d.box[3], t.box[3]));
         if (lost) {
-          if (shape < 0.6 || overlap < 0.35 || distance > 0.4) return 0;
+          if (shape < LOST_RECLAIM.shape || overlap < LOST_RECLAIM.overlap || distance > LOST_RECLAIM.distance) return 0;
         } else if (overlap < Math.max(0.05, (gapped ? 0.3 : 0.1) - slack) || distance > (gapped ? 0.5 : 0.8) + slack) return 0;
         return overlap * 0.75 + Math.max(0, 1 - distance) * 0.25;
       };
@@ -388,16 +386,16 @@ export class Tracker {
       if (faced.length === 0 || faced.length === fitting.length) return;
       for (const { d, i } of fitting) scores[i][ti] = Math.max(0, scores[i][ti] + (d.face ? FACE_CUE : -FACE_CUE));
     });
-    const confirmed = candidates.map((t) => t.observations >= CONFIRMED_OBSERVATIONS);
+    const confirmed = candidates.map(isConfirmed);
     const uniqueBest = (values: number[]): number => {
-      const order = values.map((score, index) => ({ score, index })).filter((p) => p.score >= 0.3).sort((a, b) => b.score - a.score);
-      return order.length && (!order[1] || order[0].score - order[1].score >= 0.12) ? order[0].index : -1;
+      const order = values.map((score, index) => ({ score, index })).filter((p) => p.score >= MATCH_MIN_SCORE).sort((a, b) => b.score - a.score);
+      return order.length && (!order[1] || order[0].score - order[1].score >= MATCH_WIN_MARGIN) ? order[0].index : -1;
     };
     // Per detection: a skipped track only wins when no live track fits well, and then by a clear margin.
     // A stale duplicate sitting on top of a live track must not turn every frame into a tie that spawns
     // a new track, nor steal a detection the live track explains.
     const bestTrack = scores.map((row) => {
-      const order = row.map((score, index) => ({ score, index })).filter((p) => p.score >= 0.3).sort((a, b) => b.score - a.score);
+      const order = row.map((score, index) => ({ score, index })).filter((p) => p.score >= MATCH_MIN_SCORE).sort((a, b) => b.score - a.score);
       if (!order.length) return -1;
       // A confirmed track (seen twice or more) explains a body better than one born last frame beside
       // it: a tentative track competes for a body only when it fits clearly better than the best
@@ -409,10 +407,10 @@ export class Tracker {
       const best = pool[0];
       const liveRival = pool.find((p) => live[p.index]);
       // Live tracks compete only with each other; skipped ones are considered only when no live track fits.
-      if (live[best.index] || (liveRival && (liveRival.score >= 0.5 || best.score - liveRival.score < 0.12))) {
+      if (live[best.index] || (liveRival && (liveRival.score >= LIVE_RIVAL_MIN || best.score - liveRival.score < MATCH_WIN_MARGIN))) {
         return uniqueBest(row.map((s, i) => (live[i] && eligible(i) ? s : 0)));
       }
-      return !pool[1] || best.score - pool[1].score >= 0.12 ? best.index : -1;
+      return !pool[1] || best.score - pool[1].score >= MATCH_WIN_MARGIN ? best.index : -1;
     });
     const bestDetection = candidates.map((_, ti) => uniqueBest(scores.map((row) => row[ti])));
     dets.forEach((_, i) => {

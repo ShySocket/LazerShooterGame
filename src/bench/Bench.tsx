@@ -4,12 +4,13 @@ import type { Human, Result } from '@vladmandic/human';
 import { BODY_MODEL, UNKNOWN_ID, type OutfitSig, type Profile } from '../types';
 import { useVisionLoop, type VisionFrame } from '../hooks/useVisionLoop';
 import { useHumanStatus } from '../hooks/useHumanStatus';
-import { buildDetections, containsPoint, type Detection } from '../vision/tracker';
+import { buildDetections, containsPoint } from '../vision/tracker';
 import { toNBox, type NBox } from '../vision/geometry';
 import { bodyProportions, FrameSampler, outfitSignature } from '../vision/clothing';
-import { compactEmbedding, configurePass, FACE_MODEL, faceQuality, faceYawDeg, getHuman, isValidEmbedding, MAX_YAW_DEG, MIN_FACE_PX, unitEmbedding } from '../vision/human';
-import { faceRegion, headRegion, ZoomPass } from '../vision/zoom';
-import { VisionPipeline, type FaceObservation, type LockState } from '../vision/pipeline';
+import { compactEmbedding, configurePass, FACE_MODEL, faceYawDeg, getHuman, isValidEmbedding, MAX_YAW_DEG } from '../vision/human';
+import { faceRegion, ZoomPass } from '../vision/zoom';
+import { VisionPipeline, type LockState } from '../vision/pipeline';
+import { makeFrameOps } from '../vision/frameOps';
 import { drawOverlay } from '../vision/overlay';
 import { topBelief } from '../vision/scoring';
 import { DEFAULT_SETTINGS } from '../types';
@@ -342,35 +343,9 @@ export function Bench() {
     const crosshair = aim(win);
     if (!win || !crosshair) return;
     const dets = buildDetections(res.body, res.face);
-    const aspect = res.width / res.height;
-    let img: ImageData | null | undefined;
-    let cropMs = 0;
-    let clothingMs = 0;
-    const frameStart = performance.now();
-    const outcome = await pipeline.current.processFrame(dets, frame.capturedAt, res.width, res.height, crosshair, {
-      sampleOutfit: (d: Detection) => {
-        if (!d.body) return null;
-        const t0 = performance.now();
-        if (img === undefined) img = sampler.current.grab(frame.frame);
-        const obs = img ? { sig: outfitSignature(img, d.body), props: bodyProportions(d.body) } : null;
-        clothingMs += performance.now() - t0;
-        return obs;
-      },
-      cropFaces: async (_region, d): Promise<FaceObservation[]> => {
-        const region: NBox = d.face ? faceRegion(toNBox(d.face.boxRaw), aspect) : d.body ? headRegion(d.body, d.box, aspect) : d.box;
-        const t0 = performance.now();
-        const faces = await zoom.current.run(human, frame.frame, region);
-        cropMs += performance.now() - t0;
-        return faces
-          .map((zf) => ({ zf, px: Math.min(zf.box[2] * res.width, zf.box[3] * res.height) }))
-          .filter(({ zf, px }) => isValidEmbedding(zf.face.embedding) && zf.face.score >= 0.7 && faceYawDeg(zf.face) <= MAX_YAW_DEG && px >= MIN_FACE_PX)
-          .map(({ zf, px }) => ({ box: zf.box, embedding: unitEmbedding(zf.face.embedding!), quality: faceQuality(px) }));
-      },
-      isCurrent: frame.isCurrent,
-    });
-    visionProfile.record('crops', cropMs);
-    visionProfile.record('clothing', clothingMs);
-    visionProfile.record('tracking', Math.max(0, performance.now() - frameStart - cropMs - clothingMs));
+    const { ops, done } = makeFrameOps({ frame: frame.frame, width: res.width, height: res.height, human, zoom: zoom.current, sampler: sampler.current, isCurrent: frame.isCurrent });
+    const outcome = await pipeline.current.processFrame(dets, frame.capturedAt, res.width, res.height, crosshair, ops);
+    done();
     if (!outcome) return;
     const s = stats.current;
     s.frames++;
@@ -477,6 +452,7 @@ export function Bench() {
   useVisionLoop(videoRef, running && ready && Boolean(photo), onFrame);
 
   const start = () => {
+    visionProfile.reset();
     stats.current = emptyStats();
     pipeline.current.invalidate();
     rangeLevel.current = -1;

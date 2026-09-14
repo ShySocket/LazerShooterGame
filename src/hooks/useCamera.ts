@@ -137,10 +137,15 @@ export function useCamera(facing: Facing, enabled = true) {
         try {
           if (!navigator.mediaDevices?.getUserMedia) throw new Error('This browser cannot open the camera here. The page must be served over HTTPS.');
           const request = navigator.mediaDevices.getUserMedia(constraints);
-          // A request that resolves after the timeout (or after this effect was cancelled) must not
-          // leave a live camera stream running that nothing owns.
-          request.then((late) => { if (late !== stream && (cancelled || streamRef.current !== late)) late.getTracks().forEach((t) => t.stop()); }, () => undefined);
-          stream = await withTimeout(request, 20000, 'The camera permission prompt');
+          // A request that resolves only after the timeout below must not leave a live camera stream
+          // running that nothing owns. The guard is armed in the catch path, after the timeout has
+          // rejected, so it can never run against the stream this attempt adopts.
+          try {
+            stream = await withTimeout(request, 20000, 'The camera permission prompt');
+          } catch (e) {
+            request.then((late) => late.getTracks().forEach((t) => t.stop()), () => undefined);
+            throw e;
+          }
           break;
         } catch (e) {
           lastError = e;

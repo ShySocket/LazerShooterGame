@@ -14,7 +14,14 @@
 export const CALIBRATION_VERSION = '2026-09-14.5';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
-/** Centred cosine below `reject` is no evidence for a player; above `accept` is a solid match. */
+/**
+ * Thresholds on the mean-centred cosine (embedding.ts centredSimilarity). Measured on 2026-09-13 over
+ * 61 faces through the game's crop pipeline: strangers median -0.03, 90th percentile 0.20, 99th 0.39;
+ * a face against a downscaled copy of itself 0.92 at 28 px and 0.99 at 60 px. Raw cosine on this
+ * model is unusable as an absolute score (strangers median 0.4, up to 0.8) because every embedding
+ * shares one dominant direction. `reject` sits above the stranger 90th percentile, `accept` well
+ * above the 99th.
+ */
 export const FACE_CALIB = { reject: 0.25, accept: 0.55 };
 /** Two centred embeddings this similar are the same person for enrolment sanity checks. */
 export const SAME_PERSON_MIN = 0.35;
@@ -32,6 +39,13 @@ export const MAX_YAW_DEG = 45;
 export const EVIDENCE_WEIGHTS = { face: 0.6, cloth: 0.3, body: 0.1 };
 /** The stranger vote a partial outfit match must beat by the hit margin. */
 export const STRANGER_BASELINE = 0.95;
+/**
+ * Outfit similarity to evidence: (sim - floor) / span, scaled by how much of the outfit was compared.
+ * Without the trousers the scale is capped at noThighsCap, so a shirt alone cannot reach a hit.
+ */
+export const CLOTHING_EVIDENCE = { floor: 0.45, span: 0.35, noThighsCap: 0.55, coverageFloor: 0.2 };
+/** A clothing region that clearly contradicts (clothing.ts REGION_CONTRADICTION) caps the whole outfit match here. */
+export const REGION_CONTRADICTION_CAP = 0.4;
 /** How fast the running face mean follows new frames once it has a few samples. */
 export const MEAN_ALPHA = 0.3;
 /** A new frame this dissimilar (centred) to the mean means the track switched person; start over. */
@@ -64,6 +78,13 @@ export const LOST_TRACK_MS = 1500;
 export const CONFIRMED_OBSERVATIONS = 2;
 /** A tentative track takes a body from a confirmed candidate only when its match score beats it by this much. */
 export const TENTATIVE_WIN_MARGIN = 0.25;
+/** A detection-to-track match below this score is no match; the winner must lead the runner-up by the margin. */
+export const MATCH_MIN_SCORE = 0.3;
+export const MATCH_WIN_MARGIN = 0.12;
+/** A live track fitting a body at least this well keeps a skipped track from claiming it. */
+export const LIVE_RIVAL_MIN = 0.5;
+/** Gates for a lost track (skipped longer than the gap) to reclaim a body: shape ratio, IoU, centre distance. */
+export const LOST_RECLAIM = { shape: 0.6, overlap: 0.35, distance: 0.4 };
 /**
  * Weight of the 'stayed where they were' hypothesis against the velocity prediction when matching:
  * high enough to keep a track through a reversal, low enough that two players swapping places still
@@ -96,10 +117,20 @@ export const ASSOCIATION_MARGIN = 0.18;
 export const AIM_EDGE_BAND = { x: 0.05, y: 0.03 };
 
 // ---- Shot timing (shot.ts) ----------------------------------------------------------------------
-/** How old a finished frame may be, before the frame period widens it. */
+/**
+ * How old a finished frame may be before a tap on it is refused. Age is measured from capture,
+ * including all inference time: on a phone the newest finished frame is between one and two
+ * inference periods old at any tap, so shot.ts widens this with the measured period, up to the ceiling.
+ */
 export const STALE_FRAME_MS = 350;
 export const MAX_STALE_FRAME_MS = 1100;
-/** Geometry older than this cannot decide a shot on its own; it can only nominate a burst. */
+/**
+ * Geometry budget for an instant hit: a position older than this cannot say who is under the dot
+ * now, however well the person is known. Older frames only nominate a candidate for a burst that
+ * must see them under the dot again in a frame captured after the tap. Unlike the stale allowance
+ * this does not grow with a slow phone's frame period: slow inference widens the identity memory,
+ * not the aim.
+ */
 export const GEOMETRY_FRESH_MS = 250;
 /** A borderline shot may wait this long for more frames: at least two more frames on a slow phone. */
 export const BURST_MS = 300;
@@ -107,8 +138,19 @@ export const MAX_BURST_MS = 900;
 export const BURST_FRAMES = 12;
 
 // ---- Pipeline scheduling and live enrolment (pipeline.ts) ---------------------------------------
-/** Clothing is only re-sampled for tracks whose face has not been seen this recently. */
+/** Clothing is only re-sampled for tracks whose face has not been seen this recently and leads by this margin. */
 export const FACE_FRESH_MS = 1500;
+export const FACE_FRESH_MIN_MARGIN = 0.3;
+/** Another body covering this share of a torso makes its clothing pixels unusable. */
+export const TORSO_COVER_FRACTION = 0.3;
+/** A clothing audit contradicts the face identity when the outfit's top pick reaches `top` while the current identity has at most `current`. */
+export const CLOTHING_CONTRADICTION = { top: 0.75, current: 0.2 };
+/** Belief step per clothing frame (one reference period). */
+export const CLOTHING_BELIEF_ALPHA = 0.35;
+/** A track whose face has not been seen for this long is carried by its clothing. */
+export const FACE_VIA_TIMEOUT_MS = 3000;
+/** A crosshair target with fewer observations than this is cropped every frame. */
+export const MATURE_TRACK_OBSERVATIONS = 3;
 /** Pixel readback for clothing happens at most this often, whatever the frame rate. */
 export const CLOTHING_INTERVAL_MS = 150;
 /** While the face carries the identity, the outfit is still checked this often for a contradiction. */

@@ -38,3 +38,23 @@ test('a stored scan stands in for a face scan only when complete, current, and i
   assert.equal(isCurrentFaceScan({ faceModel: FACE_MODEL, face: [...full.slice(1), new Array(512).fill(0)] }), false);
   assert.equal(isCurrentFaceScan({ faceModel: FACE_MODEL, face: 'corrupt' }), false);
 });
+
+
+test('mean-centring removes the direction every face shares', async () => {
+  const { FACE_MEAN } = await import('../src/vision/faceMean');
+  const { centredSimilarity, unitSimilarity, unitEmbedding, centreUnit } = await import('../src/vision/embedding');
+  assert.equal(centredSimilarity(FACE_MEAN, FACE_MEAN), 0, 'the mean itself has no centred direction');
+  // Two faces the way this model produces them: the shared direction (length 0.66) plus an
+  // independent part of length 0.75 orthogonal to it, so each is a unit vector.
+  const meanDot = FACE_MEAN.reduce((a, v) => a + v * v, 0);
+  const face = (s: number) => {
+    const raw = FACE_MEAN.map((_, i) => Math.sin(i * s));
+    const proj = raw.reduce((a, v, i) => a + v * FACE_MEAN[i], 0) / meanDot;
+    const perp = unitEmbedding(raw.map((v, i) => v - proj * FACE_MEAN[i]));
+    return unitEmbedding(FACE_MEAN.map((v, i) => v + 0.75 * perp[i]));
+  };
+  assert.ok(unitSimilarity(face(0.3), face(0.7)) > 0.35, 'raw cosine says two strangers are alike');
+  assert.ok(centredSimilarity(face(0.3), face(0.7)) < 0.2, 'centred cosine says they are not');
+  const short = [0.6, 0.8];
+  assert.equal(centreUnit(short), short, 'a vector of another length passes through untouched');
+});

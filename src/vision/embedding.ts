@@ -4,19 +4,9 @@ import { FACE_MEAN } from './faceMean';
 /** Square-padded InsightFace embeddings; older distorted scans must be repeated. */
 export const FACE_MODEL = 'insightface-mobilenet-swish-sq';
 export const FACE_EMBEDDING_SIZE = 512;
-/**
- * Thresholds on the mean-centred cosine (see centredSimilarity). Measured on 2026-09-13 over 61 faces
- * through the game's crop pipeline: strangers median -0.03, 90th percentile 0.20, 99th 0.39; a face
- * against a downscaled copy of itself 0.92 at 28 px and 0.99 at 60 px. Raw cosine on this model is
- * unusable as an absolute score (strangers median 0.4, up to 0.8) because every embedding shares
- * one dominant direction. `reject` sits above the stranger 90th percentile, `accept` well above the 99th.
- */
+// The thresholds are documented and versioned in calibration.ts; re-exported here for their callers.
 import { FACE_CALIB, FACE_CONFLICT, FULL_QUALITY_FACE_PX, MAX_YAW_DEG, MIN_FACE_PX, SAME_PERSON_MIN } from './calibration';
 export { FACE_CALIB, FACE_CONFLICT, FULL_QUALITY_FACE_PX, MAX_YAW_DEG, MIN_FACE_PX, SAME_PERSON_MIN };
-/** Two centred embeddings this similar are the same person for enrolment sanity checks. */
-/** Two players whose scans are this alike will be confused at range; the lobby warns. */
-/** Faces smaller than this in the full frame are too blurred for a trustworthy embedding. */
-/** Above this size a face embedding gets full weight; between, blur discounts it. */
 
 /** 0..1 confidence discount for a face of `px` pixels: a 30 px face keeps only ~0.7 of its similarity. */
 export function faceQuality(px: number): number {

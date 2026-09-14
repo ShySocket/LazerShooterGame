@@ -154,3 +154,41 @@ test('face frames closer than the spacing refine the mean but count as one sampl
   updateFaceMean(legacy, unit([1, 0.12]));
   assert.equal(legacy.faceSamples, 2, 'without a clock every frame counts, as before');
 });
+
+
+test('clothing evidence: a top alone cannot reach the hit threshold, but does not erode an established identity', async () => {
+  const { clothingEvidence } = await import('../src/vision/scoring');
+  const hist = (bin: number) => { const h = new Array(51).fill(0); h[bin] = 0.7; h[bin + 1] = 0.3; return h; };
+  const full = { top: hist(0), thighs: hist(24), shins: hist(24), hair: hist(48) };
+  const cands = [{ id: 'alice', profile: { outfit: { front: full, back: full } } as Profile }];
+  const topOnly = clothingEvidence({ top: hist(0) }, cands);
+  // A shirt alone reaches about 0.55 (README): under the 0.5 + 0.2 margin against the stranger vote.
+  assert.ok(topOnly.alice <= 0.56, `top alone: ${topOnly.alice}`);
+  assert.ok(topOnly[UNKNOWN_ID] > topOnly.alice - 0.2, 'the stranger vote stays within the hit margin of a shirt-only match');
+  const whole = clothingEvidence(full, cands);
+  assert.ok(whole.alice > 0.95, `whole outfit: ${whole.alice}`);
+  const kept = clothingEvidence({ top: hist(0) }, cands, { alice: 0.9 });
+  assert.ok(kept.alice >= 0.9, 'partial coverage keeps an identity the face already established');
+  const contradicted = clothingEvidence({ top: hist(0), thighs: hist(10) }, cands);
+  assert.ok(contradicted.alice < 0.1, `matching top with different trousers: ${contradicted.alice}`);
+});
+
+test('an empty signal map is absent, not a zero vote', () => {
+  const faceOnly = combineEvidence({ face: { alice: 1, [UNKNOWN_ID]: 0 }, cloth: null, body: null })!;
+  const withEmptyCloth = combineEvidence({ face: { alice: 1, [UNKNOWN_ID]: 0 }, cloth: {}, body: {} })!;
+  assert.equal(withEmptyCloth.alice, faceOnly.alice);
+  assert.equal(combineEvidence({ face: {}, cloth: {}, body: null }), null);
+});
+
+test('a suspended identity is confirmed only by evidence that agrees with it', () => {
+  const t = track({ alice: 0.9, bob: 0.05 });
+  t.unconfirmed = true;
+  updateBelief(t, { bob: 1, alice: 0, [UNKNOWN_ID]: 0 }, 0.45, 320);
+  assert.equal(t.unconfirmed, true, 'evidence for somebody else does not confirm alice');
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 330), null);
+  const u = track({ alice: 0.9, bob: 0.05 });
+  u.unconfirmed = true;
+  updateBelief(u, { alice: 1, bob: 0, [UNKNOWN_ID]: 0 }, 0.45, 320);
+  assert.equal(u.unconfirmed, false);
+  assert.equal(resolveHit(u, eligible, 0.5, 0.2, 330)?.id, 'alice');
+});

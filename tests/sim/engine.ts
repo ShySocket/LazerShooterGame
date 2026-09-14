@@ -442,6 +442,8 @@ export interface Aggregate {
   possible: number;
   correct: number;
   wrong: number;
+  /** Hits the oracle could not judge: within jitter of a nearer person's edge, or on the right person off the torso. */
+  ambiguous: number;
   unclear: number;
   miss: number;
   stale: number;
@@ -468,6 +470,7 @@ export async function aggregate(scenario: Scenario, seeds: number[], overrides: 
     possible: sum((r) => r.possibleShots),
     correct: sum((r) => r.counts.correct),
     wrong: sum((r) => r.counts.wrong),
+    ambiguous: sum((r) => r.counts.ambiguous),
     unclear: sum((r) => r.counts.unclear),
     miss: sum((r) => r.counts.miss),
     stale: sum((r) => r.counts.stale + r.counts['no-camera']),

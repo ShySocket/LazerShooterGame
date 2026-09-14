@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { backend, MIN_PLAYERS } from '../net';
 import { CLOTHING_CONFLICT, type Player, type Room, type RoomSettings } from '../types';
 import { outfitConflict } from '../vision/clothing';
-import { FACE_CONFLICT, faceSimilarity, isCurrentFaceScan } from '../vision/human';
+import { centredSimilarity, FACE_CONFLICT, isCurrentFaceScan } from '../vision/human';
 import { haptic, sfx, unlockAudio } from '../audio/sfx';
 import { useAudioState } from '../hooks/useAudioState';
 
@@ -38,14 +38,20 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
 
   // Faces that read alike at this model's resolution: not a blocker (the outfit still separates them),
   // but the players should know that a look-alike hit resolves by clothing alone.
-  const faceAlike: { a: Player; b: Player; sim: number }[] = [];
-  for (let i = 0; i < enrolled.length; i++) {
-    for (let j = i + 1; j < enrolled.length; j++) {
-      let best = 0;
-      for (const fa of room.profiles[enrolled[i].id].face ?? []) for (const fb of room.profiles[enrolled[j].id].face ?? []) best = Math.max(best, faceSimilarity(fa, fb));
-      if (best > FACE_CONFLICT) faceAlike.push({ a: enrolled[i], b: enrolled[j], sim: best });
+  // Stored samples are already unit embeddings, so centredSimilarity's per-array cache serves repeat
+  // renders; the pair loop itself runs only when the profiles or the enrolled set change.
+  const enrolledIds = enrolled.map((p) => p.id).join(',');
+  const faceAlike = useMemo(() => {
+    const out: { a: Player; b: Player; sim: number }[] = [];
+    for (let i = 0; i < enrolled.length; i++) {
+      for (let j = i + 1; j < enrolled.length; j++) {
+        let best = 0;
+        for (const fa of room.profiles[enrolled[i].id].face ?? []) for (const fb of room.profiles[enrolled[j].id].face ?? []) best = Math.max(best, centredSimilarity(fa, fb));
+        if (best > FACE_CONFLICT) out.push({ a: enrolled[i], b: enrolled[j], sim: best });
+      }
     }
-  }
+    return out;
+  }, [room.profiles, enrolledIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const notEnrolled = connected.filter((p) => !p.enrolled);
   const canStart = isHost && enrolled.length >= MIN_PLAYERS && notEnrolled.length === 0 && conflicts.length === 0 && stale.length === 0;

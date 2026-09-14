@@ -67,3 +67,24 @@ test('the recorder captures frames, crops, outfits and fires as numbers only', a
   assert.deepEqual(out.fires, [{ t: 150, crosshair: [0.29, 0.35, 0.42, 0.3] }]);
   assert.match(out.calibration, /^\d{4}-\d{2}-\d{2}\.\d+$/);
 });
+
+
+test('a tampered or malformed recording is refused instead of reporting hits', async () => {
+  const rec = fixture();
+  await assert.rejects(replayRecording({ ...rec, version: 99 }), /version/);
+  await assert.rejects(replayRecording({ ...rec, hitThreshold: null as unknown as number }), /hitThreshold/);
+  await assert.rejects(replayRecording({ ...rec, frames: [{ ...rec.frames[0], dets: [{ box: 'nope' as unknown as [number, number, number, number] }] }] }), /box/);
+});
+
+test('taps after the last frame still get a verdict, and a tap whose eligible set excludes the target cannot hit them', async () => {
+  const rec = fixture();
+  const last = rec.frames[rec.frames.length - 1];
+  const late = { ...rec, fires: [...rec.fires, { t: last.t + 5000, crosshair: last.crosshair, expectedId: 'alice' }] };
+  const r = await replayRecording(late);
+  assert.equal(r.shots.length, late.fires.length, 'every tap has a verdict');
+  assert.equal(r.shots[r.shots.length - 1].outcome, 'stale', 'a tap seconds after the last frame is refused as stale');
+  const excluded = { ...rec, fires: rec.fires.map((f) => ({ ...f, eligible: ['bob'] })) };
+  const e = await replayRecording(excluded);
+  assert.equal(e.hitsBy.alice, undefined, 'alice was not a live opponent at those taps');
+  assert.equal(e.wrong, 0);
+});

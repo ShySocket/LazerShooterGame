@@ -4,6 +4,8 @@ import { configurePass, loadHuman, withHumanSession } from '../vision/human';
 import { visionProfile, waitForVideoFrame } from '../vision/frameClock';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** A presented-frame timestamp older than this against the copy is not the copied frame's. */
+const MAX_CAPTURE_SKEW_MS = 600;
 
 export interface VisionFrame {
   /** The exact camera pixels used for this result, stable until the handler finishes. */
@@ -60,9 +62,9 @@ export function useVisionLoop(
             const width = frame.width;
             const height = frame.height;
             const streamIsLive = () => !stream || !('getVideoTracks' in stream) || stream.getVideoTracks().some((track) => track.readyState === 'live');
-            // A capture time that predates the copy by more than a second is a stale callback (a
-            // paused tab resuming): the copy time is the honest stamp then.
-            const capturedAt = presented.source !== 'sampled' && copyStart - presented.capturedAt < 1000 && presented.capturedAt <= copyStart ? presented.capturedAt : copyStart;
+            // A capture time much older than the copy is a stale callback (the session was held by
+            // another consumer, a paused tab resuming): the copy time is the honest stamp then.
+            const capturedAt = presented.source !== 'sampled' && copyStart - presented.capturedAt < MAX_CAPTURE_SKEW_MS && presented.capturedAt <= copyStart ? presented.capturedAt : copyStart;
             const context: VisionFrame = {
               frame,
               capturedAt,

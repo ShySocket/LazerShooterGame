@@ -1,7 +1,7 @@
 import { UNKNOWN_ID, type BodyProps, type OutfitSig } from '../types';
-import { CLOTHING_AUDIT_MS, CLOTHING_INTERVAL_MS, FACE_BELIEF_ALPHA, FACE_FRESH_MS, FACE_REFRESH_MS, LIVE_FACE_ENROLLED_MIN, LIVE_FACE_MIN, LIVE_FACE_MIN_BELIEF, LIVE_FACE_MIN_QUALITY, LIVE_FACE_MIN_TRACK_SAMPLES, LIVE_FACE_NOVELTY, LIVE_FACE_RUNNER_UP, LIVE_FACES_PER_PLAYER } from './calibration';
+import { CLOTHING_AUDIT_MS, CLOTHING_BELIEF_ALPHA, CLOTHING_CONTRADICTION, CLOTHING_INTERVAL_MS, FACE_BELIEF_ALPHA, FACE_FRESH_MIN_MARGIN, FACE_FRESH_MS, FACE_REFRESH_MS, FACE_VIA_TIMEOUT_MS, MATURE_TRACK_OBSERVATIONS, TORSO_COVER_FRACTION, LIVE_FACE_ENROLLED_MIN, LIVE_FACE_MIN, LIVE_FACE_MIN_BELIEF, LIVE_FACE_MIN_QUALITY, LIVE_FACE_MIN_TRACK_SAMPLES, LIVE_FACE_NOVELTY, LIVE_FACE_RUNNER_UP, LIVE_FACES_PER_PLAYER } from './calibration';
 import { containsPoint, faceOwner, resetIdentity, trackGapMs, Tracker, type Detection, type Track } from './tracker';
-import { indexInSight, intersectArea, type NBox } from './geometry';
+import { crosshairCentre, indexInSight, intersectArea, type NBox } from './geometry';
 import {
   assignIdentities,
   bestBelief,
@@ -109,10 +109,11 @@ interface PendingShot<C> {
   expectedId: string | null;
 }
 
-/** Tunables live in calibration.ts; the ones that shape per-frame scheduling and live enrolment are imported above. */
-export { CLOTHING_INTERVAL_MS };
 /** Besides the crosshair target, this many other bodies get a face crop per frame, round-robin. */
 const EXTRA_CROPS = 1;
+
+/** Whether a track other than `id` in the list still covers the point. */
+const coveredByOther = (tracks: Track[], id: number, x: number, y: number): boolean => tracks.some((c) => c.id !== id && containsPoint(c.box, x, y));
 
 /**
  * Everything between detector output and a shot verdict: tracking, evidence fusion, identity
@@ -129,6 +130,8 @@ export class VisionPipeline<C = unknown> {
   private lastClothingAt = -Infinity;
   /** Face samples learned during this round, per player id. */
   private liveFaces = new Map<string, number[][]>();
+  /** When and how well each live sample was learned, for the shot log and the bench. */
+  private learned: { id: string; t: number; toEnrolled: number; quality: number }[] = [];
   private augmented: { source: Candidate[]; candidates: Candidate[] } | null = null;
 
   constructor(
@@ -149,7 +152,13 @@ export class VisionPipeline<C = unknown> {
     this.pending = null;
     this.lastClothingAt = -Infinity;
     this.liveFaces.clear();
+    this.learned = [];
     this.augmented = null;
+  }
+
+  /** Every live-enrolment event this round: which player, when, how close to their enrolled scan. */
+  liveFaceLog(): { id: string; t: number; toEnrolled: number; quality: number }[] {
+    return this.learned.slice();
   }
 
   /** How many face samples have been learned live for each player this round. */
@@ -183,6 +192,7 @@ export class VisionPipeline<C = unknown> {
     if (list.some((s) => centredSimilarity(s, emb) >= LIVE_FACE_NOVELTY)) return;
     list.push(emb.slice());
     if (list.length > LIVE_FACES_PER_PLAYER) list.shift();
+    this.learned.push({ id, t: this.clock(), toEnrolled: Math.round(toEnrolled * 100) / 100, quality: Math.round(quality * 100) / 100 });
     this.liveFaces.set(id, list);
     this.augmented = null;
   }
@@ -247,30 +257,31 @@ export class VisionPipeline<C = unknown> {
       if (now - t.lastEvidenceAt > IDENTITY_TTL_MS) resetIdentity(t);
       // Clothing and body ratios only matter while the face is not carrying the identity, except for
       // an occasional audit: a wardrobe that strongly contradicts the face is a reason to re-verify.
-      const faceFresh = t.lastFaceAt > 0 && now - t.lastFaceAt < FACE_FRESH_MS && (topBelief(t)?.margin ?? 0) >= 0.3;
+      const faceFresh = t.lastFaceAt > 0 && now - t.lastFaceAt < FACE_FRESH_MS && (topBelief(t)?.margin ?? 0) >= FACE_FRESH_MIN_MARGIN;
       const audit = faceFresh && now - t.lastClothingAt >= CLOTHING_AUDIT_MS;
       if (sampleClothing && d.body && (!faceFresh || audit)) {
         // Another person's box over this torso means the pixels may be theirs: abstain.
         const torso = t.hit;
-        const covered = dets.some((o, j) => j !== i && intersectArea(o.box, torso) > 0.3 * torso[2] * torso[3]);
+        const covered = dets.some((o, j) => j !== i && intersectArea(o.box, torso) > TORSO_COVER_FRACTION * torso[2] * torso[3]);
         if (covered) return;
         const obs = ops.sampleOutfit!(d);
         if (!obs) return;
         t.lastClothingAt = now;
-        const ce = obs.sig ? clothingEvidence(obs.sig, candidates, t.belief) : null;
+        // An unconfirmed identity may not be propped up by its own old belief: it has to earn it back.
+        const ce = obs.sig ? clothingEvidence(obs.sig, candidates, t.unconfirmed ? undefined : t.belief) : null;
         const be = obs.props ? bodyEvidence(obs.props, candidates) : null;
         const ev = combineEvidence({ face: null, cloth: ce, body: be });
         if (!ev) return;
         if (audit) {
           const top = topBelief(t);
           const ranked = Object.entries(ev).sort((a, b) => b[1] - a[1]);
-          const contradicts = top && ranked[0] && ranked[0][0] !== top.id && ranked[0][0] !== UNKNOWN_ID && ranked[0][1] >= 0.75 && (ev[top.id] ?? 0) <= 0.2;
+          const contradicts = top && ranked[0] && ranked[0][0] !== top.id && ranked[0][0] !== UNKNOWN_ID && ranked[0][1] >= CLOTHING_CONTRADICTION.top && (ev[top.id] ?? 0) <= CLOTHING_CONTRADICTION.current;
           // Suspend the identity until fresh evidence rebuilds it; do not swap to the outfit's answer.
           if (contradicts) resetIdentity(t);
           return;
         }
-        updateBelief(t, ev, 0.35, now);
-        if (t.via !== 'face' || now - t.lastFaceAt > 3000) t.via = 'clothing';
+        updateBelief(t, ev, CLOTHING_BELIEF_ALPHA, now);
+        if (t.via !== 'face' || now - t.lastFaceAt > FACE_VIA_TIMEOUT_MS) t.via = 'clothing';
       }
     });
 
@@ -284,9 +295,8 @@ export class VisionPipeline<C = unknown> {
       tracks.map((t) => t.hit),
     );
     // A person seen a moment ago whose box still covers the dot has not vanished: aiming there is ambiguous.
-    const dotX = crosshair[0] + crosshair[2] / 2;
-    const dotY = crosshair[1] + crosshair[3] / 2;
-    const blocked = idx >= 0 && coasting.some((c) => c.id !== tracks[idx].id && containsPoint(c.box, dotX, dotY));
+    const [dotX, dotY] = crosshairCentre(crosshair);
+    const blocked = idx >= 0 && coveredByOther(coasting, tracks[idx].id, dotX, dotY);
     const inSight: Track | null = idx >= 0 && !blocked && !dets[idx].associationAmbiguous ? tracks[idx] : null;
     let zoomed = false;
     const order: number[] = [];
@@ -295,7 +305,7 @@ export class VisionPipeline<C = unknown> {
     // A confident target is refreshed on a bounded interval so a contradiction is still caught.
     if (idx >= 0) {
       const t = tracks[idx];
-      const confident = !this.pending && !t.unconfirmed && !t.identityConflict && t.observations >= 3 && resolveHit(t, eligible, hitThreshold, hitMargin, now) !== null;
+      const confident = !this.pending && !t.unconfirmed && !t.identityConflict && t.observations >= MATURE_TRACK_OBSERVATIONS && resolveHit(t, eligible, hitThreshold, hitMargin, now) !== null;
       if (!confident || now - t.lastFaceAt >= FACE_REFRESH_MS) order.push(idx);
     }
     // Everybody else takes turns, including bodies whose face the full-frame pass did not find (the
@@ -350,11 +360,10 @@ export class VisionPipeline<C = unknown> {
       // Only a different person's body under the dot ends the burst early. The target's own body in a
       // frame that cannot select them (ambiguous association, the dot off the observed torso, a
       // neighbour's edge within the band) is a reason to wait for the next frame, not a miss.
-      const cx = crosshair[0] + crosshair[2] / 2;
-      const cy = crosshair[1] + crosshair[3] / 2;
+      const [cx, cy] = crosshairCentre(crosshair);
       const someoneElse = !t && dets.some((d, j) => tracks[j].id !== p.trackId && containsPoint(d.box, cx, cy));
-      const coasting = !t && !someoneElse && this.tracker.live().some((x) => x.id === p.trackId && now - x.lastSeen <= gapMs);
-      if ((!t && !coasting) || r || decisionAt >= p.deadline || p.framesLeft <= 0) {
+      const targetCoasting = !t && !someoneElse && this.tracker.live().some((x) => x.id === p.trackId && now - x.lastSeen <= gapMs);
+      if ((!t && !targetCoasting) || r || decisionAt >= p.deadline || p.framesLeft <= 0) {
         this.pending = null;
         // No track means the person under the dot changed or vanished: a miss, not an unclear read of them.
         settled = { track: t, resolution: r, elapsedMs: elapsed, zoomed: p.zoom, context: p.context };
@@ -393,17 +402,18 @@ export class VisionPipeline<C = unknown> {
     // dot: the burst below then has to see that same track under the dot in a frame captured after
     // the tap before anything counts. A frame so old that even that is meaningless is refused.
     const staleStart = !geometryFresh(L.t, now);
-    if (!freshFrame(L.t, now, allowanceMs * 3)) return { kind: 'stale', frameAgeMs: Math.round(now - L.t), allowanceMs };
+    // The same bound the game's NO FRESH FRAMES watchdog uses, so a tap on a frozen camera is refused
+    // rather than shown as LOCKING while the label says frames have stopped.
+    if (!freshFrame(L.t, now, Math.max(1000, allowanceMs * 2))) return { kind: 'stale', frameAgeMs: Math.round(now - L.t), allowanceMs };
     const idx = indexInSight(
       L.dets.map((d) => d.box),
       crosshair,
       L.tracks.map((t) => t.hit),
     );
-    const cx = crosshair[0] + crosshair[2] / 2;
-    const cy = crosshair[1] + crosshair[3] / 2;
+    const [cx, cy] = crosshairCentre(crosshair);
     let best = idx >= 0 && !L.dets[idx].associationAmbiguous ? L.tracks[idx] : null;
     // Somebody seen a moment ago still covering the dot makes the aim ambiguous, whoever is detected now.
-    if (best && L.coasting.some((c) => c.id !== best!.id && containsPoint(c.box, cx, cy))) best = null;
+    if (best && coveredByOther(L.coasting, best.id, cx, cy)) best = null;
     let coasted = false;
     if (!best && idx === -1) {
       // The pose model skipped the person under the dot for a frame. The burst below must see them

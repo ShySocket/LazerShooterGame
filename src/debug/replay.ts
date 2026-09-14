@@ -1,6 +1,6 @@
 import { VisionPipeline, type LockState } from '../vision/pipeline';
 import { CALIBRATION_VERSION } from '../vision/calibration';
-import { restoreDetection, type Recording } from './recorder';
+import { assertRecording, restoreDetection, type Recording } from './recorder';
 
 export interface ReplayResult {
   frames: number;
@@ -15,8 +15,7 @@ export interface ReplayResult {
   labelled: number;
   correct: number;
   wrong: number;
-  /** Frames per lock label kind, and per player for green locks. */
-  lockFrames: Record<string, number>;
+  /** Green-lock frames per player. */
   locksBy: Record<string, number>;
   /** Which calibration decided this replay, against which the recording was made. */
   calibration: string;
@@ -29,19 +28,18 @@ export interface ReplayResult {
  * right; compare two calibrations on the same recording, or read it next to the notes.
  */
 export async function replayRecording(rec: Recording, overrides: { hitThreshold?: number; hitMargin?: number } = {}): Promise<ReplayResult> {
+  assertRecording(rec);
   let now = 0;
-  const eligible = new Set(rec.candidates.map((c) => c.id).filter((id) => id !== rec.selfId));
-  const pipeline = new VisionPipeline<{ t: number; expectedId?: string | null }>(
-    {
-      candidates: rec.candidates,
-      exclusiveIds: new Set(rec.candidates.map((c) => c.id)),
-      eligible,
-      hitThreshold: overrides.hitThreshold ?? rec.hitThreshold,
-      hitMargin: overrides.hitMargin ?? rec.hitMargin,
-    },
-    () => now,
-  );
-  const result: ReplayResult = { frames: 0, periodMs: NaN, shots: [], hitsBy: {}, unclear: 0, miss: 0, stale: 0, labelled: 0, correct: 0, wrong: 0, lockFrames: {}, locksBy: {}, calibration: CALIBRATION_VERSION, recordedWith: rec.calibration };
+  const everyone = new Set(rec.candidates.map((c) => c.id).filter((id) => id !== rec.selfId));
+  const config = {
+    candidates: rec.candidates,
+    exclusiveIds: new Set(rec.candidates.map((c) => c.id)),
+    eligible: everyone,
+    hitThreshold: overrides.hitThreshold ?? rec.hitThreshold,
+    hitMargin: overrides.hitMargin ?? rec.hitMargin,
+  };
+  const pipeline = new VisionPipeline<{ t: number; expectedId?: string | null }>(config, () => now);
+  const result: ReplayResult = { frames: 0, periodMs: NaN, shots: [], hitsBy: {}, unclear: 0, miss: 0, stale: 0, labelled: 0, correct: 0, wrong: 0, locksBy: {}, calibration: CALIBRATION_VERSION, recordedWith: rec.calibration };
   const settle = (t: number, s: { resolution: { id: string } | null; track: unknown; elapsedMs: number; context: { expectedId?: string | null } }) => {
     const expectedId = s.context.expectedId;
     const labelled = expectedId !== undefined;
@@ -60,10 +58,41 @@ export async function replayRecording(rec: Recording, overrides: { hitThreshold?
     }
     if (labelled) result.labelled++;
   };
-  let pending: { token: object; deadline: number } | null = null;
+  let pending = null as { token: object; deadline: number } | null;
   const fires = [...rec.fires].sort((a, b) => a.t - b.t);
   let fi = 0;
-  const frames = [...rec.frames].sort((a, b) => a.t - b.t);
+  // Frames in capture order; two frames stamped the same instant would reset the tracker, so the
+  // second is nudged by a tenth of a millisecond.
+  const frames = [...rec.frames].sort((a, b) => a.t - b.t).map((f, i, all) => (i > 0 && f.t <= all[i - 1].t ? { ...f, t: all[i - 1].t + 0.1 } : f));
+  const tap = (fire: (typeof fires)[number]) => {
+    if (pending && pending.deadline <= fire.t) {
+      now = pending.deadline;
+      const s = pipeline.expirePending(pending.token);
+      pending = null;
+      if (s) settle(now, s);
+    }
+    now = fire.t;
+    const labelled = fire.expectedId !== undefined;
+    // The game only lets a hit resolve to a live opponent; replay honours what was eligible at the tap.
+    pipeline.configure({ ...config, eligible: fire.eligible ? new Set(fire.eligible) : everyone });
+    const r = pipeline.fire({ t: now, expectedId: fire.expectedId }, fire.crosshair);
+    if (r.kind === 'pending') pending = { token: r.token, deadline: r.deadline };
+    else if (r.kind === 'instant') settle(now, r.settlement);
+    else {
+      if (r.kind === 'stale' || r.kind === 'no-camera') {
+        result.shots.push({ t: now, outcome: 'stale', elapsedMs: 0, expectedId: fire.expectedId });
+        result.stale++;
+        if (labelled) result.labelled++;
+      } else if (r.kind === 'miss') {
+        result.shots.push({ t: now, outcome: 'miss', elapsedMs: 0, expectedId: fire.expectedId });
+        result.miss++;
+        if (labelled) result.labelled++;
+      } else {
+        // 'busy' is an artefact of replay's period estimate (the game never records a tap it refused as busy): not a labelled shot.
+        result.shots.push({ t: now, outcome: 'busy', elapsedMs: 0, expectedId: fire.expectedId });
+      }
+    }
+  };
   // A frame completes one period after capture; the recording does not carry completion times, so
   // the median spacing between captures stands in for the phone's inference time.
   const gaps = frames.slice(1).map((f, i) => f.t - frames[i].t).sort((a, b) => a - b);
@@ -71,30 +100,7 @@ export async function replayRecording(rec: Recording, overrides: { hitThreshold?
   for (const f of frames) {
     const completeAt = f.t + period;
     // Taps that happened while this frame was being processed.
-    while (fi < fires.length && fires[fi].t < completeAt) {
-      const fire = fires[fi++];
-      if (pending && pending.deadline <= fire.t) {
-        now = pending.deadline;
-        const s = pipeline.expirePending(pending.token);
-        pending = null;
-        if (s) settle(now, s);
-      }
-      now = fire.t;
-      const labelled = fire.expectedId !== undefined;
-      const r = pipeline.fire({ t: now, expectedId: fire.expectedId }, fire.crosshair);
-      if (r.kind === 'pending') pending = { token: r.token, deadline: r.deadline };
-      else if (r.kind === 'instant') settle(now, r.settlement);
-      else {
-        if (r.kind === 'stale' || r.kind === 'no-camera') {
-          result.shots.push({ t: now, outcome: 'stale', elapsedMs: 0, expectedId: fire.expectedId });
-          result.stale++;
-        } else if (r.kind === 'miss') {
-          result.shots.push({ t: now, outcome: 'miss', elapsedMs: 0, expectedId: fire.expectedId });
-          result.miss++;
-        } else result.shots.push({ t: now, outcome: 'busy', elapsedMs: 0, expectedId: fire.expectedId });
-        if (labelled) result.labelled++;
-      }
-    }
+    while (fi < fires.length && fires[fi].t < completeAt) tap(fires[fi++]);
     now = completeAt;
     const dets = f.dets.map(restoreDetection);
     const outcome = await pipeline.processFrame(dets, f.t, rec.width, rec.height, f.crosshair, {
@@ -110,14 +116,15 @@ export async function replayRecording(rec: Recording, overrides: { hitThreshold?
       settle(f.t, outcome.settled);
     }
     const lock: LockState | null = outcome.lock;
-    const kind = lock?.kind ?? 'none';
-    result.lockFrames[kind] = (result.lockFrames[kind] ?? 0) + 1;
     if (lock?.kind === 'lock') result.locksBy[lock.id] = (result.locksBy[lock.id] ?? 0) + 1;
   }
+  // Taps after the last frame completed still get their verdict from that frame.
+  while (fi < fires.length) tap(fires[fi++]);
   if (pending) {
     now = pending.deadline;
     const s = pipeline.expirePending(pending.token);
     if (s) settle(now, s);
   }
+  if (result.shots.length !== rec.fires.length) throw new Error(`replay produced ${result.shots.length} verdicts for ${rec.fires.length} taps`);
   return result;
 }

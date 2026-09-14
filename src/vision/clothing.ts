@@ -1,4 +1,5 @@
 import type { BodyResult } from '@vladmandic/human';
+import { REGION_CONTRADICTION_CAP } from './calibration';
 import type { BodyProps, OutfitSides, OutfitSig } from '../types';
 import { roundTo } from '../util/num';
 
@@ -269,7 +270,7 @@ function outfitMatch(a: OutfitSig, b: OutfitSig): OutfitMatch {
     den += REGION_WEIGHT[k];
   }
   const sim = den === 0 ? 0 : num / den;
-  return { sim: contradiction ? Math.min(sim, 0.4) : sim, coverage: den, thighs: Boolean(a.thighs && b.thighs) };
+  return { sim: contradiction ? Math.min(sim, REGION_CONTRADICTION_CAP) : sim, coverage: den, thighs: Boolean(a.thighs && b.thighs) };
 }
 
 function outfitSimilarity(a: OutfitSig, b: OutfitSig): number {

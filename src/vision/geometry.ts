@@ -1,3 +1,4 @@
+import { AIM_EDGE_BAND } from './calibration';
 /** Normalised box: x, y, w, h in 0..1 of the video frame. */
 export type NBox = [number, number, number, number];
 
@@ -55,9 +56,10 @@ export function toNBox(b: number[]): NBox {
   return [b[0], b[1], b[2], b[3]];
 }
 
-/** Detector boxes jitter by a few percent of their size; a dot this close to another body's edge may really be on that body. */
-import { AIM_EDGE_BAND } from './calibration';
-export { AIM_EDGE_BAND };
+/** The centre dot of a crosshair rectangle. */
+export function crosshairCentre(crosshair: NBox): [number, number] {
+  return [crosshair[0] + crosshair[2] / 2, crosshair[1] + crosshair[3] / 2];
+}
 
 /**
  * Aim at the centre dot. Exactly one box must contain it; any other box whose edge is within the
@@ -65,8 +67,7 @@ export { AIM_EDGE_BAND };
  * whose pixels are under the dot there, and a wrong hit costs more than a refused one.
  */
 export function indexInSight(boxes: NBox[], crosshair: NBox, hits?: NBox[]): number {
-  const cx = crosshair[0] + crosshair[2] / 2;
-  const cy = crosshair[1] + crosshair[3] / 2;
+  const [cx, cy] = crosshairCentre(crosshair);
   let best = -1;
   let near = 0;
   for (let i = 0; i < boxes.length; i++) {

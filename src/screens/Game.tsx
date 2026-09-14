@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { visionProfile } from '../vision/frameClock';
 import type { Human, Result } from '@vladmandic/human';
 import { backend, MIN_PLAYERS } from '../net';
 import { alivePlayers, enrolledPlayers, livesLabel, UNKNOWN_ID, type Player, type Room } from '../types';
@@ -9,12 +8,14 @@ import { useHumanStatus } from '../hooks/useHumanStatus';
 import { useWakeLock } from '../hooks/useWakeLock';
 import { useTorch } from '../hooks/useTorch';
 import { buildDetections, type Track } from '../vision/tracker';
-import { crosshairRect, toNBox, type NBox } from '../vision/geometry';
-import { bodyProportions, FrameSampler, outfitSignature } from '../vision/clothing';
+import { crosshairRect, type NBox } from '../vision/geometry';
+import { FrameSampler } from '../vision/clothing';
 import { topBelief, type Candidate } from '../vision/scoring';
-import { faceQuality, faceYawDeg, isCurrentFaceScan, isValidEmbedding, MAX_YAW_DEG, MIN_FACE_PX, unitEmbedding } from '../vision/human';
-import { faceRegion, headRegion, ZoomPass } from '../vision/zoom';
-import { VisionPipeline, type FaceObservation, type FrameOps, type LockState, type ShotSettlement } from '../vision/pipeline';
+import { isCurrentFaceScan } from '../vision/human';
+import { ZoomPass } from '../vision/zoom';
+import { VisionPipeline, type LockState, type ShotSettlement } from '../vision/pipeline';
+import { makeFrameOps } from '../vision/frameOps';
+import { visionProfile } from '../vision/frameClock';
 import { shotLog } from '../debug/shotLog';
 import { Recorder } from '../debug/recorder';
 import { rangeTest } from '../debug/rangeTest';
@@ -177,6 +178,11 @@ export function Game({ room, me, pid, onLeave }: Props) {
     return () => window.clearInterval(iv);
   }, [room.status, room.startAt, room.code, isHost]);
 
+  // Each round's profile stands on its own; the bench resets its own at start.
+  useEffect(() => {
+    if (room.status === 'playing') visionProfile.reset();
+  }, [room.status]);
+
   const prevRoomStatus = useRef(room.status);
   useEffect(() => {
     if (room.status !== prevRoomStatus.current) {
@@ -239,6 +245,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
     shotLog.add({
       t: Date.now(),
       outcome,
+      liveFaces: pipeline.current.liveFaceCounts(),
       beliefs: track
         ? Object.entries(track.claimed ?? track.belief)
             .sort((a, b) => b[1] - a[1])
@@ -334,42 +341,16 @@ export function Game({ room, me, pid, onLeave }: Props) {
 
     const dets = buildDetections(res.body, res.face);
     const ch = crosshairRect(res.width, res.height, wrap.clientWidth, wrap.clientHeight);
-    const aspect = res.width / res.height;
-    let img: ImageData | null | undefined;
-    let cropMs = 0;
-    let clothingMs = 0;
-    const frameStart = performance.now();
-    const ops: FrameOps = {
-      // The pixel readback is paid once per frame, and only when some track still needs clothing evidence.
-      sampleOutfit: (d) => {
-        if (!d.body) return null;
-        const t0 = performance.now();
-        if (img === undefined) img = sampler.current.grab(frame.frame);
-        const obs = img ? { sig: outfitSignature(img, d.body), props: bodyProportions(d.body) } : null;
-        clothingMs += performance.now() - t0;
-        return obs;
-      },
-      cropFaces: async (_region, d): Promise<FaceObservation[]> => {
-        const region: NBox = d.face ? faceRegion(toNBox(d.face.boxRaw), aspect) : d.body ? headRegion(d.body, d.box, aspect) : d.box;
-        const t0 = performance.now();
-        const faces = await zoom.current.run(human, frame.frame, region);
-        cropMs += performance.now() - t0;
-        return faces
-          .map((zf) => ({ zf, px: Math.min(zf.box[2] * res.width, zf.box[3] * res.height) }))
-          .filter(({ zf, px }) => isValidEmbedding(zf.face.embedding) && zf.face.score >= 0.7 && faceYawDeg(zf.face) <= MAX_YAW_DEG && px >= MIN_FACE_PX)
-          .map(({ zf, px }) => ({ box: zf.box, embedding: unitEmbedding(zf.face.embedding!), quality: faceQuality(px) }));
-      },
-      isCurrent: frame.isCurrent,
-    };
+    const { ops, done } = makeFrameOps({ frame: frame.frame, width: res.width, height: res.height, human, zoom: zoom.current, sampler: sampler.current, isCurrent: frame.isCurrent });
     if (recording && !recorder.current) {
       recorder.current = new Recorder({ width: res.width, height: res.height, candidates, selfId: pid, hitThreshold: settings.hitThreshold, hitMargin: settings.hitMargin, notes: `room ${room.code}, ${navigator.userAgent}` });
       if (import.meta.env.DEV) (window as unknown as { __lzRecorder?: Recorder }).__lzRecorder = recorder.current;
     }
     const outcome = await pipeline.current.processFrame(dets, now, res.width, res.height, ch, recorder.current ? recorder.current.frame(now, ch, dets, ops) : ops);
+    // A frame the pipeline abandoned (camera changed, round reset) never happened as far as a replay is concerned.
+    if (!outcome) recorder.current?.discardLast();
     if (recorder.current && recorder.current.frameCount % 20 === 0) setRecordedFrames(recorder.current.frameCount);
-    visionProfile.record('crops', cropMs);
-    visionProfile.record('clothing', clothingMs);
-    visionProfile.record('tracking', Math.max(0, performance.now() - frameStart - cropMs - clothingMs));
+    done();
     if (!outcome) return;
     if (outcome.settled) {
       window.clearTimeout(pendingTimer.current);
@@ -408,7 +389,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
     const usable = Boolean(L && wrap && !document.hidden && L.width === videoRef.current?.videoWidth && L.height === videoRef.current?.videoHeight);
     const ch = L && wrap ? crosshairRect(L.width, L.height, wrap.clientWidth, wrap.clientHeight) : ([0, 0, 0, 0] as NBox);
     // In range mode the shooter has named their target, so the tap is labelled for the validation set.
-    recorder.current?.fire(performance.now(), ch, context.practice ? context.expectedId : undefined);
+    recorder.current?.fire(performance.now(), ch, context.practice ? context.expectedId : undefined, eligible);
     const result = pipeline.current.fire(context, ch, usable);
     switch (result.kind) {
       case 'busy':
@@ -446,8 +427,11 @@ export function Game({ room, me, pid, onLeave }: Props) {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = `lazer-recording-${room.code}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    // Attached to the document for the click: some mobile browsers ignore a detached anchor's download.
+    document.body.appendChild(a);
     a.click();
-    window.setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    a.remove();
+    window.setTimeout(() => URL.revokeObjectURL(a.href), 10000);
   };
 
   const alive = alivePlayers(room);
@@ -488,7 +472,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
           </button>
           {recording && (
             <button className="hud-btn" onClick={saveRecording}>
-              save rec {recordedFrames}
+              save rec {recordedFrames}{recorder.current?.full ? ' (full)' : ''}
             </button>
           )}
         </div>

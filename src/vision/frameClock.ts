@@ -32,12 +32,29 @@ type VideoWithCallback = HTMLVideoElement & {
  */
 export function waitForVideoFrame(video: HTMLVideoElement | null, fallbackMs = 40, now: () => number = () => performance.now()): Promise<PresentedFrame> {
   const v = video as VideoWithCallback | null;
+  // A hidden document gets no presented frames and should not spin: wait for it to come back, with a
+  // long safety timeout so a stuck 'hidden' state never wedges the loop.
+  if (typeof document !== 'undefined' && document.hidden) {
+    return new Promise((resolve) => {
+      let done = false;
+      const settle = () => {
+        if (done) return;
+        done = true;
+        document.removeEventListener('visibilitychange', settle);
+        clearTimeout(timer);
+        resolve({ capturedAt: now(), source: 'sampled' });
+      };
+      document.addEventListener('visibilitychange', settle);
+      const timer = setTimeout(settle, HIDDEN_POLL_MS);
+    });
+  }
   if (v && typeof v.requestVideoFrameCallback === 'function' && !v.paused && !v.ended && v.readyState >= 2) {
     return new Promise((resolve) => {
       let done = false;
       const settle = (frame: PresentedFrame) => {
         if (done) return;
         done = true;
+        clearTimeout(timer);
         resolve(frame);
       };
       v.requestVideoFrameCallback!((_t, metadata) => {
@@ -46,20 +63,30 @@ export function waitForVideoFrame(video: HTMLVideoElement | null, fallbackMs = 4
         else settle({ capturedAt: metadata.presentationTime, source: 'presented' });
       });
       // A callback that never fires (the track ended, the element was detached) must not hang the loop.
-      setTimeout(() => settle({ capturedAt: now(), source: 'sampled' }), Math.max(fallbackMs * 10, 400));
+      const timer = setTimeout(() => settle({ capturedAt: now(), source: 'sampled' }), Math.max(fallbackMs * 10, 400));
     });
   }
+  // A paused or ended video presents nothing: poll gently instead of spinning at the frame rate.
+  const wait = v && (v.paused || v.ended) ? Math.max(fallbackMs, PAUSED_POLL_MS) : fallbackMs;
   return new Promise((resolve) => {
     let done = false;
+    let raf = 0;
     const settle = () => {
       if (done) return;
       done = true;
+      clearTimeout(timer);
+      if (raf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(raf);
       resolve({ capturedAt: now(), source: 'sampled' });
     };
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(settle);
-    setTimeout(settle, fallbackMs);
+    if (typeof requestAnimationFrame === 'function') raf = requestAnimationFrame(settle);
+    const timer = setTimeout(settle, wait);
   });
 }
+
+/** How long a hidden document waits before re-checking, when no visibilitychange event arrives. */
+const HIDDEN_POLL_MS = 1000;
+/** How often a paused video is re-checked. */
+const PAUSED_POLL_MS = 250;
 
 export type ProfileStage = 'copy' | 'detect' | 'crops' | 'clothing' | 'tracking' | 'handler' | 'age';
 

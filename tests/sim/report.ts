@@ -24,6 +24,7 @@ for (const scenario of SCENARIOS) {
     possible: a.possible,
     hit: pct(a.correct, a.possible),
     wrong: a.wrong,
+    ambig: a.ambiguous,
     unclear: a.unclear,
     miss: a.miss,
     stale: a.stale,
@@ -46,6 +47,7 @@ for (const scenario of SCENARIOS) {
 console.table(rows);
 console.log('\nhit = share of the possible shots (target visibly under the dot at the tap) that registered on them; wrong = shots registered on anybody else (the worst outcome).');
 console.log('lock% = frames with a green LOCK on the right name; tracks = track ids the target went through per run (1 is perfect continuity).');
+console.log('ambig = hits the oracle could not judge (within jitter of a nearer person or off the torso): never credited, never wrong.');
 console.log('maybeNP = frames with a hedged player name shown on a non-player (what a wrong lock grows from); latency = mean tap-to-hit time of the correct shots.');
 if (strict) {
   console.log(failures ? `\n${failures} scenario(s) produced a wrong hit or a wrong lock.` : '\nNo wrong hits and no wrong locks.');

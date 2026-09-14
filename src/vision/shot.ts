@@ -1,19 +1,7 @@
 import type { Track } from './tracker';
-
-/**
- * Age is measured from capture, including all inference time. On a phone the newest finished frame
- * is between one and two inference periods old at any tap, so the allowance follows the measured
- * period instead of assuming a fast device; beyond the ceiling the aim itself is stale.
- */
+// The timing tunables are documented and versioned in calibration.ts; re-exported here for their callers.
 import { BURST_FRAMES, BURST_MS, GEOMETRY_FRESH_MS, MAX_BURST_MS, MAX_STALE_FRAME_MS, STALE_FRAME_MS } from './calibration';
 export { BURST_FRAMES, BURST_MS, GEOMETRY_FRESH_MS, MAX_BURST_MS, MAX_STALE_FRAME_MS, STALE_FRAME_MS };
-/**
- * Geometry budget for an instant hit: a position older than this cannot say who is under the dot
- * now, however well the person is known. Older frames only nominate a candidate for a burst that
- * must see them under the dot again in a frame captured after the tap. Unlike the stale allowance
- * this does not grow with a slow phone's frame period: slow inference widens the identity memory,
- * not the aim.
- */
 
 /** How old a finished frame may be for a device that produces one every `periodMs`. */
 export function staleAllowanceMs(periodMs: number): number {
@@ -30,9 +18,7 @@ export function geometryFresh(capturedAt: number, now: number): boolean {
   return freshFrame(capturedAt, now, GEOMETRY_FRESH_MS);
 }
 
-/** A borderline shot may wait this long for more frames: at least two more frames on a slow phone. */
-/** Frame cap on a burst; the deadline is the real bound, this only stops a runaway fast device. */
-
+/** How long a borderline shot may wait for more frames on a device with this frame period: at least two more frames. */
 export function burstAllowanceMs(periodMs: number): number {
   if (!Number.isFinite(periodMs) || periodMs <= 0) return BURST_MS;
   return Math.max(BURST_MS, Math.min(MAX_BURST_MS, Math.round(periodMs * 2.5)));

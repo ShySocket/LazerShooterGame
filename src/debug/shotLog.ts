@@ -16,6 +16,8 @@ export interface ShotRecord {
   allowanceMs?: number;
   /** Which set of thresholds decided this shot (src/vision/calibration.ts); filled in by add(). */
   calibration?: string;
+  /** Face samples learned live this round per player at the time of the shot, so a hit decided by a learned sample is visible. */
+  liveFaces?: Record<string, number>;
 }
 
 /** Per-round record of every FIRE press on this phone, so a wrong hit can be explained afterwards. */

@@ -1,5 +1,5 @@
 import type { BodyProps, OutfitSig, Profile } from '../types';
-import { BELIEF_MAX_STEPS, BELIEF_REF_PERIOD_MS, EVIDENCE_WEIGHTS, IDENTITY_TTL_MS, LIVE_FACE_SAMPLE_SPACING_MS, MEAN_ALPHA, MEAN_RESET_SIM, STRANGER_BASELINE } from './calibration';
+import { BELIEF_MAX_STEPS, BELIEF_REF_PERIOD_MS, CLOTHING_EVIDENCE, EVIDENCE_WEIGHTS, IDENTITY_TTL_MS, LIVE_FACE_SAMPLE_SPACING_MS, MEAN_ALPHA, MEAN_RESET_SIM, STRANGER_BASELINE } from './calibration';
 import { BODY_MODEL, UNKNOWN_ID } from '../types';
 import { profileOutfitMatch, propsSimilarity } from './clothing';
 import { resetIdentity, type Track } from './tracker';
@@ -56,12 +56,12 @@ export function clothingEvidence(sig: OutfitSig, cands: Candidate[], established
   let top = 0;
   for (const c of cands) {
     const m = c.profile.outfit ? profileOutfitMatch(sig, c.profile.outfit) : { sim: 0, coverage: 0, thighs: false };
-    const raw = clamp01((m.sim - 0.45) / 0.35);
+    const raw = clamp01((m.sim - CLOTHING_EVIDENCE.floor) / CLOTHING_EVIDENCE.span);
     // Acquiring an identity from clothing needs the trousers compared as well as the top: a shirt
     // plus hair can be shared with a stranger, and whatever was not seen cannot tell them apart.
     // Partial coverage does not erode an identity already established while the visible regions
     // keep matching.
-    const factor = Math.min(m.thighs ? 1 : 0.55, 0.2 + 0.8 * m.coverage);
+    const factor = Math.min(m.thighs ? 1 : CLOTHING_EVIDENCE.noThighsCap, CLOTHING_EVIDENCE.coverageFloor + (1 - CLOTHING_EVIDENCE.coverageFloor) * m.coverage);
     const scaled = raw * factor;
     ev[c.id] = Math.max(scaled, Math.min(established?.[c.id] ?? 0, raw));
     top = Math.max(top, scaled);
@@ -188,14 +188,18 @@ export function elapsedAlpha(alpha: number, dtMs: number): number {
  */
 export function updateBelief(track: Track, ev: Record<string, number>, alpha = 0.35, now = performance.now()): void {
   const a = elapsedAlpha(alpha, track.lastEvidenceAt > 0 && now > track.lastEvidenceAt ? now - track.lastEvidenceAt : BELIEF_REF_PERIOD_MS);
+  // Fresh evidence confirms a suspended identity only when it agrees with it; evidence for somebody
+  // else keeps the track unconfirmed until the belief itself has followed the evidence.
+  const believed = Object.entries(track.belief).sort((x, y) => y[1] - x[1])[0]?.[0];
+  const seen = Object.entries(ev).sort((x, y) => y[1] - x[1])[0]?.[0];
+  const agrees = believed === undefined || seen === believed;
   for (const id of new Set([...Object.keys(track.belief), ...Object.keys(ev)])) {
     const v = Number.isFinite(ev[id]) ? clamp01(ev[id]) : 0;
     track.belief[id] = (1 - a) * (track.belief[id] ?? 0) + a * v;
   }
   track.lastEvidenceAt = now;
   track.claimed = null;
-  // Fresh evidence on this body is what an ambiguous frame was waiting for.
-  track.unconfirmed = false;
+  if (agrees) track.unconfirmed = false;
 }
 
 export interface Resolution {

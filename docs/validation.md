@@ -6,7 +6,7 @@ The simulation (`npm run sim`) and the bench (`?bench`) cannot stand in for real
 
 1. Enrol the players as for a normal round (different enrolment and evaluation captures: do not enrol from the same pose you then test).
 2. Open the game with `?record` on the shooter's phone. Turn on **debug**, then **range**, and pick the person you are aiming at (or *Not a player*) so every tap carries its expected target.
-3. Play the scenario. Tap **save rec** when done: the JSON holds boxes, landmarks, embeddings, histograms and taps, never pixels.
+3. Play the scenario. Tap **save rec** when done: the JSON holds boxes, landmarks, embeddings, histograms and taps, never pixels. It also holds every player's enrolled face signatures and outfit histograms, which are re-identifiable: tell the players, keep recordings with the same care as the room, and do not publish them.
 4. Name the file `<scenario>__<phone>__<n>.json` (for example `stationary-3m__iphone12__1.json`) and put it under a folder such as `recordings/2026-09-20/`.
 5. Note next to it: real distance, camera resolution, the face's size in pixels if known, device and browser, lighting.
 
@@ -32,7 +32,7 @@ node scripts/validate.mjs recordings/2026-09-20
 
 The script replays every file through the current pipeline and prints, per recording and per scenario, correct and wrong hits over labelled shots, unclear and miss over all shots, and lock-on-expected over frames, with the denominators. It exits non-zero on any wrong hit. Zero wrong hits in a small sample is not proof of a zero rate; the denominators are the result.
 
-To compare two calibrations on the same recordings, run the script on each branch (or with `npm run replay folder --threshold 0.6 --margin 0.25` for a quick threshold sweep) and put the two totals side by side.
+To compare two calibrations on the same recordings, run the script on each branch (or with `npm run replay -- folder --threshold 0.6 --margin 0.25` for a quick threshold sweep) and put the two totals side by side.
 
 ## Choosing thresholds (plan 7.7 and 7.8)
 
