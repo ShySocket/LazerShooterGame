@@ -405,7 +405,7 @@ One commit per item, tests written with the code; `npm test`, `npm run typecheck
 5. **hitRegion unit tests** for all four branches, and the hit region drawn in the debug overlay.
 6. **Calibration module** with `CALIBRATION_VERSION`, recorded in the shot log.
 7. **Elapsed-time smoothing** in `updateBelief` and time-spaced live-enrolment samples; slow-phone stays at or above 95%. _(done in fb1e22f; items 5 and 6 in 6d038b3 and a9d620b; lookalike-faces 76% to 89%.)_
-8. **Track states and scale velocity** on the existing predictor (tentative, confirmed, lost, retired; lost tracks match but never lock or hit); tests at 100, 200 and 400 ms for constant motion, dropout, pause, reversal, approach, and under the pan scenario.
+8. **Track states and scale velocity** on the existing predictor (tentative, confirmed, lost, retired; lost tracks match but never lock or hit); tests at 100, 200 and 400 ms for constant motion, dropout, pause, reversal, approach, and under the pan scenario. _(done in e5b1bb2: plus a stationary hypothesis and a tentative-win margin found by replaying the pan-crossing traces; range-8m 2.5 to 1.0 ids, occlusion 3.0 to 2.3.)_
 9. **Continuity target on the sweep**: occlusion misses under 15%, range-8m under 12%, crossing under 10%, with zero wrong hits and zero wrong locks.
 10. **Frame timing**: `requestVideoFrameCallback` with fallback, drop superseded work, per-stage profile (9.1 to 9.3); 9.4 only if the profile says so.
 11. **Detector-output recording and replay** (former 2.6), numbers only.
