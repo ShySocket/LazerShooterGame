@@ -11,22 +11,18 @@ export const FACE_EMBEDDING_SIZE = 512;
  * unusable as an absolute score (strangers median 0.4, up to 0.8) because every embedding shares
  * one dominant direction. `reject` sits above the stranger 90th percentile, `accept` well above the 99th.
  */
-export const FACE_CALIB = { reject: 0.25, accept: 0.55 };
+import { FACE_CALIB, FACE_CONFLICT, FULL_QUALITY_FACE_PX, MAX_YAW_DEG, MIN_FACE_PX, SAME_PERSON_MIN } from './calibration';
+export { FACE_CALIB, FACE_CONFLICT, FULL_QUALITY_FACE_PX, MAX_YAW_DEG, MIN_FACE_PX, SAME_PERSON_MIN };
 /** Two centred embeddings this similar are the same person for enrolment sanity checks. */
-export const SAME_PERSON_MIN = 0.35;
 /** Two players whose scans are this alike will be confused at range; the lobby warns. */
-export const FACE_CONFLICT = 0.45;
 /** Faces smaller than this in the full frame are too blurred for a trustworthy embedding. */
-export const MIN_FACE_PX = 34;
 /** Above this size a face embedding gets full weight; between, blur discounts it. */
-export const FULL_QUALITY_FACE_PX = 56;
 
 /** 0..1 confidence discount for a face of `px` pixels: a 30 px face keeps only ~0.7 of its similarity. */
 export function faceQuality(px: number): number {
   if (!Number.isFinite(px) || px < MIN_FACE_PX) return 0;
   return Math.max(0, Math.min(1, (px - MIN_FACE_PX) / (FULL_QUALITY_FACE_PX - MIN_FACE_PX)));
 }
-export const MAX_YAW_DEG = 45;
 
 /** Reject corrupt, missing, wrong-model, or zero-vector profile samples. */
 export function isValidEmbedding(e: unknown, size = FACE_EMBEDDING_SIZE): e is number[] {

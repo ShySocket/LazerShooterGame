@@ -1,4 +1,5 @@
 import type { BodyProps, OutfitSig, Profile } from '../types';
+import { EVIDENCE_WEIGHTS, IDENTITY_TTL_MS, MEAN_ALPHA, MEAN_RESET_SIM, STRANGER_BASELINE } from './calibration';
 import { BODY_MODEL, UNKNOWN_ID } from '../types';
 import { profileOutfitMatch, propsSimilarity } from './clothing';
 import { resetIdentity, type Track } from './tracker';
@@ -67,7 +68,7 @@ export function clothingEvidence(sig: OutfitSig, cands: Candidate[], established
   }
   // The stranger vote is what a partial match must beat by the hit margin: a shirt plus a
   // mismatching hairline reaches about 0.55 and stays within the margin of this baseline.
-  ev[UNKNOWN_ID] = clamp01(0.95 - top);
+  ev[UNKNOWN_ID] = clamp01(STRANGER_BASELINE - top);
   return ev;
 }
 
@@ -86,7 +87,7 @@ export interface Signals {
   body: Record<string, number> | null;
 }
 
-const W = { face: 0.6, cloth: 0.3, body: 0.1 };
+const W = EVIDENCE_WEIGHTS;
 
 /** Weighted mix of whatever signals were available this frame. Without a face the total is capped. */
 export function combineEvidence(sig: Signals): Record<string, number> | null {
@@ -115,11 +116,6 @@ export function combineEvidence(sig: Signals): Record<string, number> | null {
   }
   return out;
 }
-
-/** How fast the running face mean follows new frames once it has a few samples. */
-const MEAN_ALPHA = 0.3;
-/** A new frame this dissimilar (centred) to the mean means the track switched person; start the mean over. */
-const MEAN_RESET_SIM = 0.15;
 
 /**
  * Fold one unit embedding into the track's running mean and return the mean. Matching against the
@@ -205,7 +201,7 @@ export function bestBelief(track: Track, eligible: Set<string>): Resolution | nu
   return t && !track.identityConflict && eligible.has(t.id) ? t : null;
 }
 
-export const IDENTITY_TTL_MS = 1500;
+export { IDENTITY_TTL_MS };
 
 /** A hit only registers when the top candidate is a live opponent, confident, and clearly ahead of everyone else. */
 export function resolveHit(track: Track, eligible: Set<string>, threshold: number, margin: number, now = performance.now()): Resolution | null {

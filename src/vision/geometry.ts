@@ -56,7 +56,8 @@ export function toNBox(b: number[]): NBox {
 }
 
 /** Detector boxes jitter by a few percent of their size; a dot this close to another body's edge may really be on that body. */
-export const AIM_EDGE_BAND = { x: 0.05, y: 0.03 };
+import { AIM_EDGE_BAND } from './calibration';
+export { AIM_EDGE_BAND };
 
 /**
  * Aim at the centre dot. Exactly one box must contain it; any other box whose edge is within the

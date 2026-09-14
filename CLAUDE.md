@@ -49,6 +49,8 @@ JS
 
 **Identity pipeline** (`src/vision/pipeline.ts`, `VisionPipeline`): the single entry point between detector output and a shot verdict, used unchanged by the game screen, the phone bench, and the simulation. Per frame it: builds `Detection`s (`tracker.ts: buildDetections`, which assigns faces to bodies and computes the hittable `hit` region from observed torso/head landmarks), matches them to `Track`s (`Tracker`), samples outfit histograms (`clothing.ts`) and body ratios, runs face embeddings on selected crops, and fuses evidence into per-track `belief` (`scoring.ts: faceEvidence / clothingEvidence / combineEvidence`). Candidates always include two decoys: the shooter's own profile and `UNKNOWN_ID` (stranger baseline). `fire()` picks the track whose hit region contains the crosshair and either resolves instantly (geometry younger than `GEOMETRY_FRESH_MS`, belief above `hitThreshold` and ahead by `hitMargin`) or opens a pending burst that must re-see the same track under the dot in a frame captured after the tap (`shot.ts`).
 
+**Calibration** (`src/vision/calibration.ts`): every tunable (face thresholds, evidence weights, track gaps, height gates, aim band, shot timing, live-enrolment gates) with a `CALIBRATION_VERSION` that the shot log records. The owning modules re-export the same names, so import from them as before; bump the version when a value changes.
+
 **Face similarity** is cosine of mean-centred embeddings (`embedding.ts: centredSimilarity`, mean vector in `faceMean.ts`). `FACE_CALIB` thresholds were measured against that centring; do not compare raw cosine values to them. `centredSimilarity` caches per array identity, so never mutate an embedding array in place.
 
 **Simulation** (`tests/sim/`): `world.ts` is a synthetic 3D scene and detector model (dropouts, jitter, similarity levels tuned to the real models); `engine.ts` plays whole rounds through the real `VisionPipeline`, judges each shot against ground truth (`visible` person under the dot, `ambiguous` near a nearer person's edge), and records `wrongTraces`; `report.ts` prints the table and is the `--strict` gate. `tests/sim.test.ts` holds acceptance thresholds and pins seeds that once produced a wrong hit or wrong lock. Wrong hits and wrong-lock frames are the outcomes the game must never produce; hit rates are bounded loosely.
@@ -59,7 +61,7 @@ JS
 
 ## Current work
 
-`TRACKING_IMPROVEMENT_PLAN.md` is the active plan for identity and aim fixes. Known open regressions: occlusion seed 60 (FIRE resolves to Bob at 9300 ms while aim is on Alice) and stranger seed 23 (a false player-lock frame). Those must become permanent regression tests.
+`TRACKING_IMPROVEMENT_PLAN.md` is the active plan for identity and aim fixes; its "Investigation" section at the top holds the probes and its "GSTACK REVIEW REPORT" at the end holds the locked implementation order. The two mechanisms behind the 2026-09-13 sweep failures (a near player's identity transferring onto a concentric far player's box on a dropout, and a burst giving up on its own target's ambiguous frame) are fixed and pinned by RNG-free tests in `tests/pipeline.test.ts`; the seed numbers in `tests/sim.test.ts` are a sweep, not a reproduction. The continuity targets (occlusion, range-8m, crossing, pan-crossing) are the open work.
 
 ## LESSONS
 

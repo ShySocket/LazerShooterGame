@@ -5,8 +5,8 @@ import type { Track } from './tracker';
  * is between one and two inference periods old at any tap, so the allowance follows the measured
  * period instead of assuming a fast device; beyond the ceiling the aim itself is stale.
  */
-export const STALE_FRAME_MS = 350;
-export const MAX_STALE_FRAME_MS = 1100;
+import { BURST_FRAMES, BURST_MS, GEOMETRY_FRESH_MS, MAX_BURST_MS, MAX_STALE_FRAME_MS, STALE_FRAME_MS } from './calibration';
+export { BURST_FRAMES, BURST_MS, GEOMETRY_FRESH_MS, MAX_BURST_MS, MAX_STALE_FRAME_MS, STALE_FRAME_MS };
 /**
  * Geometry budget for an instant hit: a position older than this cannot say who is under the dot
  * now, however well the person is known. Older frames only nominate a candidate for a burst that
@@ -14,7 +14,6 @@ export const MAX_STALE_FRAME_MS = 1100;
  * this does not grow with a slow phone's frame period: slow inference widens the identity memory,
  * not the aim.
  */
-export const GEOMETRY_FRESH_MS = 250;
 
 /** How old a finished frame may be for a device that produces one every `periodMs`. */
 export function staleAllowanceMs(periodMs: number): number {
@@ -32,10 +31,7 @@ export function geometryFresh(capturedAt: number, now: number): boolean {
 }
 
 /** A borderline shot may wait this long for more frames: at least two more frames on a slow phone. */
-export const BURST_MS = 300;
-export const MAX_BURST_MS = 900;
 /** Frame cap on a burst; the deadline is the real bound, this only stops a runaway fast device. */
-export const BURST_FRAMES = 12;
 
 export function burstAllowanceMs(periodMs: number): number {
   if (!Number.isFinite(periodMs) || periodMs <= 0) return BURST_MS;

@@ -1,4 +1,5 @@
 import type { BodyResult, FaceResult } from '@vladmandic/human';
+import { ASSOCIATION_MARGIN, HEIGHT_CONFIRM_MIN, HEIGHT_MATCH_MIN, MAX_TRACK_GAP_MS, TRACK_GAP_MS } from './calibration';
 import { clampBox, intersectArea, iou, toNBox, type NBox } from './geometry';
 
 export interface Detection {
@@ -47,10 +48,8 @@ const center = (b: NBox): [number, number] => [b[0] + b[2] / 2, b[1] + b[3] / 2]
 /** Smaller over larger box height: 1 for equal heights. */
 const heightRatio = (a: NBox, b: NBox): number => Math.min(a[3] / b[3], b[3] / a[3]);
 /** Below this height ratio a detection cannot continue a track at all. */
-export const HEIGHT_MATCH_MIN = 0.6;
 /** Below this ratio the match is kept but the identity waits for fresh evidence (Track.unconfirmed). */
-export const HEIGHT_CONFIRM_MIN = 0.75;
-const ASSOCIATION_MARGIN = 0.18;
+export { HEIGHT_CONFIRM_MIN, HEIGHT_MATCH_MIN, MAX_TRACK_GAP_MS, TRACK_GAP_MS };
 
 /** Confidence that a face belongs to a detection, using the actual head landmarks when present. */
 function faceAssociationScore(faceBox: NBox, d: Detection): number {
@@ -210,8 +209,6 @@ interface Motion {
  * A person the pose model skipped for a frame or two is still the same person. Longer gaps, or any
  * gap where somebody else could have stepped into the box, require fresh identity evidence.
  */
-export const TRACK_GAP_MS = 450;
-export const MAX_TRACK_GAP_MS = 1100;
 
 /** Two skipped frames on this device, whatever its frame rate, within fixed bounds. */
 export function trackGapMs(periodMs: number): number {

@@ -1,4 +1,5 @@
 import { UNKNOWN_ID, type BodyProps, type OutfitSig } from '../types';
+import { CLOTHING_AUDIT_MS, CLOTHING_INTERVAL_MS, FACE_BELIEF_ALPHA, FACE_FRESH_MS, LIVE_FACE_ENROLLED_MIN, LIVE_FACE_MIN, LIVE_FACE_MIN_BELIEF, LIVE_FACE_MIN_QUALITY, LIVE_FACE_MIN_TRACK_SAMPLES, LIVE_FACE_NOVELTY, LIVE_FACE_RUNNER_UP, LIVE_FACES_PER_PLAYER } from './calibration';
 import { containsPoint, faceOwner, resetIdentity, trackGapMs, Tracker, type Detection, type Track } from './tracker';
 import { indexInSight, intersectArea, type NBox } from './geometry';
 import {
@@ -108,40 +109,10 @@ interface PendingShot<C> {
   expectedId: string | null;
 }
 
-/** Clothing is only re-sampled for tracks whose face has not been seen this recently. */
-const FACE_FRESH_MS = 1500;
-/**
- * Pixel readback for clothing happens at most this often, whatever the frame rate. Below any phone's
- * frame period, so a 200 to 250 ms phone samples every frame rather than every other one.
- */
-export const CLOTHING_INTERVAL_MS = 150;
+/** Tunables live in calibration.ts; the ones that shape per-frame scheduling and live enrolment are imported above. */
+export { CLOTHING_INTERVAL_MS };
 /** Besides the crosshair target, this many other bodies get a face crop per frame, round-robin. */
 const EXTRA_CROPS = 1;
-/** While the face carries the identity, the outfit is still checked this often for a contradiction. */
-const CLOTHING_AUDIT_MS = 1000;
-/** Belief step per face frame; two frames of a good match are enough for a lock. */
-const FACE_BELIEF_ALPHA = 0.45;
-/**
- * Online enrolment: a sharp face that matches one player strongly and nobody else joins that
- * player's gallery for the rest of the round, so later frames at this venue's light and distance
- * match a sample taken under the same conditions. Strict gates keep strangers out: single-frame
- * evidence at least LIVE_FACE_MIN for the winner (centred similarity above about 0.53 at full
- * quality) and at most LIVE_FACE_RUNNER_UP for everybody else, including the stranger vote.
- */
-const LIVE_FACE_MIN = 0.9;
-const LIVE_FACE_RUNNER_UP = 0.3;
-const LIVE_FACE_MIN_QUALITY = 0.8;
-const LIVE_FACES_PER_PLAYER = 6;
-/**
- * A live sample must also resemble the player's ENROLLED scan this much (centred similarity, well
- * above the stranger tail) and come from a track that has believed in that player for several face
- * frames. Without this a single noisy frame could enrol a stranger's face and then keep matching it.
- */
-const LIVE_FACE_ENROLLED_MIN = 0.43;
-const LIVE_FACE_MIN_BELIEF = 0.85;
-const LIVE_FACE_MIN_TRACK_SAMPLES = 3;
-/** A new live sample this similar to one already kept adds nothing. */
-const LIVE_FACE_NOVELTY = 0.85;
 
 /**
  * Everything between detector output and a shot verdict: tracking, evidence fusion, identity
