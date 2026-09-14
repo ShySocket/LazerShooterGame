@@ -52,6 +52,16 @@ test('crossing players never swap identities', async () => {
   assert.ok(hitRate(a) >= 0.5, describe(a));
 });
 
+test('a crossing during a camera pan never swaps identities', async () => {
+  const a = await run('pan-crossing');
+  assert.equal(a.wrong, 0, describe(a));
+  assert.equal(a.wrongLockFrames, 0, describe(a));
+  // Measured 55% over 100 seeds on 2026-09-14 (84% without the pan, 3.2 track ids per run against
+  // 1.5): the pan costs continuity, not safety. The bound is loose on purpose; the continuity work
+  // in the tracking plan is measured against this scenario.
+  assert.ok(hitRate(a) >= 0.35, describe(a));
+});
+
 test('same-hue tops of a different shade are still told apart from behind', async () => {
   const a = await run('lookalike-tops');
   assert.equal(a.wrong, 0, describe(a));

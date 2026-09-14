@@ -59,6 +59,8 @@ export interface PersonSpec {
 }
 
 export interface Person extends PersonSpec {
+  /** Frame offset from the camera pan, written by step() so personBox() needs no scene. */
+  panX?: number;
   face: number[];
   top: number[];
   bottom: number[];
@@ -174,10 +176,21 @@ function perturb(rng: Rng, h: number[], amount: number): number[] {
   return out.map((v) => v / n);
 }
 
+/** A slow side-to-side pan of the phone: every person shifts together in the frame while standing still in the world. */
+export interface Pan {
+  /** Peak horizontal shift, as a fraction of the frame width. */
+  amplitude: number;
+  periodS: number;
+}
+
 export interface Scene {
   people: Person[];
   /** Scene clock in seconds, advanced by step(). */
   time: number;
+  /** Camera pan applied to everybody's frame position; undefined for a steady phone. */
+  pan?: Pan;
+  /** The pan's current x offset, updated by step(). */
+  panX: number;
   profiles: Record<string, Profile>;
   /** The shooter's own profile; it is a candidate decoy like everyone else's. */
   selfId: string;
@@ -211,15 +224,15 @@ export function buildScene(rng: Rng, specs: PersonSpec[], selfId = 'me'): Scene 
     if (!p.player) continue;
     profiles[p.id] = { faceModel: FACE_MODEL, face: p.faceSamples, outfit: { front: p.outfitFront, back: p.outfitBack }, body: p.props, bodyModel: BODY_MODEL };
   }
-  return { people, profiles, selfId, time: 0 };
+  return { people, profiles, selfId, time: 0, panX: 0 };
 }
 
-/** Where a person appears in the frame right now. */
+/** Where a person appears in the frame right now, including the camera pan. */
 export function personBox(p: Person): NBox {
   const h = PERSON_H / (FOV_M_PER_M * p.distance);
   const w = (h * 0.38 * FRAME_H) / FRAME_W;
   const y = 0.5 - h * 0.45;
-  return [p.x - w / 2, y, w, h];
+  return [p.x + (p.panX ?? 0) - w / 2, y, w, h];
 }
 export function faceBox(p: Person): NBox {
   const [x, y, w, h] = personBox(p);
@@ -394,7 +407,9 @@ export function sampleOutfit(rng: Rng, p: Person | null): OutfitObservation | nu
 /** Advance every person by dt seconds, applying any scripted changes whose time has come. */
 export function step(scene: Scene, dtSec: number): void {
   scene.time += dtSec;
+  scene.panX = scene.pan ? scene.pan.amplitude * Math.sin((2 * Math.PI * scene.time) / scene.pan.periodS) : 0;
   for (const p of scene.people) {
+    p.panX = scene.panX;
     for (const s of p.script ?? []) {
       if (s.at > scene.time || s.at <= scene.time - dtSec) continue;
       if (s.facing) p.facing = s.facing;

@@ -4,7 +4,7 @@ import { UNKNOWN_ID } from '../../src/types';
 import type { Candidate } from '../../src/vision/scoring';
 import type { NBox } from '../../src/vision/geometry';
 import { Rng } from './rng';
-import { buildScene, cropFaces, DEFAULT_DETECTOR, detect, FRAME_H, FRAME_W, hitBox, personBox, sampleOutfit, step, type DetectorModel, type Person, type PersonSpec } from './world';
+import { buildScene, cropFaces, DEFAULT_DETECTOR, detect, FRAME_H, FRAME_W, hitBox, personBox, sampleOutfit, step, type DetectorModel, type Pan, type Person, type PersonSpec } from './world';
 
 export interface SimOptions {
   seed: number;
@@ -26,6 +26,8 @@ export interface SimOptions {
   hitMargin: number;
   /** Outcomes that get a frame trace in SimResult.wrongTraces; wrong hits and wrong locks always do. */
   traceOutcomes: Outcome[];
+  /** Side-to-side camera pan; the aim keeps following the target through it. */
+  pan?: Pan;
 }
 
 export const DEFAULT_OPTIONS: Omit<SimOptions, 'target'> = {
@@ -86,6 +88,7 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
   const opts: SimOptions = { ...DEFAULT_OPTIONS, ...scenario.options, ...overrides };
   const rng = new Rng(opts.seed);
   const scene = buildScene(rng, scenario.people, 'me');
+  scene.pan = opts.pan;
   const candidates: Candidate[] = Object.entries(scene.profiles).map(([id, profile]) => ({ id, profile }));
   const eligible = new Set(candidates.map((c) => c.id).filter((id) => id !== scene.selfId));
   let now = 0;
@@ -333,6 +336,12 @@ export const SCENARIOS: Scenario[] = [
     expect: 'two players cross paths at 4 m; the aim follows one of them',
     people: [ME, front('alice', 0.2, 4, 0, { vx: 0.04 }), front('bob', 0.8, 4.4, 6, { vx: -0.04 })],
     options: { target: 'alice', durationMs: 15000 },
+  },
+  {
+    name: 'pan-crossing',
+    expect: 'the same crossing while the phone pans 15% of the frame each way every 3 s; the aim keeps following',
+    people: [ME, front('alice', 0.2, 4, 0, { vx: 0.04 }), front('bob', 0.8, 4.4, 6, { vx: -0.04 })],
+    options: { target: 'alice', durationMs: 15000, pan: { amplitude: 0.15, periodS: 3 } },
   },
   {
     name: 'crossing-backs',
