@@ -376,3 +376,41 @@ test('hitRegion: the observed region is the one Detection.hit carries and a lone
   const lone = buildDetections([], [face([0.4, 0.2, 0.1, 0.12], 2)]);
   assert.ok(lone[0].hit && lone[0].hit[3] < 0.2, 'a face-only detection is not shootable below the head');
 });
+
+
+test('a face-identified track follows the body that still shows a face when a faceless body fits its prediction better', () => {
+  // The pan-crossing seed-2 replay: Alice moves left with the pan, Bob emerges from behind her at the
+  // reversal. Without the cue her track takes Bob's box (0.88 against 0.75) and carries her identity onto him.
+  const gap = 691;
+  const faced = (b: NBox): Detection => ({ box: b, face: face([b[0] + b[2] * 0.4, b[1] + 0.02, b[2] * 0.2, b[3] * 0.15], 1) });
+  const frames: [number, NBox][] = [[6568, [0.48, 0.33, 0.27, 0.37]], [6784, [0.49, 0.32, 0.24, 0.36]], [7000, [0.48, 0.33, 0.24, 0.38]], [7216, [0.44, 0.33, 0.26, 0.36]], [7432, [0.40, 0.33, 0.25, 0.36]], [7648, [0.34, 0.34, 0.22, 0.37]], [7864, [0.29, 0.34, 0.23, 0.36]]];
+  for (const cue of [false, true]) {
+    const tracker = new Tracker();
+    let alice!: ReturnType<Tracker['update']>[number];
+    for (const [t, b] of frames) {
+      [alice] = tracker.update([faced(b)], t, 1500, gap);
+      if (cue) alice.lastFaceAt = t;
+    }
+    const out = tracker.update([faced([0.26, 0.33, 0.26, 0.37]), { box: [0.22, 0.35, 0.24, 0.35] }], 8080, 1500, gap);
+    if (cue) {
+      assert.equal(out[0].id, alice.id, 'with a fresh face identity, the faced body keeps her track');
+      assert.notEqual(out[1].id, alice.id);
+    } else {
+      assert.notEqual(out[0].id, alice.id, 'without the cue the prediction wins: this is the swap the cue exists for');
+    }
+    assert.ok(out.every((t) => t.unconfirmed), 'overlapping bodies are a crossing: nobody may lock or hit until fresh evidence');
+  }
+});
+
+test('a body moving over a briefly skipped neighbour\'s place comes out unconfirmed', () => {
+  const tracker = new Tracker();
+  const [a, b] = tracker.update([detection(0.3, 0.24), detection(0.46, 0.22)], 100);
+  updateBelief(a, { alice: 1 }, 1, 100);
+  updateBelief(b, { bob: 1 }, 1, 100);
+  tracker.update([detection(0.32, 0.24), detection(0.46, 0.22)], 320);
+  // Bob is skipped; Alice's box now reaches over where he stood.
+  const [onlyA] = tracker.update([detection(0.35, 0.24)], 540);
+  assert.equal(onlyA.id, a.id);
+  assert.equal(onlyA.unconfirmed, true);
+  assert.equal(resolveHit(onlyA, new Set(['alice', 'bob']), 0.5, 0.2, 550), null);
+});

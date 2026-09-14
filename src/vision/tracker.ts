@@ -1,5 +1,5 @@
 import type { BodyResult, FaceResult } from '@vladmandic/human';
-import { ASSOCIATION_MARGIN, CONFIRMED_OBSERVATIONS, STATIONARY_HYPOTHESIS, TENTATIVE_WIN_MARGIN, HEIGHT_CONFIRM_MIN, HEIGHT_MATCH_MIN, LOST_TRACK_MS, MAX_TRACK_GAP_MS, TRACK_GAP_MS } from './calibration';
+import { ASSOCIATION_MARGIN, CONFIRMED_OBSERVATIONS, CROSSING_IOU, FACE_CUE, FACE_CUE_FRESH_MS, STATIONARY_HYPOTHESIS, TENTATIVE_WIN_MARGIN, HEIGHT_CONFIRM_MIN, HEIGHT_MATCH_MIN, LOST_TRACK_MS, MAX_TRACK_GAP_MS, TRACK_GAP_MS } from './calibration';
 import { clampBox, intersectArea, iou, toNBox, type NBox } from './geometry';
 
 export interface Detection {
@@ -306,6 +306,18 @@ export class Tracker {
       if (d.associationAmbiguous) t.unconfirmed = true;
       return t;
     });
+    // Crossing: bodies that overlap each other, or a body that has moved over where a briefly skipped
+    // neighbour was, cannot lock or take a hit until fresh evidence confirms the identity on that
+    // body. This is where a swapped identity would otherwise ride unnoticed.
+    for (let i = 0; i < out.length; i++) {
+      for (let j = i + 1; j < out.length; j++) {
+        if (iou(out[i].box, out[j].box) >= CROSSING_IOU) out[i].unconfirmed = out[j].unconfirmed = true;
+      }
+      for (const c of this.tracks) {
+        if (c.lastSeen === now || now - c.lastSeen > gapMs) continue;
+        if (iou(out[i].box, c.box) >= CROSSING_IOU) out[i].unconfirmed = true;
+      }
+    }
     this.lastUpdate = now;
     return out;
   }
@@ -360,6 +372,16 @@ export class Tracker {
       // that changes direction, or a hand that stops does not cost the track.
       return Math.max(fit(predicted), trust > 0 ? STATIONARY_HYPOTHESIS * fit(t.box) : 0);
     }));
+    // Face presence as a tiebreaker: a track identified by its face a moment ago belongs with the
+    // body that still shows a face when another candidate body shows none. Relative, so a single
+    // candidate is never penalised for a dropped face detection.
+    candidates.forEach((t, ti) => {
+      if (!(t.lastFaceAt > 0 && now - t.lastFaceAt <= FACE_CUE_FRESH_MS)) return;
+      const fitting = dets.map((d, i) => ({ d, i })).filter(({ i }) => scores[i][ti] > 0);
+      const faced = fitting.filter(({ d }) => d.face);
+      if (faced.length === 0 || faced.length === fitting.length) return;
+      for (const { d, i } of fitting) scores[i][ti] = Math.max(0, scores[i][ti] + (d.face ? FACE_CUE : -FACE_CUE));
+    });
     const confirmed = candidates.map((t) => t.observations >= CONFIRMED_OBSERVATIONS);
     const uniqueBest = (values: number[]): number => {
       const order = values.map((score, index) => ({ score, index })).filter((p) => p.score >= 0.3).sort((a, b) => b.score - a.score);

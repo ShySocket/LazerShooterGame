@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-09-14.3';
+export const CALIBRATION_VERSION = '2026-09-14.4';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /** Centred cosine below `reject` is no evidence for a player; above `accept` is a solid match. */
@@ -70,6 +70,20 @@ export const TENTATIVE_WIN_MARGIN = 0.25;
  * follow their predicted paths rather than each other's last box.
  */
 export const STATIONARY_HYPOTHESIS = 0.75;
+/**
+ * The one appearance cue the full-frame pass gives before any crop: whether a body has a face box.
+ * When a track whose identity came from its face this recently must choose between a body that
+ * shows a face and one that does not, the faced body gains this much and the faceless one loses it.
+ * Only applied when both kinds are on offer, so a dropped face never weakens a lone match.
+ */
+export const FACE_CUE = 0.15;
+export const FACE_CUE_FRESH_MS = 1000;
+/**
+ * Two tracked bodies overlapping this much (IoU) are crossing: neither identity may lock or take a
+ * hit until fresh evidence confirms it on its own body again. A body emerging from behind another
+ * is where a swapped identity would otherwise go unnoticed until its face or outfit is checked.
+ */
+export const CROSSING_IOU = 0.25;
 /** Below this height ratio a detection cannot continue a track at all. */
 export const HEIGHT_MATCH_MIN = 0.6;
 /** Below this ratio the match is kept but the identity waits for fresh evidence. */
