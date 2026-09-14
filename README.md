@@ -13,10 +13,12 @@ Each body the camera sees gets a running belief of who it is, built from four si
 
 1. **Face recognition** with an InsightFace (ArcFace-family) model against the 8 head angles captured at enrollment. Strongest signal, only works within ~3 m and within about 45° of face-on. Cosine similarity, thresholds in `src/vision/embedding.ts`.
 2. **Identity tracking**: once a body is recognised it stays recognised while it remains in frame, even when it turns around.
-3. **Outfit signature**: colour histograms of the top, thighs, shins, and hair, captured front and back at enrollment. This is what makes back-shots and long-range shots work. The lobby refuses to start if two players' whole outfits look too alike.
+3. **Outfit signature**: colour histograms of the top, thighs, shins, and hair, captured front and back at enrollment. This is what makes back-shots and long-range shots work. The lobby refuses to start if two players' whole outfits look too alike. A match is weighed by how much of the outfit was actually compared, and acquiring an identity from clothing needs the trousers in view as well as the top (a shirt alone, or shirt and hair, can keep an identity the face already established but cannot start one), while a clearly different top or trousers rules the outfit out however well the rest matches. From behind at close range, keep the legs in frame.
 4. **Body proportions**: shoulder, hip, leg, and head ratios from the pose model. A weak tiebreaker that survives a change of clothes.
 
 Two decoys compete with the real players: the shooter's own profile, so a mirror or a look-alike resolves to YOU, and a stranger baseline that wins whenever nobody matches well. A shot only counts when a live opponent is above the hit confidence and clearly ahead of everyone else, decoys included. Otherwise the app says UNCLEAR TARGET, THAT IS YOU, or NOT A PLAYER instead of guessing.
+
+Where a shot may land is the part of the person the pose model actually observed: the head and the torso between the shoulders and hips, never arms, legs, or the empty corners of the outer box, and a face seen without a body offers only the head. A shot decides instantly only from geometry under 250 ms old; an older frame can nominate who was under the dot, after which the same person must be seen there again in a frame captured after the tap. The aim is refused when another body's edge is within a few percent of the dot, or when somebody seen a moment ago still covers it.
 
 After a round, **Show my shot log** on the results screen lists every FIRE press with the top beliefs at that moment. Use it to see why a shot landed or did not.
 
@@ -66,7 +68,13 @@ The simulation (`tests/sim/`) plays whole rounds through the real shooting pipel
 npm run sim
 ```
 
-`hit` is the share of shots that registered on the aimed player, `wrong` counts shots that registered on anybody else (the outcome the game must avoid), and `tracks` is how many track ids the target went through in a run (1 means the tracker never lost them). The acceptance thresholds live in `tests/sim.test.ts`.
+`possible` counts the shots taken while the target really was the visible person under the dot (the world keeps moving while a frame is processed, and a nearer player hides whoever is behind them), `hit` is the share of those that registered on the target, `wrong` counts shots that registered on anybody else (the outcome the game must avoid), and `tracks` is how many track ids the target went through in a run (1 means the tracker never lost them). A dot within the detector's jitter band of a nearer person's edge is judged ambiguous rather than right or wrong. The acceptance thresholds live in `tests/sim.test.ts`, which also pins seeds that once produced a wrong hit or a wrong lock.
+
+```bash
+npm run sim:full
+```
+
+Runs every scenario over 100 seeds and exits non-zero on any wrong hit or wrong-lock frame, printing the frames leading up to each one. Use it as the gate for tracking or decision changes.
 
 ### 2d. Tracking bench on a real phone
 
@@ -77,6 +85,10 @@ Open the game with `?bench` added to the URL, for example `https://your-app.verc
 - **hits / wrong / unclear / miss / off-target** classify every automatic shot. Off-target means the drifting camera had the aim point off the person, so nothing should have happened.
 
 Use **Sample person** for a quick check or **Photo from this phone** with a photo of the people you play with. Keep the tab in the foreground: browsers pause the camera and the vision loop in background tabs.
+
+**Range sweep** holds a still camera at six zoom levels that shrink the person to what a phone sees at roughly 1.5, 3, 4.5, 6, 8 and 9 m, 14 s each, and tabulates per distance how often the body and face were detected, how often a face embedding actually reached the track, the mean belief, lock rate and shot outcomes. It shows where the face gives out and the outfit takes over on that phone. `?bench&auto=range` runs it hands-free (`auto=still` and `auto=drift` run the other two modes), and `window.__bench.range()` returns the rows.
+
+The simulation (`npm run sim`) also covers crossing players, a crossing with both facing away, a nearer player walking in front of the target, and a target turning their back mid-round; these are the cases where a tracker swaps people.
 
 ### 3. Run on your phones over Wi-Fi
 
@@ -96,7 +108,7 @@ Vite prints a `https://192.168.x.x:5173` address. Open it on each phone on the s
 
 0. Optional: tap **Sign in with Google**, then the account row, then **Start deep scan**. About a minute, once.
 1. Host taps **Create a room** and shares the link or code.
-2. Everyone enrolls. Guests do 8 head angles with the selfie camera, then a front and back body scan with the whole body in frame. Pick **A friend is holding it** and they tap Record with the rear camera, or **It is propped up** for a 5-second countdown with the selfie camera. Signed-in players who have done their deep scan only do the body scan, which records today's outfit.
+2. Everyone enrolls. Guests do 8 head angles with the selfie camera, then a front and back body scan with the whole body in frame. The front scan keeps going until it has also learned your face from that distance (look at the phone), which is what the game sees in a round. Pick **A friend is holding it** and they tap Record with the rear camera, or **It is propped up** for a 5-second countdown with the selfie camera. Signed-in players who have done their deep scan only do the body scan, which records today's outfit.
 3. Wear tops that look different from each other. The lobby will tell you if two are too close.
 4. Host taps **Start game**. After a 5-second countdown, hunt.
 5. Hold the phone up, put a player in the crosshair, and tap **FIRE**. The crosshair turns green with the target's name when the phone is confident.
@@ -107,9 +119,10 @@ Vite prints a `https://192.168.x.x:5173` address. Open it on each phone on the s
 - Good light matters more than anything. Face recognition needs the face to be at least the size of a thumbnail on screen.
 - The clothing signature carries hits from behind and at range. Bright, solid, distinct tops work best. Avoid tops that match the walls.
 - Tap **debug** during a game to see boxes, names, and confidence live. Handy for tuning **Hit confidence** in the lobby.
-- `FACE_CALIB` in `src/vision/embedding.ts` was calibrated on real photos through the same square-crop pipeline the game uses: impostor pairs sit at a median of 0.12 cosine similarity with a 90th percentile of 0.27, the same person across photos at a median of about 0.49. `reject` is the impostor 90th percentile, `accept` a solid genuine match. Faces under 34 px are ignored and faces under 56 px count with reduced weight, because blur alone removes about 30% of a match. If real rounds still refuse good shots, compare the similarities in the shot log with these numbers before moving the thresholds.
+- Face similarity is the cosine of **mean-centred** embeddings (`centredSimilarity` in `src/vision/embedding.ts`). Every embedding this model produces shares one dominant direction (the mean vector in `src/vision/faceMean.ts` has length 0.66), so raw cosine puts strangers at about 0.4 and occasionally 0.8; after subtracting the mean, strangers sit at a median of about 0 with a 90th percentile of 0.20 and a 99th of 0.39, while a face stays above 0.92 similar to itself down to 28 px. `FACE_CALIB` (`reject` 0.25, `accept` 0.55) is set against those numbers. Faces under 34 px are ignored and faces under 56 px count with reduced weight. If real rounds refuse good shots, compare the similarities in the shot log with these numbers before moving the thresholds.
+- During a round the shooter's phone adds strong, unambiguous face matches (centred similarity above about 0.53 on a sharp face, with no other player close) to that player's gallery for the rest of the round, so recognition adapts to the venue's light and distances. The lobby warns when two players' scans read alike to the model; hits between them then lean on outfits.
 - Enrolment stores the 8 close selfie angles plus up to 6 face samples taken during the body scan, when the phone is metres away like an opponent's, which is what a round actually sees.
-- If shots keep saying CAMERA TOO SLOW, the phone's frames are older than the allowance in `src/vision/shot.ts`, which already grows with the measured frame period up to a ceiling. The shot log records the frame age and the allowance of each refused shot; run the bench (`?bench`) to see the phone's frame period directly.
+- A shot taken while the newest frame is older than the allowance in `src/vision/shot.ts` (which grows with the measured frame period up to a ceiling) is not refused: it opens a burst that must see the same person under the dot in a frame captured after the tap. Only a frame older than three times the allowance says CAMERA TOO SLOW; the shot log records the frame age and the allowance of each refused shot, and the bench (`?bench`) shows the phone's frame period directly.
 - **Range test**: with debug on, tap **range**, pick who you are aiming at (or "Not a player") and the distance, then fire. Shots deal no damage. The table counts correct, wrong-player, and missed decisions per distance, so a change to thresholds can be compared on the same set of people.
 
 ## Stack

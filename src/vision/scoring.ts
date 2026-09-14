@@ -1,8 +1,8 @@
 import type { BodyProps, OutfitSig, Profile } from '../types';
 import { BODY_MODEL, UNKNOWN_ID } from '../types';
-import { profileOutfitSim, propsSimilarity } from './clothing';
+import { profileOutfitMatch, propsSimilarity } from './clothing';
 import { resetIdentity, type Track } from './tracker';
-import { unitSimilarity } from './embedding';
+import { centredSimilarity } from './embedding';
 
 export interface Candidate {
   id: string;
@@ -44,16 +44,30 @@ export function faceEvidence(
   return ev;
 }
 
-/** Outfit similarity per candidate mapped to 0..1 evidence, plus the stranger baseline. */
-export function clothingEvidence(sig: OutfitSig, cands: Candidate[]): Record<string, number> {
+/**
+ * Outfit similarity per candidate mapped to 0..1 evidence, plus the stranger baseline. Similarity is
+ * measured over the clothing regions both sides have, so it is scaled by how much of the outfit that
+ * covers: a matching shirt alone (coverage 0.45) cannot on its own reach the hit threshold, because
+ * the regions that would tell a stranger in the same shirt apart were never compared.
+ */
+export function clothingEvidence(sig: OutfitSig, cands: Candidate[], established?: Record<string, number>): Record<string, number> {
   const ev: Record<string, number> = {};
   let top = 0;
   for (const c of cands) {
-    const raw = c.profile.outfit ? profileOutfitSim(sig, c.profile.outfit) : 0;
-    ev[c.id] = clamp01((raw - 0.45) / 0.35);
-    top = Math.max(top, ev[c.id]);
+    const m = c.profile.outfit ? profileOutfitMatch(sig, c.profile.outfit) : { sim: 0, coverage: 0, thighs: false };
+    const raw = clamp01((m.sim - 0.45) / 0.35);
+    // Acquiring an identity from clothing needs the trousers compared as well as the top: a shirt
+    // plus hair can be shared with a stranger, and whatever was not seen cannot tell them apart.
+    // Partial coverage does not erode an identity already established while the visible regions
+    // keep matching.
+    const factor = Math.min(m.thighs ? 1 : 0.55, 0.2 + 0.8 * m.coverage);
+    const scaled = raw * factor;
+    ev[c.id] = Math.max(scaled, Math.min(established?.[c.id] ?? 0, raw));
+    top = Math.max(top, scaled);
   }
-  ev[UNKNOWN_ID] = clamp01(0.9 - top);
+  // The stranger vote is what a partial match must beat by the hit margin: a shirt plus a
+  // mismatching hairline reaches about 0.55 and stays within the margin of this baseline.
+  ev[UNKNOWN_ID] = clamp01(0.95 - top);
   return ev;
 }
 
@@ -78,7 +92,8 @@ const W = { face: 0.6, cloth: 0.3, body: 0.1 };
 export function combineEvidence(sig: Signals): Record<string, number> | null {
   // Body proportions are shared by many people. They may break an outfit tie, never identify alone.
   if (!sig.face && !sig.cloth) return null;
-  const present = (Object.keys(W) as (keyof Signals)[]).filter((k) => sig[k]);
+  // A signal with nothing to say (no stored reference for anybody) is absent, not a zero vote.
+  const present = (Object.keys(W) as (keyof Signals)[]).filter((k) => sig[k] && Object.keys(sig[k]!).length > 0);
   if (present.length === 0) return null;
   const ids = new Set<string>();
   for (const k of present) Object.keys(sig[k]!).forEach((id) => ids.add(id));
@@ -103,8 +118,8 @@ export function combineEvidence(sig: Signals): Record<string, number> | null {
 
 /** How fast the running face mean follows new frames once it has a few samples. */
 const MEAN_ALPHA = 0.3;
-/** A new frame this dissimilar to the mean means the track switched person; start the mean over. */
-const MEAN_RESET_SIM = 0.2;
+/** A new frame this dissimilar (centred) to the mean means the track switched person; start the mean over. */
+const MEAN_RESET_SIM = 0.15;
 
 /**
  * Fold one unit embedding into the track's running mean and return the mean. Matching against the
@@ -112,22 +127,26 @@ const MEAN_RESET_SIM = 0.2;
  */
 export function updateFaceMean(track: Track, emb: number[]): number[] {
   const m = track.faceMean;
-  if (!m || m.length !== emb.length || unitSimilarity(m, emb) < MEAN_RESET_SIM) {
+  if (!m || m.length !== emb.length || centredSimilarity(m, emb) < MEAN_RESET_SIM) {
     if (m) resetIdentity(track);
     track.faceMean = emb.slice();
     track.faceSamples = 1;
     return track.faceMean;
   }
+  // A fresh array every update: centredSimilarity caches per array identity, so mutating the mean in
+  // place would keep serving the similarity of an old mean.
   const a = Math.max(MEAN_ALPHA, 1 / (track.faceSamples + 1));
+  const next = new Array<number>(m.length);
   let n = 0;
   for (let i = 0; i < m.length; i++) {
-    m[i] = (1 - a) * m[i] + a * emb[i];
-    n += m[i] * m[i];
+    next[i] = (1 - a) * m[i] + a * emb[i];
+    n += next[i] * next[i];
   }
   const inv = n > 0 ? 1 / Math.sqrt(n) : 0;
-  for (let i = 0; i < m.length; i++) m[i] *= inv;
+  for (let i = 0; i < m.length; i++) next[i] *= inv;
+  track.faceMean = next;
   track.faceSamples++;
-  return m;
+  return next;
 }
 
 /**

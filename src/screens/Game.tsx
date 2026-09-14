@@ -103,6 +103,20 @@ export function Game({ room, me, pid, onLeave }: Props) {
     };
   }, [room.status, spectating, camReady]);
 
+  // Watchdog independent of the vision loop: if frames stop completing (a frozen camera, repeated
+  // inference errors, a paused tab), the green LOCK must not stay on screen from the last good frame.
+  useEffect(() => {
+    const iv = window.setInterval(() => {
+      const L = pipeline.current.getLatest();
+      const limit = Math.max(1000, pipeline.current.staleMs() * 2);
+      if (L && performance.now() - L.t > limit && lockKey.current) {
+        lockKey.current = '';
+        setLock({ text: 'NO FRESH FRAMES', kind: 'warn' });
+      }
+    }, 300);
+    return () => window.clearInterval(iv);
+  }, []);
+
   // Everyone enrolled with a compatible profile, including eliminated players and the shooter themself.
   // The shooter's own profile is a decoy: a mirror or a look-alike resolves to "me" and never counts.
   const candidates: Candidate[] = useMemo(

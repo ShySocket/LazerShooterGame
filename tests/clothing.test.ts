@@ -117,8 +117,8 @@ test('frame sampler reads the dimensions of a frozen canvas as well as video', (
     const sampler = new FrameSampler();
     const still = { width: 640, height: 480 } as HTMLCanvasElement;
     const video = { videoWidth: 480, videoHeight: 640 } as HTMLVideoElement;
-    assert.deepEqual(sampler.grab(still), { width: 192, height: 144 });
-    assert.deepEqual(sampler.grab(video), { width: 192, height: 256 });
+    assert.deepEqual(sampler.grab(still), { width: 384, height: 288 });
+    assert.deepEqual(sampler.grab(video), { width: 384, height: 512 });
     assert.equal(sampler.grab({ width: 0, height: 0 } as HTMLCanvasElement), null);
     assert.deepEqual(drawn, [still, video]);
   } finally {

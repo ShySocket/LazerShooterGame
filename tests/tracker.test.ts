@@ -167,3 +167,41 @@ test('a reset never reuses IDs that an earlier pending shot could reference', ()
   const [current] = tracker.update([detection(0.3)], 200);
   assert.notEqual(current.id, old.id);
 });
+
+test('when only one of two neighbours is detected, the skipped neighbour reclaims its own body instead of the live track swallowing it', () => {
+  const tracker = new Tracker();
+  const [a, b] = tracker.update([detection(0.3, 0.24), detection(0.46, 0.22)], 100);
+  a.belief.alice = 0.9;
+  b.belief.bob = 0.9;
+  // Bob's body is skipped for one frame while Alice drifts a little.
+  const [onlyA] = tracker.update([detection(0.31, 0.24)], 300);
+  assert.equal(onlyA.id, a.id);
+  // Now only Bob's body is found, half a box away from Alice. It must go back to Bob's track.
+  const [onlyB] = tracker.update([detection(0.45, 0.22)], 500);
+  assert.equal(onlyB.id, b.id);
+  assert.equal(onlyB.belief.bob, 0.9);
+  // And Alice reappearing reclaims her own track.
+  const both = tracker.update([detection(0.32, 0.25), detection(0.44, 0.22)], 700);
+  assert.deepEqual(both.map((t) => t.id), [a.id, b.id]);
+});
+
+
+test('constant motion survives one dropped detection at a 400 ms frame period', () => {
+  const tracker = new Tracker();
+  const gap = 1100;
+  const [a] = tracker.update([detection(0.1)], 0, undefined, gap);
+  const [b] = tracker.update([detection(0.2)], 400, undefined, gap);
+  assert.equal(b.id, a.id);
+  tracker.update([], 800, undefined, gap);
+  const [c] = tracker.update([detection(0.4)], 1200, undefined, gap);
+  assert.equal(c.id, a.id);
+});
+
+test('a track seen last update but a long pause ago must not keep its identity across the pause', () => {
+  const tracker = new Tracker();
+  const [old] = tracker.update([detection(0.3)], 100);
+  old.belief.alice = 0.99;
+  const [current] = tracker.update([detection(0.3)], 1400);
+  assert.notEqual(current.id, old.id);
+  assert.deepEqual(current.belief, {});
+});
