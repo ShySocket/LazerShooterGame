@@ -12,6 +12,7 @@ import {
   type PlayerSeed,
   type RoomBackend,
 } from './backend';
+import type { ProfilesSnapshot, ShotSample } from '../feedback/sample';
 
 /** In-memory backend used when no Firebase config is present. Single device only. */
 export class LocalBackend implements RoomBackend {
@@ -119,5 +120,12 @@ export class LocalBackend implements RoomBackend {
       this.emit(code);
     }
     return r.outcome;
+  }
+
+  /** Labelled samples stay in memory; a dev build exposes them on window.__lz.feedback. */
+  readonly feedback: { round: string; sample: ShotSample; profiles: ProfilesSnapshot | null }[] = [];
+
+  async submitShotFeedback(round: string, sample: ShotSample, profiles: ProfilesSnapshot | null): Promise<void> {
+    this.feedback.push({ round, sample, profiles: this.feedback.some((f) => f.round === round) ? null : profiles });
   }
 }

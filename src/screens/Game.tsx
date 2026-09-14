@@ -8,10 +8,10 @@ import { useHumanStatus } from '../hooks/useHumanStatus';
 import { useWakeLock } from '../hooks/useWakeLock';
 import { useTorch } from '../hooks/useTorch';
 import { buildDetections, type Track } from '../vision/tracker';
-import { crosshairRect, type NBox } from '../vision/geometry';
+import { crosshairRect, indexInSight, type NBox } from '../vision/geometry';
 import { FrameSampler } from '../vision/clothing';
 import { topBelief, type Candidate } from '../vision/scoring';
-import { isCurrentFaceScan } from '../vision/human';
+import { compactEmbedding, isCurrentFaceScan } from '../vision/human';
 import { ZoomPass } from '../vision/zoom';
 import { VisionPipeline, type LockState, type ShotSettlement } from '../vision/pipeline';
 import { makeFrameOps } from '../vision/frameOps';
@@ -22,6 +22,10 @@ import { rangeTest } from '../debug/rangeTest';
 import { drawOverlay } from '../vision/overlay';
 import { haptic, sfx, unlockAudio, vibrate } from '../audio/sfx';
 import { roundTo } from '../util/num';
+import { ShotRecorder } from '../feedback/recorder';
+import { FrameKeeper, renderShotPhoto } from '../feedback/photo';
+import { feedbackStore } from '../feedback/store';
+import { IdMap, REVIEWABLE_OUTCOMES } from '../feedback/sample';
 
 interface Props {
   room: Room;
@@ -34,6 +38,8 @@ interface ShotContext {
   practice: boolean;
   distance: number;
   expectedId: string;
+  /** Ties the verdict back to the feedback recorder's record of the tap. */
+  shotId: string;
 }
 
 type Kind = 'info' | 'good' | 'warn' | 'bad';
@@ -56,7 +62,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
   const [debug, setDebug] = useState(false);
   // ?record captures every frame's detections, crops and outfits plus every tap as numbers (never
   // pixels) for offline replay through the same pipeline: npm run replay <folder>.
-  const recorder = useRef<Recorder | null>(null);
+  const replayRecorder = useRef<Recorder | null>(null);
   const [recordedFrames, setRecordedFrames] = useState(0);
   const recording = useMemo(() => new URL(location.href).searchParams.has('record'), []);
   const debugRef = useRef(debug);
@@ -82,6 +88,12 @@ export function Game({ room, me, pid, onLeave }: Props) {
   const lockKey = useRef('');
   const pendingTimer = useRef<number | undefined>(undefined);
   const settleRef = useRef<(s: ShotSettlement<ShotContext>) => void>(() => undefined);
+  // Shot feedback: what the pipeline saw around every FIRE press, and a small copy of the frame it
+  // was decided on, so a failed shot can be shown back to the shooter on the results screen.
+  const recorder = useRef(new ShotRecorder());
+  const keeper = useRef(new FrameKeeper());
+  const photos = useRef(new Map<string, Promise<Blob | null>>());
+  const settledBy = useRef<'tap' | 'frame' | 'timer'>('tap');
 
   useEffect(() => {
     const invalidate = () => {
@@ -89,6 +101,9 @@ export function Game({ room, me, pid, onLeave }: Props) {
       window.clearTimeout(pendingTimer.current);
       lockKey.current = '';
       setLock(null);
+      // A burst in flight will never settle now; its record and photo go with it.
+      recorder.current.abandonOpenShots();
+      photos.current.clear();
     };
     invalidate();
     // The crosshair rectangle depends on the viewport, so a real size change (rotation, split view)
@@ -193,6 +208,16 @@ export function Game({ room, me, pid, onLeave }: Props) {
         show('GO!', 'good', 1000);
         pipeline.current.invalidate();
         window.clearTimeout(pendingTimer.current);
+        // The recorder needs the round's players as they are now; the store keeps their profiles
+        // (numeric signatures only) so a labelled shot can be re-scored offline.
+        const ids = candidates.map((c) => c.id);
+        const startAt = room.startAt ?? backend.now();
+        const key = recorder.current.startRound({ code: room.code, startAt, settings, playerIds: ids, shooter: pid });
+        const idMap = new IdMap(ids);
+        const profiles = Object.fromEntries(candidates.map((c) => [idMap.pid(c.id), { ...c.profile, face: (c.profile.face ?? []).map(compactEmbedding) }]));
+        void feedbackStore.beginRound({ key, code: room.code, startAt, ids: idMap.all(), profiles });
+        keeper.current.clear();
+        photos.current.clear();
       }
     }
   }, [room.status]);
@@ -241,7 +266,24 @@ export function Game({ room, me, pid, onLeave }: Props) {
     void backend.updateMeta(room.code, { status: 'ended', endedAt: backend.now(), winnerId: alive.length === 1 ? alive[0].id : null });
   };
 
-  const logShot = (outcome: string, track: Track | null, extra: Partial<Parameters<typeof shotLog.add>[0]> = {}) =>
+  /** The verdict reaches the feedback recorder; a failed shot keeps its photo for the review card. */
+  const recordVerdict = (shotId: string, outcome: string, track: Track | null, extra: { targetId?: string; via?: string; resolveMs?: number; zoom?: boolean }) => {
+    const photo = photos.current.get(shotId) ?? Promise.resolve(null);
+    photos.current.delete(shotId);
+    const sample = recorder.current.endShot(shotId, {
+      outcome,
+      resolvedTo: extra.targetId ?? null,
+      via: extra.via ?? null,
+      resolveMs: extra.resolveMs ?? null,
+      zoom: Boolean(extra.zoom),
+      track,
+      settledBy: settledBy.current,
+    });
+    if (!sample || !REVIEWABLE_OUTCOMES.has(outcome)) return;
+    void photo.then((blob) => feedbackStore.saveShot({ id: shotId, round: sample.round.key, outcome, hadTrack: sample.shot.trackId !== null, roundMs: sample.shot.roundMs, sample, photo: blob }));
+  };
+
+  const logShot = (outcome: string, track: Track | null, extra: Partial<Parameters<typeof shotLog.add>[0]> = {}, shotId?: string) => {
     shotLog.add({
       t: Date.now(),
       outcome,
@@ -254,6 +296,8 @@ export function Game({ room, me, pid, onLeave }: Props) {
         : [],
       ...extra,
     });
+    if (shotId) recordVerdict(shotId, outcome, track, extra);
+  };
 
   /** A shot has a verdict: either register it, or in range-test mode just record how the lock behaved. */
   const settleShot = ({ track, resolution: r, elapsedMs: resolveMs, zoomed, context }: ShotSettlement<ShotContext>) => {
@@ -283,13 +327,13 @@ export function Game({ room, me, pid, onLeave }: Props) {
     if (!r && !track) {
       // The target left the crosshair, or was replaced by somebody else, before the burst could confirm it.
       sfx.unclear();
-      logShot('miss', null, { resolveMs, zoom: zoomed });
+      logShot('miss', null, { resolveMs, zoom: zoomed }, context.shotId);
       return show('MISS', 'info');
     }
     if (!r) {
       const top = topBelief(track!);
       sfx.unclear();
-      logShot('unclear', track, { resolveMs, zoom: zoomed });
+      logShot('unclear', track, { resolveMs, zoom: zoomed }, context.shotId);
       if (top?.id === pid && top.score > 0.3) return show('THAT IS YOU', 'warn');
       if (top?.id === UNKNOWN_ID && top.score > 0.3) return show('NOT A PLAYER', 'warn');
       return show('UNCLEAR TARGET', 'warn');
@@ -298,7 +342,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
     backend
       .registerHit(room.code, pid, r.id, r.score, r.via)
       .then((out) => {
-        logShot(out, track, { targetName: name, via: r.via, resolveMs, zoom: zoomed });
+        logShot(out, track, { targetName: name, targetId: r.id, via: r.via, resolveMs, zoom: zoomed }, context.shotId);
         if (out === 'hit' || out === 'eliminated') {
           sfx.hit();
           flashScreen('rgba(124,255,59,0.35)');
@@ -308,7 +352,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
       })
       .catch((e: unknown) => {
         console.warn('hit not registered', e);
-        logShot('network error', track, { targetName: name, via: r.via, resolveMs, zoom: zoomed });
+        logShot('network error', track, { targetName: name, targetId: r.id, via: r.via, resolveMs, zoom: zoomed }, context.shotId);
         show('NO CONNECTION, SHOT LOST', 'warn', 2000);
       });
   };
@@ -341,19 +385,24 @@ export function Game({ room, me, pid, onLeave }: Props) {
 
     const dets = buildDetections(res.body, res.face);
     const ch = crosshairRect(res.width, res.height, wrap.clientWidth, wrap.clientHeight);
-    const { ops, done } = makeFrameOps({ frame: frame.frame, width: res.width, height: res.height, human, zoom: zoom.current, sampler: sampler.current, isCurrent: frame.isCurrent });
-    if (recording && !recorder.current) {
-      recorder.current = new Recorder({ width: res.width, height: res.height, candidates, selfId: pid, hitThreshold: settings.hitThreshold, hitMargin: settings.hitMargin, notes: `room ${room.code}, ${navigator.userAgent}` });
-      if (import.meta.env.DEV) (window as unknown as { __lzRecorder?: Recorder }).__lzRecorder = recorder.current;
+    const { ops: baseOps, done } = makeFrameOps({ frame: frame.frame, width: res.width, height: res.height, human, zoom: zoom.current, sampler: sampler.current, isCurrent: frame.isCurrent });
+    if (playing && !rangeMode) keeper.current.keep(frame.frame, now);
+    // The shot-feedback recorder sees every observation; the optional ?record recorder wraps it in turn.
+    const ops = recorder.current.wrapOps(baseOps, dets);
+    if (recording && !replayRecorder.current) {
+      replayRecorder.current = new Recorder({ width: res.width, height: res.height, candidates, selfId: pid, hitThreshold: settings.hitThreshold, hitMargin: settings.hitMargin, notes: `room ${room.code}, ${navigator.userAgent}` });
+      if (import.meta.env.DEV) (window as unknown as { __lzRecorder?: Recorder }).__lzRecorder = replayRecorder.current;
     }
-    const outcome = await pipeline.current.processFrame(dets, now, res.width, res.height, ch, recorder.current ? recorder.current.frame(now, ch, dets, ops) : ops);
+    const outcome = await pipeline.current.processFrame(dets, now, res.width, res.height, ch, replayRecorder.current ? replayRecorder.current.frame(now, ch, dets, ops) : ops);
     // A frame the pipeline abandoned (camera changed, round reset) never happened as far as a replay is concerned.
-    if (!outcome) recorder.current?.discardLast();
-    if (recorder.current && recorder.current.frameCount % 20 === 0) setRecordedFrames(recorder.current.frameCount);
+    if (!outcome) replayRecorder.current?.discardLast();
+    if (replayRecorder.current && replayRecorder.current.frameCount % 20 === 0) setRecordedFrames(replayRecorder.current.frameCount);
     done();
     if (!outcome) return;
+    recorder.current.frameDone(outcome, dets, now, candidates);
     if (outcome.settled) {
       window.clearTimeout(pendingTimer.current);
+      settledBy.current = 'frame';
       settleShot(outcome.settled);
     }
 
@@ -382,15 +431,43 @@ export function Game({ room, me, pid, onLeave }: Props) {
     haptic();
     torch(120);
     flashScreen('rgba(255,255,255,0.9)', 90);
-    const context: ShotContext = { practice: rangeMode, distance: rangeDist, expectedId: rangeTargetId };
+    const shotId = `${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const context: ShotContext = { practice: rangeMode, distance: rangeDist, expectedId: rangeTargetId, shotId };
 
     const L = pipeline.current.getLatest();
     const wrap = wrapRef.current;
     const usable = Boolean(L && wrap && !document.hidden && L.width === videoRef.current?.videoWidth && L.height === videoRef.current?.videoHeight);
     const ch = L && wrap ? crosshairRect(L.width, L.height, wrap.clientWidth, wrap.clientHeight) : ([0, 0, 0, 0] as NBox);
     // In range mode the shooter has named their target, so the tap is labelled for the validation set.
-    recorder.current?.fire(performance.now(), ch, context.practice ? context.expectedId : undefined, eligible);
+    replayRecorder.current?.fire(performance.now(), ch, context.practice ? context.expectedId : undefined, eligible);
     const result = pipeline.current.fire(context, ch, usable);
+    settledBy.current = 'tap';
+    if (result.kind !== 'busy' && !context.practice && L && recorder.current.active()) {
+      const tapAt = performance.now();
+      const idx = indexInSight(L.dets.map((d) => d.box), ch);
+      const track = result.kind === 'instant' ? result.settlement.track : idx >= 0 ? L.tracks[idx] : null;
+      recorder.current.beginShot({
+        id: shotId,
+        tapAt,
+        roundNow: backend.now(),
+        kind: result.kind,
+        crosshair: ch,
+        frameT: L.t,
+        frameAgeMs: Math.round(tapAt - L.t),
+        allowanceMs: pipeline.current.staleMs(),
+        trackId: track?.id ?? null,
+        track,
+        width: L.width,
+        height: L.height,
+        periodMs: pipeline.current.periodMs(),
+        staleMs: pipeline.current.staleMs(),
+        burstMs: pipeline.current.burstMs(),
+        liveFaces: {},
+        eligible,
+      });
+      const kept = keeper.current.take(L.t);
+      photos.current.set(shotId, kept ? renderShotPhoto(kept, ch) : Promise.resolve(null));
+    }
     switch (result.kind) {
       case 'busy':
         return;
@@ -398,13 +475,13 @@ export function Game({ room, me, pid, onLeave }: Props) {
       case 'stale': {
         if (context.practice) return settleShot({ track: null, resolution: null, elapsedMs: 0, zoomed: false, context });
         // The shot log records the frame age next to the allowance, which is the number to compare with staleMs().
-        if (result.kind === 'stale') logShot('stale frame', null, { resolveMs: result.frameAgeMs, allowanceMs: result.allowanceMs });
-        else logShot('no camera', null, { resolveMs: 0 });
+        if (result.kind === 'stale') logShot('stale frame', null, { resolveMs: result.frameAgeMs, allowanceMs: result.allowanceMs }, shotId);
+        else logShot('no camera', null, { resolveMs: 0 }, shotId);
         return show(result.kind === 'stale' ? 'CAMERA TOO SLOW' : 'NO CAMERA LOCK', 'warn');
       }
       case 'miss':
         if (context.practice) return settleShot({ track: null, resolution: null, elapsedMs: 0, zoomed: false, context });
-        logShot('miss', null, { resolveMs: 0 });
+        logShot('miss', null, { resolveMs: 0 }, shotId);
         return show('MISS', 'info');
       case 'instant':
         return settleShot(result.settlement);
@@ -412,6 +489,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
         const { token, burstMs } = result;
         pendingTimer.current = window.setTimeout(() => {
           const settlement = pipeline.current.expirePending(token);
+          settledBy.current = 'timer';
           if (settlement) settleRef.current(settlement);
         }, burstMs);
         show('LOCKING', 'info', burstMs + 100);
@@ -421,7 +499,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
 
   /** Hands the recording to the browser as a JSON download; the player attaches it to a bug report or a replay folder. */
   const saveRecording = () => {
-    const rec = recorder.current?.recording();
+    const rec = replayRecorder.current?.recording();
     if (!rec) return;
     const blob = new Blob([JSON.stringify(rec)], { type: 'application/json' });
     const a = document.createElement('a');
@@ -472,7 +550,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
           </button>
           {recording && (
             <button className="hud-btn" onClick={saveRecording}>
-              save rec {recordedFrames}{recorder.current?.full ? ' (full)' : ''}
+              save rec {recordedFrames}{replayRecorder.current?.full ? ' (full)' : ''}
             </button>
           )}
         </div>

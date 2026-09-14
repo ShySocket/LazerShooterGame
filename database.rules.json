@@ -12,6 +12,21 @@
         ".read": "auth != null && auth.uid == $uid",
         ".write": "auth != null && auth.uid == $uid"
       }
+    },
+    "feedback": {
+      "rounds": {
+        "$round": {
+          "profiles": {
+            ".write": "!data.exists() && $round.matches(/^[A-Z]{4}-[0-9]{9,16}$/)"
+          },
+          "samples": {
+            "$id": {
+              ".write": "!data.exists() && $round.matches(/^[A-Z]{4}-[0-9]{9,16}$/)",
+              ".validate": "newData.hasChildren(['v', 'round', 'shot', 'frames', 'label']) && newData.child('round').child('key').val() == $round"
+            }
+          }
+        }
+      }
     }
   }
 }

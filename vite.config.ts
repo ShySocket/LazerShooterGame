@@ -2,10 +2,21 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 import { VitePWA } from 'vite-plugin-pwa';
+import { execSync } from 'node:child_process';
+
+/** Short commit hash baked into the bundle, so a shot-feedback sample says which build produced it. */
+function appCommit(): string {
+  try {
+    return execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim() || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
 
 // VITE_BASE lets the same build deploy to GitHub Pages (/RepoName/) or Vercel (/).
 export default defineConfig(({ command }) => ({
   base: process.env.VITE_BASE ?? '/',
+  define: { __APP_COMMIT__: JSON.stringify(appCommit()) },
   plugins: [
     react(),
     // Self-signed HTTPS in dev so phones on the same Wi-Fi can open the camera.

@@ -6,11 +6,13 @@
   "scripts": {
     "dev": "vite --host",
     "dev:http": "VITE_HTTPS=0 vite --host",
+    "dev:local": "VITE_LOCAL_MODE=1 VITE_HTTPS=0 vite --host",
+    "replay": "node --import ./tests/register.mjs scripts/replay-feedback.ts",
     "build": "tsc -p tsconfig.json && vite build",
     "test": "tsc -p tsconfig.test.json && node --import ./tests/register.mjs --test tests/*.test.ts",
     "sim": "node --import ./tests/register.mjs tests/sim/report.ts",
     "sim:full": "node --import ./tests/register.mjs tests/sim/report.ts --seeds 100 --strict",
-    "replay": "node --import ./tests/register.mjs tests/replay/run.ts",
+    "replay:rec": "node --import ./tests/register.mjs tests/replay/run.ts",
     "preview": "vite preview --host",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json"
   },

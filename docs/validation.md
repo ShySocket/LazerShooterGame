@@ -32,7 +32,7 @@ node scripts/validate.mjs recordings/2026-09-20
 
 The script replays every file through the current pipeline and prints, per recording and per scenario, correct and wrong hits over labelled shots, unclear and miss over all shots, and lock-on-expected over frames, with the denominators. It exits non-zero on any wrong hit. Zero wrong hits in a small sample is not proof of a zero rate; the denominators are the result.
 
-To compare two calibrations on the same recordings, run the script on each branch (or with `npm run replay -- folder --threshold 0.6 --margin 0.25` for a quick threshold sweep) and put the two totals side by side.
+To compare two calibrations on the same recordings, run the script on each branch (or with `npm run replay:rec -- folder --threshold 0.6 --margin 0.25` for a quick threshold sweep) and put the two totals side by side.
 
 ## Choosing thresholds (plan 7.7 and 7.8)
 

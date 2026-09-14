@@ -1,6 +1,6 @@
 /**
  * Replays every recording in a folder (default tests/replay/fixtures) through the current pipeline
- * and prints one row per file: npm run replay [folder] [--threshold 0.5] [--margin 0.2].
+ * and prints one row per file: npm run replay:rec [folder] [--threshold 0.5] [--margin 0.2].
  * A recording has no ground truth; the table says what the game would decide with today's
  * calibration, which is what to compare across calibrations or read next to the recording's notes.
  */

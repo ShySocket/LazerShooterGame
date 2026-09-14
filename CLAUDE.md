@@ -27,7 +27,8 @@ node --import ./tests/register.mjs --test tests/tracker.test.ts   # one test fil
 node --import ./tests/register.mjs --test --test-name-pattern "crossing" tests/sim.test.ts   # one test by name
 npm run dev                                    # HTTPS dev server on the LAN (camera needs HTTPS)
 npm run dev:http                               # plain HTTP, for browser QA without camera
-npm run replay [folder]                        # replay recordings (?record in the game) through the current calibration
+npm run replay:rec [folder]                    # replay ?record recordings through the current calibration
+npm run replay -- feedback.json                # re-score the uploaded shot-feedback labels (src/feedback/replay.ts)
 ```
 
 Node 22.15+ is required. Tests run the app's TypeScript directly through `tests/register.mjs` (a `node:module` hook that transpiles with `typescript`), so there is no test bundler or jest config. `.claude/launch.json` defines `dev` (5173, https) and `dev-http` for the browser preview.
@@ -62,7 +63,7 @@ JS
 
 ## Current work
 
-`TRACKING_IMPROVEMENT_PLAN.md` holds the 2026-09-13 review, the 2026-09-14 investigation with its probes, and the locked implementation order with a note on each item as it landed. All twelve items are done on this branch: the two wrong-hit mechanisms are pinned by RNG-free tests in `tests/pipeline.test.ts` (the seed numbers in `tests/sim.test.ts` are a sweep, not a reproduction); the tracker has states, a lost-track window, height gates, a face-presence cue and a crossing rule; belief smoothing is elapsed-time based; the simulation has torso landmarks, the measured stranger tail, a pan scenario, and maybeNP/latency columns; every tunable lives in `calibration.ts`; the loop has a frame clock and profile with need-based crops; and rounds can be recorded (`?record`) and replayed (`npm run replay`, `scripts/validate.mjs`). What remains needs phones: the validation set in `docs/validation.md`.
+`TRACKING_IMPROVEMENT_PLAN.md` holds the 2026-09-13 review, the 2026-09-14 investigation with its probes, and the locked implementation order with a note on each item as it landed. All twelve items are done on this branch: the two wrong-hit mechanisms are pinned by RNG-free tests in `tests/pipeline.test.ts` (the seed numbers in `tests/sim.test.ts` are a sweep, not a reproduction); the tracker has states, a lost-track window, height gates, a face-presence cue and a crossing rule; belief smoothing is elapsed-time based; the simulation has torso landmarks, the measured stranger tail, a pan scenario, and maybeNP/latency columns; every tunable lives in `calibration.ts`; the loop has a frame clock and profile with need-based crops; and rounds can be recorded (`?record`) and replayed (`npm run replay:rec`, `scripts/validate.mjs`). What remains needs phones: the validation set in `docs/validation.md`.
 
 ## LESSONS
 
