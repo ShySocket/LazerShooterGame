@@ -421,6 +421,35 @@ One commit per item, tests written with the code; `npm test`, `npm run typecheck
    Root causes fixed, in order: a tentative neighbour track turning a good match into a tie (item 8), the velocity prediction overshooting a pan reversal (stationary hypothesis, item 8), Bob's body inheriting Alice's track as he emerged from behind her (face-presence cue and the crossing rule), and FIRE answering miss from a period-old frame while everybody had moved (motion-predicted nomination, still confirmed only by a post-tap sighting). What remains in crossing is the ambiguity refusal when two bodies cover the dot: 20 of the 24 misses in 12 seeds, plus 4 bursts refused for the same reason. That rule stays.
 10. **Frame timing**: `requestVideoFrameCallback` with fallback, drop superseded work, per-stage profile (9.1 to 9.3); 9.4 only if the profile says so. _(done in 8db33b7: rVFC capture timestamps, per-stage profile in the bench; crops measured at a third of the frame on a laptop, so need-based crops with a 600 ms refresh; bench age 58 to 26 ms; the sim now charges actual crops.)_
 11. **Detector-output recording and replay** (former 2.6), numbers only. _(done in 5b990aa.)_
-12. **Real-phone validation set** (section 10) and threshold selection on it (7.7, 7.8), plus 8.6 and 8.7.
+12. **Real-phone validation set** (section 10) and threshold selection on it (7.7, 7.8), plus 8.6 and 8.7. _(scaffolding done in 97d4525: docs/validation.md, scripts/validate.mjs, labelled taps. The recordings themselves need phones.)_
 
 Dropped: 3.3 (frame copied at FIRE), 3.5 (continuity generation), 5.3 (Kalman), 6.4 and 6.5 (cost fusion, Hungarian), 6.7 (camera-motion compensation; the pan scenario measures it first).
+
+
+### Status at the end of the unattended run (2026-09-14)
+
+All twelve items of the locked order landed on `tracking-robustness`. Final gate on the last commit: `npm test` 112 tests, `npm run typecheck`, `npm run build`, and `npm run sim -- --seeds 100 --strict` with zero wrong hits and zero wrong-lock frames across 19 scenarios. Calibration `2026-09-14.5`. Final 100-seed table (hit rate over possible shots, wrong hits, wrong-lock frames, hedged labels on non-players, mean tap-to-hit latency, track ids per run):
+
+```
+ 'duel-close' hit '97%' wrong 0 wrongLock 0 maybeNP 0 latency '269ms' tracks '1.0' 
+ 'back-shot' hit '97%' wrong 0 wrongLock 0 maybeNP 1 latency '309ms' tracks '1.0' 
+ 'range-8m' hit '91%' wrong 0 wrongLock 0 maybeNP 1 latency '355ms' tracks '1.0' 
+ 'approach' hit '96%' wrong 0 wrongLock 0 maybeNP 0 latency '265ms' tracks '1.0' 
+ 'crossing' hit '85%' wrong 0 wrongLock 0 maybeNP 0 latency '262ms' tracks '1.4' 
+ 'pan-crossing' hit '76%' wrong 0 wrongLock 0 maybeNP 0 latency '269ms' tracks '2.4' 
+ 'crossing-backs' hit '83%' wrong 0 wrongLock 0 maybeNP 0 latency '314ms' tracks '1.6' 
+ 'occlusion' hit '103%' wrong 0 wrongLock 0 maybeNP 0 latency '270ms' tracks '2.2' 
+ 'turn-around' hit '97%' wrong 0 wrongLock 0 maybeNP 0 latency '305ms' tracks '1.0' 
+ 'lookalike-tops' hit '95%' wrong 0 wrongLock 0 maybeNP 0 latency '316ms' tracks '1.0' 
+ 'identical-tops' hit '2%' wrong 0 wrongLock 0 maybeNP 0 latency '480ms' tracks '1.0' 
+ 'same-shirt-stranger' hit '-' wrong 0 wrongLock 0 maybeNP 0 latency '-' tracks '1.0' 
+ 'lookalike-faces' hit '87%' wrong 0 wrongLock 0 maybeNP 0 latency '461ms' tracks '1.0' 
+ 'stranger' hit '-' wrong 0 wrongLock 0 maybeNP 0 latency '-' tracks '1.0' 
+ 'mirror' hit '-' wrong 0 wrongLock 0 maybeNP 0 latency '-' tracks '1.0' 
+ 'slow-phone' hit '95%' wrong 0 wrongLock 0 maybeNP 0 latency '722ms' tracks '1.0' 
+ 'hiccups' hit '92%' wrong 0 wrongLock 0 maybeNP 0 latency '419ms' tracks '1.0' 
+ 'flaky-pose' hit '94%' wrong 0 wrongLock 0 maybeNP 0 latency '275ms' tracks '1.0' 
+ 'dim-light' hit '96%' wrong 0 wrongLock 0 maybeNP 0 latency '298ms' tracks '1.0' 
+```
+
+What only phones can settle next: the validation set in `docs/validation.md`, and on it the threshold selection of 7.7 and 7.8.
