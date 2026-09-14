@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { BodyResult, FaceResult } from '@vladmandic/human';
-import { buildDetections, faceBodyBox, faceOwner, hitRegion, resetIdentity, Tracker, type Detection } from '../src/vision/tracker.ts';
+import { buildDetections, faceBodyBox, faceOwner, hitRegion, resetIdentity, Tracker, trackState, type Detection } from '../src/vision/tracker.ts';
 import type { NBox } from '../src/vision/geometry.ts';
 import { resolveHit, updateBelief } from '../src/vision/scoring.ts';
 
@@ -105,15 +105,102 @@ test('a person the detector skipped for a frame keeps their identity when they r
   assert.equal(current.belief.alice, 0.99);
 });
 
-test('reappearance after a long gap, or away from the expected place, requires fresh identity evidence', () => {
-  for (const [gapEnd, x] of [[700, 0.3], [400, 0.45]] as const) {
+test('reappearance after a long gap in place keeps the track but requires fresh evidence; away from it starts over', () => {
+  // Lost longer than the gap, back where expected: same track, identity kept, but unconfirmed.
+  const tracker = new Tracker();
+  const [old] = tracker.update([detection(0.3)], 100);
+  updateBelief(old, { alice: 1 }, 1, 100);
+  tracker.update([], 200);
+  const [current] = tracker.update([detection(0.3)], 700);
+  assert.equal(current.id, old.id);
+  assert.ok(current.belief.alice > 0.9);
+  assert.equal(current.unconfirmed, true);
+  assert.equal(resolveHit(current, new Set(['alice']), 0.5, 0.2, 710), null, 'no hit from a reclaimed identity until fresh evidence');
+  assert.equal(trackState(current, 700), 'confirmed');
+  // Away from the expected place: a new person.
+  const other = new Tracker();
+  const [o] = other.update([detection(0.3)], 100);
+  o.belief.alice = 0.99;
+  other.update([], 200);
+  const [n] = other.update([detection(0.45)], 400);
+  assert.notEqual(n.id, o.id);
+  assert.deepEqual(n.belief, {});
+  // Retired after the time-to-live: a new person even in place.
+  const late = new Tracker();
+  const [l] = late.update([detection(0.3)], 100);
+  l.belief.alice = 0.99;
+  assert.notEqual(late.update([detection(0.3)], 1700)[0].id, l.id);
+});
+
+test('a confirmed track outranks a tentative neighbour for a body it explains', () => {
+  // The pan-crossing seed-1 replay: Alice tracked for six frames; Bob reappears beside her as a new
+  // track; next frame only Alice's body is found. Her confirmed track must keep it.
+  const tracker = new Tracker();
+  const box = (x: number, w = 0.25, h = 0.36): Detection => ({ box: [x, 0.34, w, h] });
+  const frames: [number, Detection[]][] = [
+    [4700, [box(0.20), box(0.44, 0.20, 0.34)]], [4936, [box(0.15, 0.23, 0.39), box(0.38, 0.22, 0.33)]],
+    [5172, [box(0.13, 0.26, 0.40), box(0.33, 0.23, 0.33)]], [5408, [box(0.15, 0.28, 0.37), box(0.34, 0.23, 0.35)]],
+    [5644, [box(0.19, 0.26, 0.36)]], [5860, [box(0.26, 0.25, 0.35), box(0.40, 0.24, 0.32)]],
+  ];
+  let aliceId = -1;
+  for (const [t, dets] of frames) aliceId = tracker.update(dets, t, 1500, 691)[0].id;
+  const [alice] = tracker.update([box(0.35, 0.25, 0.37)], 6096, 1500, 691);
+  assert.equal(alice.id, aliceId);
+  assert.equal(trackState(alice, 6096), 'confirmed');
+});
+
+test('a lost confirmed track reclaims its body from a tentative track born in its place', () => {
+  const tracker = new Tracker();
+  const [old] = tracker.update([detection(0.3)], 100);
+  tracker.update([detection(0.3)], 320);
+  updateBelief(old, { alice: 1 }, 1, 320);
+  // Two frames without a match, then two overlapping detections the lost track cannot choose between:
+  // both start tentative tracks.
+  tracker.update([], 540);
+  const pair = tracker.update([detection(0.28), detection(0.32)], 1300);
+  assert.ok(pair.every((p) => p.id !== old.id && trackState(p, 1300) === 'tentative'));
+  // One body again, where the confirmed track expects it: the confirmed identity wins it back.
+  const [back] = tracker.update([detection(0.3)], 1400);
+  assert.equal(back.id, old.id, 'the confirmed identity wins the body back');
+  assert.equal(back.unconfirmed, true);
+});
+
+test('continuity holds at 100, 200 and 400 ms periods for predictable motion; a long pause comes back unconfirmed', () => {
+  const W = 0.2;
+  const b = (x: number, w = W, h = 0.7): Detection => ({ box: [x, 0.15, w, h] });
+  for (const period of [100, 200, 400]) {
+    const gap = Math.max(450, Math.min(1100, period * 3.2));
+    const run = (label: string, seq: (i: number) => Detection | null, n: number, expectSame = true) => {
+      const tracker = new Tracker();
+      let id = -1;
+      let t = 0;
+      for (let i = 0; i < n; i++, t += period) {
+        const d = seq(i);
+        const out = tracker.update(d ? [d] : [], t, 1500, gap);
+        if (!d) continue;
+        if (id >= 0 && expectSame) assert.equal(out[0].id, id, `${label} at ${period} ms, frame ${i}`);
+        id = out[0].id;
+      }
+      return tracker;
+    };
+    // Constant motion of a third of a box width per frame.
+    run('constant motion', (i) => b(0.1 + i * W * 0.33), 8);
+    // One-frame dropout in the middle of the same motion.
+    run('dropout', (i) => (i === 4 ? null : b(0.1 + i * W * 0.33)), 8);
+    // Reversal: three frames right, then left at the same speed.
+    run('reversal', (i) => b(0.3 + (i < 3 ? i : 6 - i) * W * 0.3), 7);
+    // Approach: the box grows 8% per frame and stays centred.
+    run('approach', (i) => { const w = W * 1.08 ** i; const h = 0.5 * 1.08 ** i; return { box: [0.5 - w / 2, 0.5 - h * 0.45, w, h] }; }, 8);
+    // Camera pan: everybody shifts sinusoidally, 15% each way every 3 s.
+    run('pan', (i) => b(0.4 + 0.15 * Math.sin((2 * Math.PI * i * period) / 3000)), Math.round(3000 / period) + 1);
+    // A 1.2 s pause in place: same track, but unconfirmed until fresh evidence.
     const tracker = new Tracker();
-    const [old] = tracker.update([detection(0.3)], 100);
-    old.belief.alice = 0.99;
-    tracker.update([], 200);
-    const [current] = tracker.update([detection(x)], gapEnd);
-    assert.notEqual(current.id, old.id);
-    assert.deepEqual(current.belief, {});
+    const [first] = tracker.update([b(0.3)], 0);
+    tracker.update([b(0.3)], period);
+    updateBelief(first, { alice: 1 }, 1, period);
+    const [resumed] = tracker.update([b(0.3)], period + 1200, 1500, gap);
+    assert.equal(resumed.id, first.id, `pause at ${period} ms`);
+    assert.equal(resumed.unconfirmed, true, `pause at ${period} ms`);
   }
 });
 
@@ -205,13 +292,14 @@ test('constant motion survives one dropped detection at a 400 ms frame period', 
   assert.equal(c.id, a.id);
 });
 
-test('a track seen last update but a long pause ago must not keep its identity across the pause', () => {
+test('a track seen last update but a long pause ago comes back unconfirmed: no hit until fresh evidence', () => {
   const tracker = new Tracker();
   const [old] = tracker.update([detection(0.3)], 100);
-  old.belief.alice = 0.99;
+  updateBelief(old, { alice: 1 }, 1, 100);
   const [current] = tracker.update([detection(0.3)], 1400);
-  assert.notEqual(current.id, old.id);
-  assert.deepEqual(current.belief, {});
+  assert.equal(current.id, old.id, 'in place and within the lost window, it is the same person');
+  assert.equal(current.unconfirmed, true);
+  assert.equal(resolveHit(current, new Set(['alice']), 0.5, 0.2, 1410), null);
 });
 
 test('a box under 60% of the track\'s height starts a new track; a jump between 60% and 75% keeps it unconfirmed', () => {

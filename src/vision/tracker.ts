@@ -1,5 +1,5 @@
 import type { BodyResult, FaceResult } from '@vladmandic/human';
-import { ASSOCIATION_MARGIN, HEIGHT_CONFIRM_MIN, HEIGHT_MATCH_MIN, MAX_TRACK_GAP_MS, TRACK_GAP_MS } from './calibration';
+import { ASSOCIATION_MARGIN, CONFIRMED_OBSERVATIONS, STATIONARY_HYPOTHESIS, TENTATIVE_WIN_MARGIN, HEIGHT_CONFIRM_MIN, HEIGHT_MATCH_MIN, LOST_TRACK_MS, MAX_TRACK_GAP_MS, TRACK_GAP_MS } from './calibration';
 import { clampBox, intersectArea, iou, toNBox, type NBox } from './geometry';
 
 export interface Detection {
@@ -44,6 +44,22 @@ export interface Track {
   faceSamples: number;
   /** When the last independent face sample was counted. */
   lastFaceSampleAt: number;
+  /** How many frames this track has been matched to a detection; below CONFIRMED_OBSERVATIONS it is tentative. */
+  observations: number;
+}
+
+/**
+ * Track states, derived rather than stored:
+ *
+ *   new detection ──▶ tentative (1 observation) ──▶ confirmed (2+) ──▶ lost (skipped, within LOST_TRACK_MS) ──▶ retired
+ *                          │                              ▲                  │
+ *                          └── outranked by any confirmed track for a body   └── reclaims its body under strict
+ *                                                                               gates, comes back unconfirmed
+ */
+export type TrackState = 'tentative' | 'confirmed' | 'lost';
+export function trackState(t: Track, now: number): TrackState {
+  if (t.lastSeen < now) return 'lost';
+  return t.observations >= CONFIRMED_OBSERVATIONS ? 'confirmed' : 'tentative';
 }
 
 const validBox = (b: number[]): boolean => b.length === 4 && b.every(Number.isFinite) && b[2] > 0 && b[3] > 0;
@@ -204,6 +220,9 @@ export function resetIdentity(track: Track): void {
 interface Motion {
   vx: number;
   vy: number;
+  /** Fractional width and height growth per ms: an approaching player's box grows, a leaving one shrinks. */
+  sw: number;
+  sh: number;
   samples: number;
 }
 
@@ -230,7 +249,7 @@ export class Tracker {
   private nextId = 1;
   private lastUpdate: number | null = null;
 
-  update(dets: Detection[], now: number, ttlMs = 1500, gapMs = TRACK_GAP_MS): Track[] {
+  update(dets: Detection[], now: number, ttlMs = LOST_TRACK_MS, gapMs = TRACK_GAP_MS): Track[] {
     if (this.lastUpdate !== null && now <= this.lastUpdate) this.reset();
     // Expire before matching: an old person at the same position must not be revived.
     this.tracks = this.tracks.filter((t) => now - t.lastSeen < ttlMs);
@@ -242,26 +261,34 @@ export class Tracker {
     // Elapsed time gates every candidate, including one seen in the previous update: a long pause
     // with no frames at all (a stalled camera, a hidden tab) is a continuity break like any other.
     const assigned = new Map<number, Track>();
-    const candidates = this.tracks.filter((t) => now - t.lastSeen <= gapMs);
+    // Every track within its time-to-live is a candidate; beyond the gap the gates are strict and the
+    // identity comes back unconfirmed.
+    const candidates = this.tracks;
     this.match(dets, candidates, now, gapMs, assigned);
     const out = dets.map((d, i) => {
       let t = assigned.get(i);
       if (!t) {
-        t = { id: this.nextId++, box: [...d.box], hit: [...(d.hit ?? d.box)], hitObservedAt: d.body ? now : 0, lastSeen: now, belief: {}, claimed: null, via: 'none', lastFaceAt: 0, lastClothingAt: 0, lastEvidenceAt: 0, faceMean: null, faceSamples: 0, lastFaceSampleAt: 0, unconfirmed: false };
+        t = { id: this.nextId++, box: [...d.box], hit: [...(d.hit ?? d.box)], hitObservedAt: d.body ? now : 0, lastSeen: now, belief: {}, claimed: null, via: 'none', lastFaceAt: 0, lastClothingAt: 0, lastEvidenceAt: 0, faceMean: null, faceSamples: 0, lastFaceSampleAt: 0, unconfirmed: false, observations: 1 };
         this.tracks.push(t);
-        this.motion.set(t.id, { vx: 0, vy: 0, samples: 1 });
+        this.motion.set(t.id, { vx: 0, vy: 0, sw: 0, sh: 0, samples: 1 });
       } else {
         // A box that shrank or grew by more than a quarter in one step is a suspicious match: the
         // identity is kept but must be confirmed by fresh evidence before it can lock or take a hit.
         if (heightRatio(d.box, t.box) < HEIGHT_CONFIRM_MIN) t.unconfirmed = true;
         const m = this.motion.get(t.id)!;
         const dt = now - t.lastSeen;
+        // Reclaimed after more than the continuity gap: the body is where it was expected, but the
+        // identity must be confirmed by fresh evidence before it can lock or take a hit.
+        if (dt > gapMs) t.unconfirmed = true;
         const [oldX, oldY] = center(t.box);
         const [newX, newY] = center(d.box);
         const alpha = m.samples === 1 ? 1 : 0.7;
         m.vx = (1 - alpha) * m.vx + alpha * (newX - oldX) / dt;
         m.vy = (1 - alpha) * m.vy + alpha * (newY - oldY) / dt;
+        m.sw = (1 - alpha) * m.sw + alpha * (d.box[2] / t.box[2] - 1) / dt;
+        m.sh = (1 - alpha) * m.sh + alpha * (d.box[3] / t.box[3] - 1) / dt;
         m.samples++;
+        t.observations++;
       }
       // A frame in which only the face was found keeps the torso observed a moment ago, moved with the
       // box, so one dropped pose does not turn a chest shot into a head-only target. Never longer than
@@ -306,20 +333,34 @@ export class Tracker {
       // less than a settled one, and the prediction never carries a box further than its own size:
       // beyond that the uncertainty has swallowed the estimate.
       const dt = now - t.lastSeen;
+      const lost = dt > gapMs;
       const trust = m.samples <= 1 ? 0 : m.samples === 2 ? 0.6 : 1;
       const dx = Math.max(-t.box[2], Math.min(t.box[2], m.vx * dt * trust));
       const dy = Math.max(-t.box[3], Math.min(t.box[3], m.vy * dt * trust));
-      const predicted: NBox = [t.box[0] + dx, t.box[1] + dy, t.box[2], t.box[3]];
-      const overlap = iou(d.box, predicted);
-      const [cx, cy] = center(d.box);
-      const [px, py] = center(predicted);
-      const distance = Math.hypot((cx - px) / Math.max(d.box[2], t.box[2]), (cy - py) / Math.max(d.box[3], t.box[3]));
+      // The box also grows or shrinks along its recent trend, within a third either way.
+      const pw = t.box[2] * Math.max(0.75, Math.min(1.33, 1 + m.sw * dt * trust));
+      const ph = t.box[3] * Math.max(0.75, Math.min(1.33, 1 + m.sh * dt * trust));
+      const predicted: NBox = [t.box[0] + dx + (t.box[2] - pw) / 2, t.box[1] + dy + (t.box[3] - ph) / 2, pw, ph];
       // Position uncertainty grows with the time since the last observation: the gates loosen a
-      // little for a longer wait, but a person must still reappear where they were expected.
+      // little for a longer wait, but a person must still reappear where they were expected. Beyond
+      // the continuity gap the track is lost and only a clear fit in the expected place reclaims it.
       const slack = Math.min(0.25, 0.25 * dt / gapMs);
-      if (overlap < Math.max(0.05, (gapped ? 0.3 : 0.1) - slack) || distance > (gapped ? 0.5 : 0.8) + slack) return 0;
-      return overlap * 0.75 + Math.max(0, 1 - distance) * 0.25;
+      const fit = (expected: NBox): number => {
+        const overlap = iou(d.box, expected);
+        const [cx, cy] = center(d.box);
+        const [px, py] = center(expected);
+        const distance = Math.hypot((cx - px) / Math.max(d.box[2], t.box[2]), (cy - py) / Math.max(d.box[3], t.box[3]));
+        if (lost) {
+          if (shape < 0.6 || overlap < 0.35 || distance > 0.4) return 0;
+        } else if (overlap < Math.max(0.05, (gapped ? 0.3 : 0.1) - slack) || distance > (gapped ? 0.5 : 0.8) + slack) return 0;
+        return overlap * 0.75 + Math.max(0, 1 - distance) * 0.25;
+      };
+      // A person who stopped or turned around is where they were, not where the velocity says: the
+      // stationary hypothesis competes with the prediction at a small discount, so a reversal, a pan
+      // that changes direction, or a hand that stops does not cost the track.
+      return Math.max(fit(predicted), trust > 0 ? STATIONARY_HYPOTHESIS * fit(t.box) : 0);
     }));
+    const confirmed = candidates.map((t) => t.observations >= CONFIRMED_OBSERVATIONS);
     const uniqueBest = (values: number[]): number => {
       const order = values.map((score, index) => ({ score, index })).filter((p) => p.score >= 0.3).sort((a, b) => b.score - a.score);
       return order.length && (!order[1] || order[0].score - order[1].score >= 0.12) ? order[0].index : -1;
@@ -330,13 +371,20 @@ export class Tracker {
     const bestTrack = scores.map((row) => {
       const order = row.map((score, index) => ({ score, index })).filter((p) => p.score >= 0.3).sort((a, b) => b.score - a.score);
       if (!order.length) return -1;
-      const best = order[0];
-      const liveRival = order.find((p) => live[p.index]);
+      // A confirmed track (seen twice or more) explains a body better than one born last frame beside
+      // it: a tentative track competes for a body only when it fits clearly better than the best
+      // confirmed candidate, so a neighbour's fresh track cannot turn a good match into a tie that
+      // costs an established identity, while a body that is plainly the newcomer's stays theirs.
+      const bestConfirmed = order.find((p) => confirmed[p.index]);
+      const eligible = (i: number) => confirmed[i] || !bestConfirmed || row[i] >= bestConfirmed.score + TENTATIVE_WIN_MARGIN;
+      const pool = order.filter((p) => eligible(p.index));
+      const best = pool[0];
+      const liveRival = pool.find((p) => live[p.index]);
       // Live tracks compete only with each other; skipped ones are considered only when no live track fits.
       if (live[best.index] || (liveRival && (liveRival.score >= 0.5 || best.score - liveRival.score < 0.12))) {
-        return uniqueBest(row.map((s, i) => (live[i] ? s : 0)));
+        return uniqueBest(row.map((s, i) => (live[i] && eligible(i) ? s : 0)));
       }
-      return !order[1] || best.score - order[1].score >= 0.12 ? best.index : -1;
+      return !pool[1] || best.score - pool[1].score >= 0.12 ? best.index : -1;
     });
     const bestDetection = candidates.map((_, ti) => uniqueBest(scores.map((row) => row[ti])));
     dets.forEach((_, i) => {

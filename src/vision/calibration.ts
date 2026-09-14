@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-09-14.2';
+export const CALIBRATION_VERSION = '2026-09-14.3';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /** Centred cosine below `reject` is no evidence for a player; above `accept` is a solid match. */
@@ -54,6 +54,22 @@ export const LIVE_FACE_SAMPLE_SPACING_MS = 150;
 /** A person skipped by the detector for this long is still the same person. */
 export const TRACK_GAP_MS = 450;
 export const MAX_TRACK_GAP_MS = 1100;
+/**
+ * A track the detector has not seen for longer than the gap is lost, not gone: it may reclaim a body
+ * that reappears where it was expected, under stricter gates, for this long, and it comes back
+ * unconfirmed (no lock or hit until fresh evidence). Beyond this it is retired.
+ */
+export const LOST_TRACK_MS = 1500;
+/** A track seen fewer times than this is tentative: it never outranks a confirmed track for a body. */
+export const CONFIRMED_OBSERVATIONS = 2;
+/** A tentative track takes a body from a confirmed candidate only when its match score beats it by this much. */
+export const TENTATIVE_WIN_MARGIN = 0.25;
+/**
+ * Weight of the 'stayed where they were' hypothesis against the velocity prediction when matching:
+ * high enough to keep a track through a reversal, low enough that two players swapping places still
+ * follow their predicted paths rather than each other's last box.
+ */
+export const STATIONARY_HYPOTHESIS = 0.75;
 /** Below this height ratio a detection cannot continue a track at all. */
 export const HEIGHT_MATCH_MIN = 0.6;
 /** Below this ratio the match is kept but the identity waits for fresh evidence. */
