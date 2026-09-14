@@ -236,7 +236,9 @@ export class FirebaseBackend implements RoomBackend {
         if (!/permission/i.test(String((e as { code?: string }).code ?? e))) throw e;
       });
     }
-    await push(ref(this.db, `${base}/samples`), jsonClean(sample));
+    // Keyed by the shot id (write-once by rule), so a retry after a timed-out upload cannot store the
+    // sample twice; the refused retry is dropped by the queue after a few attempts.
+    await set(ref(this.db, `${base}/samples/${sample.shot.id}`), jsonClean(sample));
   }
 }
 

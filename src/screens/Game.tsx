@@ -93,6 +93,9 @@ export function Game({ room, me, pid, onLeave }: Props) {
       window.clearTimeout(pendingTimer.current);
       lockKey.current = '';
       setLock(null);
+      // A burst in flight will never settle now; its record and photo go with it.
+      recorder.current.abandonOpenShots();
+      photos.current.clear();
     };
     invalidate();
     // The crosshair rectangle depends on the viewport, so a real size change (rotation, split view)
@@ -377,7 +380,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
     }, dets);
     const outcome = await pipeline.current.processFrame(dets, now, res.width, res.height, ch, ops);
     if (!outcome) return;
-    recorder.current.frameDone(outcome, dets, now, candidates);
+    recorder.current.frameDone(outcome, dets, now, pipeline.current.galleries());
     if (outcome.settled) {
       window.clearTimeout(pendingTimer.current);
       settledBy.current = 'frame';

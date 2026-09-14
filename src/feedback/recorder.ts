@@ -13,6 +13,8 @@ declare const __APP_COMMIT__: string | undefined;
 export const PRE_TAP_FRAMES = 12;
 /** An outfit observation older than this no longer describes the track. */
 const OUTFIT_MEMORY_MS = 4000;
+/** A shot still open this long after its tap was never settled (the pipeline was invalidated mid-burst): drop it. */
+const OPEN_SHOT_MAX_MS = 5000;
 
 export interface RoundInfo {
   code: string;
@@ -118,6 +120,13 @@ export class ShotRecorder {
     return this.round !== null;
   }
 
+  /** The pipeline was invalidated: any burst in flight will never settle, so its record is dropped. */
+  abandonOpenShots(): string[] {
+    const ids = [...this.open.keys()];
+    this.open.clear();
+    return ids;
+  }
+
   roundKey(): string | null {
     return this.round?.key ?? null;
   }
@@ -156,19 +165,23 @@ export class ShotRecorder {
 
   /**
    * A frame finished. Summarises every track with the evidence it received, appends the summary to
-   * the pre-tap ring and to every shot whose burst is still open.
+   * the pre-tap ring and to every shot whose burst is still open. `candidates` must be the galleries
+   * the pipeline scored against (VisionPipeline.galleries()), live samples included.
    */
   frameDone(outcome: FrameOutcome<unknown>, dets: Detection[], capturedAt: number, candidates: Candidate[]): void {
     const r = this.round;
     if (!r) return;
-    // Faces are attributed the way the pipeline does it: a crop's face belongs to the detection that
-    // uniquely owns it, and a detection that received two faces in one frame learned nothing.
-    const owned = new Map<number, FaceObservation[]>();
+    // Faces are attributed the way the pipeline does it (processFrame): crops in order, each crop's
+    // faces grouped by the detection that uniquely owns them, a group of two teaches nothing, and an
+    // owner that already learned from an earlier crop ignores later ones.
+    const owned = new Map<number, FaceObservation>();
     for (const faces of this.faces.values()) {
+      const groups = new Map<number, FaceObservation[]>();
       for (const f of faces) {
         const owner = faceOwner(f.box, dets);
-        if (owner >= 0) owned.set(owner, [...(owned.get(owner) ?? []), f]);
+        if (owner >= 0 && !owned.has(owner)) groups.set(owner, [...(groups.get(owner) ?? []), f]);
       }
+      for (const [owner, matched] of groups) if (matched.length === 1) owned.set(owner, matched[0]);
     }
     for (const [i, obs] of this.outfitObs) {
       const t = outcome.tracks[i];
@@ -179,12 +192,12 @@ export class ShotRecorder {
     const tracks: TrackSummary[] = outcome.tracks.map((t, i) => {
       const d = dets[i];
       const ev: EvidenceSummary = {};
-      const faces = owned.get(i);
-      if (faces && faces.length === 1) {
+      const face = owned.get(i);
+      if (face) {
         ev.face = {
-          sims: this.gallerySims(faces[0].embedding, candidates),
+          sims: this.gallerySims(face.embedding, candidates),
           meanSims: t.faceMean ? this.gallerySims(t.faceMean, candidates) : {},
-          quality: round(faces[0].quality, 2),
+          quality: round(face.quality, 2),
         };
       }
       const outfit = this.outfitObs.get(i);
@@ -218,8 +231,9 @@ export class ShotRecorder {
     const summary = { tracks, lock: outcome.lock ? (outcome.lock.kind === 'unknown' ? 'unknown' : `${outcome.lock.kind}:${r.ids.pid(outcome.lock.id)}`) : null };
     this.ring.push({ t: capturedAt, summary });
     if (this.ring.length > PRE_TAP_FRAMES) this.ring.shift();
-    for (const shot of this.open.values()) {
-      if (capturedAt >= shot.tap.tapAt) shot.after.push({ t: Math.round(capturedAt - shot.tap.tapAt), ...summary });
+    for (const [id, shot] of this.open) {
+      if (capturedAt - shot.tap.tapAt > OPEN_SHOT_MAX_MS) this.open.delete(id);
+      else if (capturedAt >= shot.tap.tapAt) shot.after.push({ t: Math.round(capturedAt - shot.tap.tapAt), ...summary });
     }
     this.faces.clear();
     this.outfitObs.clear();

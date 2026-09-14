@@ -37,6 +37,11 @@ export interface QueuedUpload {
 
 /** Failed shots kept per round; the oldest go first once the cap is reached. */
 export const MAX_SHOTS_PER_ROUND = 40;
+/**
+ * A queued upload refused this many times is dropped: either it already went through (its key is
+ * write-once) or the database rules were never published, and the queue is not a permanent archive.
+ */
+export const MAX_UPLOAD_ATTEMPTS = 12;
 /** A round nobody reviewed within this long is dropped with its photos; nobody reviews yesterday's shots. */
 const ROUND_TTL_MS = 6 * 3600 * 1000;
 const DB_NAME = 'lz-feedback';
@@ -203,7 +208,8 @@ export class FeedbackStore {
           await b.delete('queue', u.id);
           sent++;
         } catch {
-          await b.put('queue', { ...u, attempts: u.attempts + 1 });
+          if (u.attempts + 1 >= MAX_UPLOAD_ATTEMPTS) await b.delete('queue', u.id);
+          else await b.put('queue', { ...u, attempts: u.attempts + 1 });
         }
       }
       return sent;

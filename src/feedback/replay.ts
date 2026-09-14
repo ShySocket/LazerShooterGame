@@ -25,6 +25,9 @@ export interface ReplayParams {
   /** Null means "the round's own setting". */
   hitThreshold: number | null;
   hitMargin: number | null;
+  /** While the face is this fresh (and ahead by 0.3), clothing is only audited, not fused. */
+  faceFreshMs: number;
+  clothingAuditMs: number;
 }
 
 /** The values in src/vision as of this build; keep in step when those change. */
@@ -43,6 +46,8 @@ export const DEFAULT_PARAMS: ReplayParams = {
   identityTtlMs: 1500,
   hitThreshold: null,
   hitMargin: null,
+  faceFreshMs: 1500,
+  clothingAuditMs: 1000,
 };
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
@@ -50,7 +55,14 @@ const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 interface BeliefState {
   belief: Record<Pid, number>;
   lastEvidenceT: number;
-  sawFace: boolean;
+  lastFaceT: number;
+  lastClothT: number;
+}
+
+function top(belief: Record<Pid, number>): { id: Pid; score: number; margin: number } | null {
+  const entries = Object.entries(belief).sort((a, b) => b[1] - a[1]);
+  if (entries.length === 0) return null;
+  return { id: entries[0][0], score: entries[0][1], margin: entries[0][1] - (entries[1]?.[1] ?? 0) };
 }
 
 function faceEvidence(meanSims: Record<Pid, number>, quality: number, p: ReplayParams): Record<Pid, number> {
@@ -129,39 +141,51 @@ export function replayShot(sample: ShotSample, overrides: Partial<ReplayParams> 
   const last = Math.min(sample.shot.decidedAtFrame, sample.frames.length - 1);
   const trackId = sample.shot.decisionTrackId ?? sample.shot.trackId;
   let decision: BeliefState | null = null;
+  let conflict = false;
   for (let i = 0; i <= last; i++) {
     const frame = sample.frames[i];
     for (const t of frame.tracks) {
       let s = states.get(t.id);
       if (!s) {
-        s = { belief: {}, lastEvidenceT: -Infinity, sawFace: false };
+        s = { belief: {}, lastEvidenceT: -Infinity, lastFaceT: -Infinity, lastClothT: -Infinity };
         states.set(t.id, s);
       }
       if (Number.isFinite(s.lastEvidenceT) && frame.t - s.lastEvidenceT > p.identityTtlMs) s.belief = {};
       if (t.ambiguous) continue;
-      // Same order as processFrame: clothing for the frame first, then the face crops.
+      // Same order and gates as processFrame: clothing first, fused only while the face is not
+      // carrying the identity (otherwise it is an audit that fuses nothing), then the face crops.
       if (t.outfit) {
-        const ce = clothingEvidence(t.outfit.match, s.belief, p);
-        const ev = combine(null, ce, t.outfit.body ?? null, p);
-        if (ev) update(s, ev, p.clothAlpha, frame.t);
+        const current = top(s.belief);
+        const faceFresh = Number.isFinite(s.lastFaceT) && frame.t - s.lastFaceT < p.faceFreshMs && (current?.margin ?? 0) >= 0.3;
+        const audit = faceFresh && frame.t - s.lastClothT >= p.clothingAuditMs;
+        s.lastClothT = frame.t;
+        if (!faceFresh || audit) {
+          const ev = audit ? null : combine(null, clothingEvidence(t.outfit.match, s.belief, p), t.outfit.body ?? null, p);
+          if (ev) update(s, ev, p.clothAlpha, frame.t);
+        }
       }
-      if (t.face && Object.keys(t.face.meanSims).length) {
-        s.sawFace = true;
+      if (t.face && Object.keys(t.face.meanSims ?? {}).length) {
+        // A frame that strongly names somebody else restarts the belief (applyFace's reset).
+        const current = top(s.belief);
+        const raw = faceEvidence(t.face.sims ?? {}, t.face.quality, p);
+        const best = top(raw);
+        if (current && best && best.id !== current.id && best.score >= 0.8 && (raw[current.id] ?? 0) < 0.2) s.belief = {};
         const ev = combine(faceEvidence(t.face.meanSims, t.face.quality, p), null, null, p);
         if (ev) update(s, ev, p.faceAlpha, frame.t);
+        s.lastFaceT = frame.t;
       }
-      if (i === last && t.id === trackId) decision = s;
+      if (i === last && t.id === trackId) {
+        decision = s;
+        conflict = t.conflict;
+      }
     }
   }
   if (!decision || trackId === null) return { resolved: null, top: null };
-  const entries = Object.entries(decision.belief).sort((a, b) => b[1] - a[1]);
-  if (entries.length === 0) return { resolved: null, top: null };
-  const [id, score] = entries[0];
-  const m = score - (entries[1]?.[1] ?? 0);
-  const top = { id, score, margin: m };
-  const eligible = new Set(sample.round.eligible);
-  const ok = eligible.has(id) && score >= threshold && m >= margin && m > 0;
-  return { resolved: ok ? id : null, top };
+  const best = top(decision.belief);
+  if (!best) return { resolved: null, top: null };
+  const eligible = new Set(sample.round.eligible ?? []);
+  const ok = !conflict && eligible.has(best.id) && best.score >= threshold && best.margin >= margin && best.margin > 0;
+  return { resolved: ok ? best.id : null, top: best };
 }
 
 export type Judgement = 'correct' | 'wrong' | 'miss';
@@ -196,7 +220,36 @@ export function evaluate(samples: ShotSample[], overrides: Partial<ReplayParams>
 
 /** The verdict the game actually gave, from the sample's own record, for comparison with the replay. */
 export function asPlayed(sample: ShotSample): Pid | null {
-  return sample.shot.resolvedTo;
+  return sample.shot.resolvedTo ?? null;
+}
+
+/**
+ * The database stores neither nulls nor empty arrays and objects, so an exported sample comes back
+ * with those fields missing. Put them back so the rest of the replay can rely on the type.
+ */
+export function normaliseSample(raw: ShotSample): ShotSample {
+  const frames = (raw.frames ?? []).map((f) => ({
+    t: f.t ?? 0,
+    lock: f.lock ?? null,
+    tracks: (f.tracks ?? []).map((t) => ({
+      ...t,
+      belief: t.belief ?? {},
+      conflict: Boolean(t.conflict),
+      ambiguous: Boolean(t.ambiguous),
+      faceAgeMs: t.faceAgeMs ?? null,
+      evidenceAgeMs: t.evidenceAgeMs ?? null,
+      inSight: Boolean(t.inSight),
+      ...(t.face ? { face: { sims: t.face.sims ?? {}, meanSims: t.face.meanSims ?? {}, quality: t.face.quality ?? 1 } } : {}),
+      ...(t.outfit ? { outfit: { match: t.outfit.match ?? {}, ...(t.outfit.body ? { body: t.outfit.body } : {}) } } : {}),
+    })),
+  }));
+  return {
+    ...raw,
+    round: { ...raw.round, eligible: raw.round.eligible ?? [] },
+    shot: { ...raw.shot, resolvedTo: raw.shot.resolvedTo ?? null, trackId: raw.shot.trackId ?? null, decisionTrackId: raw.shot.decisionTrackId ?? null, decisionBelief: raw.shot.decisionBelief ?? null },
+    frames,
+    target: raw.target ?? null,
+  };
 }
 
 /** Share of samples where the replay under the current defaults agrees with what the game did. */
@@ -232,11 +285,12 @@ export function sweep(samples: ShotSample[], rows = defaultSweep()): SweepRow[] 
 /** Every sample found in a database export, whatever level it was exported from. */
 export function collectSamples(data: unknown): ShotSample[] {
   const out: ShotSample[] = [];
-  const isSample = (v: unknown): v is ShotSample => typeof v === 'object' && v !== null && 'frames' in v && 'shot' in v && 'round' in v;
+  // `frames` may be absent in an export of a sample whose frames were all empty; `shot` and `round` never are.
+  const isSample = (v: unknown): v is ShotSample => typeof v === 'object' && v !== null && 'shot' in v && 'round' in v && 'v' in v;
   const walk = (v: unknown, depth: number) => {
     if (depth > 6 || typeof v !== 'object' || v === null) return;
     if (isSample(v)) {
-      out.push(v);
+      out.push(normaliseSample(v));
       return;
     }
     for (const child of Array.isArray(v) ? v : Object.values(v)) walk(child, depth + 1);
