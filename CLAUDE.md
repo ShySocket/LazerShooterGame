@@ -27,6 +27,8 @@ node --import ./tests/register.mjs --test tests/tracker.test.ts   # one test fil
 node --import ./tests/register.mjs --test --test-name-pattern "crossing" tests/sim.test.ts   # one test by name
 npm run dev                                    # HTTPS dev server on the LAN (camera needs HTTPS)
 npm run dev:http                               # plain HTTP, for browser QA without camera
+npm run dev:local                              # HTTP + VITE_LOCAL_MODE=1: one phone, no Firebase; ?review shows the shot review card
+npm run replay -- feedback.json                # re-score labelled shot feedback under alternative calibrations
 ```
 
 Node 22.15+ is required. Tests run the app's TypeScript directly through `tests/register.mjs` (a `node:module` hook that transpiles with `typescript`), so there is no test bundler or jest config. `.claude/launch.json` defines `dev` (5173, https) and `dev-http` for the browser preview.
@@ -52,6 +54,8 @@ JS
 **Face similarity** is cosine of mean-centred embeddings (`embedding.ts: centredSimilarity`, mean vector in `faceMean.ts`). `FACE_CALIB` thresholds were measured against that centring; do not compare raw cosine values to them. `centredSimilarity` caches per array identity, so never mutate an embedding array in place.
 
 **Simulation** (`tests/sim/`): `world.ts` is a synthetic 3D scene and detector model (dropouts, jitter, similarity levels tuned to the real models); `engine.ts` plays whole rounds through the real `VisionPipeline`, judges each shot against ground truth (`visible` person under the dot, `ambiguous` near a nearer person's edge), and records `wrongTraces`; `report.ts` prints the table and is the `--strict` gate. `tests/sim.test.ts` holds acceptance thresholds and pins seeds that once produced a wrong hit or wrong lock. Wrong hits and wrong-lock frames are the outcomes the game must never produce; hit rates are bounded loosely.
+
+**Shot feedback** (`src/feedback/`): `ShotRecorder` wraps the `FrameOps` the game hands the pipeline and summarises every finished frame (per-track belief plus the raw face/outfit/body similarities against each candidate); `Game.tsx` brackets every FIRE press with `beginShot`/`endShot` and keeps a 640 px copy of the tap frame (`photo.ts`). Failed shots (miss, unclear, stale frame) go to IndexedDB (`store.ts`) with the photo; `ShotReview.tsx`, rendered by Results and Lobby, asks the shooter about one of them and uploads the labelled `ShotSample` (no image, ids anonymised to p0..pN) through `RoomBackend.submitShotFeedback` to `feedback/rounds/{CODE-startAt}`. `replay.ts` re-scores samples under alternative calibrations (`npm run replay -- export.json`); keep its `DEFAULT_PARAMS` in step with `scoring.ts`, `embedding.ts` and `pipeline.ts` when those constants move. `?review` on `npm run dev:local` shows the card with a synthetic shot.
 
 **Device bench** (`src/bench/`, open the app with `?bench`): runs a photo through the real models and pipeline with a virtual drifting camera, and a range sweep across zoom levels. Use it to see a real phone's frame period and where face gives out to outfit.
 
