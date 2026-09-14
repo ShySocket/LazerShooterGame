@@ -1,9 +1,10 @@
-import { buildDetections } from '../../src/vision/tracker';
+import { buildDetections, type Detection } from '../../src/vision/tracker';
 import { VisionPipeline, type LockState } from '../../src/vision/pipeline';
 import { UNKNOWN_ID } from '../../src/types';
 import type { Candidate } from '../../src/vision/scoring';
 import type { NBox } from '../../src/vision/geometry';
 import { Rng } from './rng';
+import type { Recorder } from '../../src/debug/recorder';
 import { buildScene, cropFaces, DEFAULT_DETECTOR, detect, FRAME_H, FRAME_W, hitBox, personBox, sampleOutfit, step, type DetectorModel, type Pan, type Person, type PersonSpec } from './world';
 
 export interface SimOptions {
@@ -28,6 +29,8 @@ export interface SimOptions {
   traceOutcomes: Outcome[];
   /** Side-to-side camera pan; the aim keeps following the target through it. */
   pan?: Pan;
+  /** Capture the round as a replayable recording (src/debug/recorder.ts). */
+  recorder?: Recorder;
 }
 
 export const DEFAULT_OPTIONS: Omit<SimOptions, 'target'> = {
@@ -257,6 +260,7 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
       const tapAim = aim();
       const truth = underDot(tapAim);
       if (truth.visible?.id === target.id && truth.hittable(truth.visible) && truth.visibleHittable) result.possibleShots++;
+      opts.recorder?.fire(now, tapAim);
       const fire = pipeline.fire({ t: now, under: truth }, tapAim);
       if (fire.kind === 'pending') pending = { token: fire.token, deadline: fire.deadline };
       else if (fire.kind === 'instant') settle(fire.settlement);
@@ -268,11 +272,12 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
 
     now = completeAt;
     let cropsThisFrame = 0;
-    const outcome = await pipeline.processFrame(dets, capturedAt, FRAME_W, FRAME_H, crosshair, {
-      sampleOutfit: (d) => (d.body ? sampleOutfit(rng, raw.owner.get(d.body) ?? null) : null),
-      cropFaces: async (region) => { cropsThisFrame++; return cropFaces(rng, scene, region, opts.detector); },
+    const baseOps = {
+      sampleOutfit: (d: Detection) => (d.body ? sampleOutfit(rng, raw.owner.get(d.body) ?? null) : null),
+      cropFaces: async (region: NBox) => { cropsThisFrame++; return cropFaces(rng, scene, region, opts.detector); },
       isCurrent: () => true,
-    });
+    };
+    const outcome = await pipeline.processFrame(dets, capturedAt, FRAME_W, FRAME_H, crosshair, opts.recorder ? opts.recorder.frame(capturedAt, crosshair, dets, baseOps) : baseOps);
     if (!outcome) throw new Error('frame abandoned');
     lastCrops = cropsThisFrame;
     result.frames++;

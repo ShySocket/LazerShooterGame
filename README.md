@@ -90,6 +90,16 @@ Use **Sample person** for a quick check or **Photo from this phone** with a phot
 
 The simulation (`npm run sim`) also covers crossing players, a crossing with both facing away, a nearer player walking in front of the target, and a target turning their back mid-round; these are the cases where a tracker swaps people.
 
+### 2e. Recording a round and replaying it
+
+Open the game with `?record` added to the URL. Every frame's detector boxes and landmarks, the face embeddings and outfit histograms the crops produced, and every FIRE are kept as numbers (never pixels). The **save rec** button in the HUD downloads them as JSON. Put such files in a folder and run
+
+```bash
+npm run replay path/to/folder
+```
+
+to re-run each recording through the current pipeline and calibration. The table says what the game would decide today (hits by player, unclear, miss, lock frames) next to the calibration the recording was made with, so a threshold change can be compared on the same real round; `--threshold` and `--margin` override the recorded settings. `tests/replay/fixtures/` holds a synthetic recording from the simulation that the tests replay.
+
 ### 3. Run on your phones over Wi-Fi
 
 ```bash

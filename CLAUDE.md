@@ -27,6 +27,7 @@ node --import ./tests/register.mjs --test tests/tracker.test.ts   # one test fil
 node --import ./tests/register.mjs --test --test-name-pattern "crossing" tests/sim.test.ts   # one test by name
 npm run dev                                    # HTTPS dev server on the LAN (camera needs HTTPS)
 npm run dev:http                               # plain HTTP, for browser QA without camera
+npm run replay [folder]                        # replay recordings (?record in the game) through the current calibration
 ```
 
 Node 22.15+ is required. Tests run the app's TypeScript directly through `tests/register.mjs` (a `node:module` hook that transpiles with `typescript`), so there is no test bundler or jest config. `.claude/launch.json` defines `dev` (5173, https) and `dev-http` for the browser preview.

@@ -14,8 +14,9 @@ import { bodyProportions, FrameSampler, outfitSignature } from '../vision/clothi
 import { topBelief, type Candidate } from '../vision/scoring';
 import { faceQuality, faceYawDeg, isCurrentFaceScan, isValidEmbedding, MAX_YAW_DEG, MIN_FACE_PX, unitEmbedding } from '../vision/human';
 import { faceRegion, headRegion, ZoomPass } from '../vision/zoom';
-import { VisionPipeline, type FaceObservation, type LockState, type ShotSettlement } from '../vision/pipeline';
+import { VisionPipeline, type FaceObservation, type FrameOps, type LockState, type ShotSettlement } from '../vision/pipeline';
 import { shotLog } from '../debug/shotLog';
+import { Recorder } from '../debug/recorder';
 import { rangeTest } from '../debug/rangeTest';
 import { drawOverlay } from '../vision/overlay';
 import { haptic, sfx, unlockAudio, vibrate } from '../audio/sfx';
@@ -52,6 +53,11 @@ export function Game({ room, me, pid, onLeave }: Props) {
   const torch = useTorch(videoRef);
 
   const [debug, setDebug] = useState(false);
+  // ?record captures every frame's detections, crops and outfits plus every tap as numbers (never
+  // pixels) for offline replay through the same pipeline: npm run replay <folder>.
+  const recorder = useRef<Recorder | null>(null);
+  const [recordedFrames, setRecordedFrames] = useState(0);
+  const recording = useMemo(() => new URL(location.href).searchParams.has('record'), []);
   const debugRef = useRef(debug);
   debugRef.current = debug;
   const [rangeMode, setRangeMode] = useState(false);
@@ -333,7 +339,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
     let cropMs = 0;
     let clothingMs = 0;
     const frameStart = performance.now();
-    const outcome = await pipeline.current.processFrame(dets, now, res.width, res.height, ch, {
+    const ops: FrameOps = {
       // The pixel readback is paid once per frame, and only when some track still needs clothing evidence.
       sampleOutfit: (d) => {
         if (!d.body) return null;
@@ -354,7 +360,13 @@ export function Game({ room, me, pid, onLeave }: Props) {
           .map(({ zf, px }) => ({ box: zf.box, embedding: unitEmbedding(zf.face.embedding!), quality: faceQuality(px) }));
       },
       isCurrent: frame.isCurrent,
-    });
+    };
+    if (recording && !recorder.current) {
+      recorder.current = new Recorder({ width: res.width, height: res.height, candidates, selfId: pid, hitThreshold: settings.hitThreshold, hitMargin: settings.hitMargin, notes: `room ${room.code}, ${navigator.userAgent}` });
+      if (import.meta.env.DEV) (window as unknown as { __lzRecorder?: Recorder }).__lzRecorder = recorder.current;
+    }
+    const outcome = await pipeline.current.processFrame(dets, now, res.width, res.height, ch, recorder.current ? recorder.current.frame(now, ch, dets, ops) : ops);
+    if (recorder.current && recorder.current.frameCount % 20 === 0) setRecordedFrames(recorder.current.frameCount);
     visionProfile.record('crops', cropMs);
     visionProfile.record('clothing', clothingMs);
     visionProfile.record('tracking', Math.max(0, performance.now() - frameStart - cropMs - clothingMs));
@@ -395,6 +407,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
     const wrap = wrapRef.current;
     const usable = Boolean(L && wrap && !document.hidden && L.width === videoRef.current?.videoWidth && L.height === videoRef.current?.videoHeight);
     const ch = L && wrap ? crosshairRect(L.width, L.height, wrap.clientWidth, wrap.clientHeight) : ([0, 0, 0, 0] as NBox);
+    recorder.current?.fire(performance.now(), ch);
     const result = pipeline.current.fire(context, ch, usable);
     switch (result.kind) {
       case 'busy':
@@ -422,6 +435,18 @@ export function Game({ room, me, pid, onLeave }: Props) {
         show('LOCKING', 'info', burstMs + 100);
       }
     }
+  };
+
+  /** Hands the recording to the browser as a JSON download; the player attaches it to a bug report or a replay folder. */
+  const saveRecording = () => {
+    const rec = recorder.current?.recording();
+    if (!rec) return;
+    const blob = new Blob([JSON.stringify(rec)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `lazer-recording-${room.code}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    a.click();
+    window.setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   };
 
   const alive = alivePlayers(room);
@@ -460,6 +485,11 @@ export function Game({ room, me, pid, onLeave }: Props) {
           <button className="hud-btn" onClick={() => setDebug((d) => !d)}>
             {debug ? `${fps} fps` : 'debug'}
           </button>
+          {recording && (
+            <button className="hud-btn" onClick={saveRecording}>
+              save rec {recordedFrames}
+            </button>
+          )}
         </div>
       </div>
 
