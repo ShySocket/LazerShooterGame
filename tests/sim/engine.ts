@@ -62,7 +62,11 @@ export interface SimResult {
   /** Frames where the dot was on the target and the label said LOCK with the right name. */
   lockedFrames: number;
   wrongLockFrames: number;
+  /** Frames where the crosshair sat on a non-player and the label still named a player with a "maybe". */
+  maybeOnNonPlayer: number;
   firstLockMs: number | null;
+  /** Mean time from the tap to a correct hit, in ms (0 for an instant hit); null without a hit. */
+  hitLatencyMs: number | null;
   periodMs: number;
   /** Distinct track ids the target body went through: continuity churn. */
   targetTrackIds: number;
@@ -99,7 +103,9 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
     frames: 0,
     lockedFrames: 0,
     wrongLockFrames: 0,
+    maybeOnNonPlayer: 0,
     firstLockMs: null,
+    hitLatencyMs: null,
     periodMs: NaN,
     targetTrackIds: 0,
     wrongTraces: [],
@@ -275,10 +281,17 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
         result.lockedFrames++;
         result.firstLockMs ??= now;
       }
+    } else if (lock?.kind === 'maybe' && outcome.inSight) {
+      // A player's name under a stranger or a mirror, even hedged, is what a wrong lock grows from.
+      const j = outcome.tracks.findIndex((tr) => tr.id === outcome.inSight!.id);
+      const owner = j >= 0 ? raw.owner.get(dets[j].body ?? dets[j].face!) : undefined;
+      if (!owner?.player || owner.copyOf) result.maybeOnNonPlayer++;
     }
     t = completeAt + 16;
   }
   result.targetTrackIds = seenTrackIds.size;
+  const hits = result.shots.filter((s) => s.outcome === 'correct');
+  result.hitLatencyMs = hits.length ? Math.round(hits.reduce((a, s) => a + s.elapsedMs, 0) / hits.length) : null;
   return result;
 }
 
@@ -410,7 +423,11 @@ export interface Aggregate {
   stale: number;
   lockFraction: number;
   wrongLockFrames: number;
+  /** Frames with a hedged player label on a non-player, pooled over the seeds. */
+  maybeOnNonPlayer: number;
   firstLockMs: number | null;
+  /** Mean tap-to-hit latency over every correct shot in the pool, in ms. */
+  hitLatencyMs: number | null;
   periodMs: number;
   trackChurn: number;
 }
@@ -432,7 +449,9 @@ export async function aggregate(scenario: Scenario, seeds: number[], overrides: 
     stale: sum((r) => r.counts.stale + r.counts['no-camera']),
     lockFraction: sum((r) => r.lockedFrames) / Math.max(1, sum((r) => r.frames)),
     wrongLockFrames: sum((r) => r.wrongLockFrames),
+    maybeOnNonPlayer: sum((r) => r.maybeOnNonPlayer),
     firstLockMs: firstLocks.length ? Math.round(firstLocks.reduce((a, b) => a + b, 0) / firstLocks.length) : null,
+    hitLatencyMs: sum((r) => r.counts.correct) ? Math.round(sum((r) => (r.hitLatencyMs ?? 0) * r.counts.correct) / sum((r) => r.counts.correct)) : null,
     periodMs: Math.round(runs[0].periodMs),
     trackChurn: sum((r) => r.targetTrackIds) / runs.length,
   };

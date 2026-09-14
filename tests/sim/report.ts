@@ -29,7 +29,9 @@ for (const scenario of SCENARIOS) {
     stale: a.stale,
     'lock%': pct(a.lockFraction, 1),
     wrongLock: a.wrongLockFrames,
+    maybeNP: a.maybeOnNonPlayer,
     firstLock: a.firstLockMs === null ? '-' : `${a.firstLockMs}ms`,
+    latency: a.hitLatencyMs === null ? '-' : `${a.hitLatencyMs}ms`,
     period: `${a.periodMs}ms`,
     tracks: a.trackChurn.toFixed(1),
   });
@@ -44,6 +46,7 @@ for (const scenario of SCENARIOS) {
 console.table(rows);
 console.log('\nhit = share of the possible shots (target visibly under the dot at the tap) that registered on them; wrong = shots registered on anybody else (the worst outcome).');
 console.log('lock% = frames with a green LOCK on the right name; tracks = track ids the target went through per run (1 is perfect continuity).');
+console.log('maybeNP = frames with a hedged player name shown on a non-player (what a wrong lock grows from); latency = mean tap-to-hit time of the correct shots.');
 if (strict) {
   console.log(failures ? `\n${failures} scenario(s) produced a wrong hit or a wrong lock.` : '\nNo wrong hits and no wrong locks.');
   process.exit(failures ? 1 : 0);

@@ -64,11 +64,14 @@ test('identical tops from behind refuse rather than guess', async () => {
   assert.equal(a.wrongLockFrames, 0, describe(a));
 });
 
-test('strangers and mirrors are never hit', async () => {
+test('strangers and mirrors are never hit, and never wear a player\'s name even hedged', async () => {
   for (const name of ['stranger', 'mirror']) {
     const a = await run(name);
     assert.equal(a.correct + a.wrong, 0, describe(a));
     assert.equal(a.wrongLockFrames, 0, describe(a));
+    // Measured 0 over 100 seeds (2026-09-14): the real player's track claims the id, so a stranger's
+    // partial face match never reaches the label. A nonzero here is the first sign of a wrong lock.
+    assert.equal(a.maybeOnNonPlayer, 0, describe(a));
   }
 });
 
@@ -147,8 +150,10 @@ for (const [name, seed] of REGRESSION_SEEDS) {
   });
 }
 
-test('a stranger wearing the same top as a player is never hit', async () => {
+test('a stranger wearing the same top as a player is never hit, and never wears their name even hedged', async () => {
   const a = await run('same-shirt-stranger');
   assert.equal(a.correct + a.wrong, 0, describe(a));
   assert.equal(a.wrongLockFrames, 0, describe(a));
+  // Measured 0 over 100 seeds (2026-09-14) with the stranger's belief peaking at 0.40 on 13 frames.
+  assert.equal(a.maybeOnNonPlayer, 0, describe(a));
 });
