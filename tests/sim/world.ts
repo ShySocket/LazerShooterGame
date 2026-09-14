@@ -101,6 +101,52 @@ function unit(v: number[]): number[] {
 function randomUnit(rng: Rng): number[] {
   return unit(Array.from({ length: DIM }, () => rng.gauss()));
 }
+/**
+ * Spread of the similarity between two unrelated faces. Measured on the real model after mean
+ * centring (README, faceMean.ts): median 0, 90th percentile 0.20, 99th 0.39. A normal with this
+ * standard deviation puts the 90th at 0.21 and the 99th at 0.38. The sim's vectors bypass the
+ * game's centring (DIM is not 512), so their raw cosine plays the part of the centred similarity.
+ */
+const STRANGER_SIM_SD = 0.165;
+
+/**
+ * A new face whose cosine to each earlier face is an independent draw from the stranger
+ * distribution, solved exactly: orthonormalise the references (Gram-Schmidt), back-substitute the
+ * coefficients so every requested dot product holds, and fill the rest with a random perpendicular.
+ */
+function unrelatedFace(rng: Rng, refs: number[][]): number[] {
+  if (refs.length === 0) return randomUnit(rng);
+  const dot = (a: number[], b: number[]) => a.reduce((s, x, i) => s + x * b[i], 0);
+  const basis: number[][] = [];
+  for (const r of refs) {
+    let v = r.slice();
+    for (const e of basis) {
+      const d = dot(v, e);
+      v = v.map((x, i) => x - d * e[i]);
+    }
+    basis.push(unit(v));
+  }
+  const wanted = refs.map(() => Math.max(-0.6, Math.min(0.6, rng.gauss(0, STRANGER_SIM_SD))));
+  // dot(e_i, ref_j) is zero for i > j, so the coefficients follow from the references in order.
+  const coef: number[] = [];
+  for (let j = 0; j < refs.length; j++) {
+    let acc = wanted[j];
+    for (let i = 0; i < j; i++) acc -= coef[i] * dot(basis[i], refs[j]);
+    coef.push(acc / dot(basis[j], refs[j]));
+  }
+  const inPlane = coef.reduce((s, c) => s + c * c, 0);
+  const rest = Math.sqrt(Math.max(0, 1 - inPlane));
+  let perp = randomUnit(rng);
+  for (const e of basis) {
+    const d = dot(perp, e);
+    perp = perp.map((x, i) => x - d * e[i]);
+  }
+  perp = unit(perp);
+  const face = perp.map((x) => x * rest);
+  basis.forEach((e, i) => e.forEach((x, k) => { face[k] += coef[i] * x; }));
+  return unit(face);
+}
+
 /** A unit vector with cosine exactly `cos` to `u`. */
 function withCosine(rng: Rng, u: number[], cos: number): number[] {
   const n = randomUnit(rng);
@@ -137,15 +183,14 @@ export interface Scene {
   selfId: string;
 }
 
-/** Shared component so unrelated faces sit at about 0.2 cosine, like real ArcFace embeddings. */
+/** Unrelated faces get the measured stranger similarity to every face built before them (unrelatedFace). */
 export function buildScene(rng: Rng, specs: PersonSpec[], selfId = 'me'): Scene {
-  const common = randomUnit(rng);
   const people: Person[] = [];
   const byId = new Map<string, Person>();
   const make = (spec: PersonSpec): Person => {
     const src = spec.copyOf ? byId.get(spec.copyOf) : undefined;
     const like = spec.faceLike ? byId.get(spec.faceLike.id) : undefined;
-    const face = src ? src.face : like ? withCosine(rng, like.face, spec.faceLike!.cos) : unit(randomUnit(rng).map((x, i) => x + 0.5 * common[i]));
+    const face = src ? src.face : like ? withCosine(rng, like.face, spec.faceLike!.cos) : unrelatedFace(rng, [...byId.values()].map((q) => q.face));
     const twin = spec.outfitOf ? byId.get(spec.outfitOf) : undefined;
     const shade = src ? 0 : spec.topShade ?? Math.floor(rng.next() * 4);
     const top = src ? src.top : twin ? twin.top : topHistogram(spec.topHue, shade);
