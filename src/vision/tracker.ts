@@ -27,6 +27,11 @@ export interface Track {
   /** Identity assignment view, refreshed every frame by assignIdentities. */
   claimed: Record<string, number> | null;
   identityConflict?: boolean;
+  /**
+   * The last observation could not say whose face was whose (ambiguous association). The identity is
+   * kept, but it may not show a lock or take a hit until fresh evidence updates the belief again.
+   */
+  unconfirmed: boolean;
   via: 'face' | 'clothing' | 'none';
   lastFaceAt: number;
   /** When clothing pixels were last sampled for this track (evidence or audit). */
@@ -181,6 +186,7 @@ export function resetIdentity(track: Track): void {
   track.belief = {};
   track.claimed = null;
   track.identityConflict = false;
+  track.unconfirmed = false;
   track.via = 'none';
   track.lastFaceAt = 0;
   track.lastEvidenceAt = 0;
@@ -236,7 +242,7 @@ export class Tracker {
     const out = dets.map((d, i) => {
       let t = assigned.get(i);
       if (!t) {
-        t = { id: this.nextId++, box: [...d.box], hit: [...(d.hit ?? d.box)], hitObservedAt: d.body ? now : 0, lastSeen: now, belief: {}, claimed: null, via: 'none', lastFaceAt: 0, lastClothingAt: 0, lastEvidenceAt: 0, faceMean: null, faceSamples: 0 };
+        t = { id: this.nextId++, box: [...d.box], hit: [...(d.hit ?? d.box)], hitObservedAt: d.body ? now : 0, lastSeen: now, belief: {}, claimed: null, via: 'none', lastFaceAt: 0, lastClothingAt: 0, lastEvidenceAt: 0, faceMean: null, faceSamples: 0, unconfirmed: false };
         this.tracks.push(t);
         this.motion.set(t.id, { vx: 0, vy: 0, samples: 1 });
       } else {
@@ -262,6 +268,7 @@ export class Tracker {
       }
       t.box = [...d.box];
       t.lastSeen = now;
+      if (d.associationAmbiguous) t.unconfirmed = true;
       return t;
     });
     this.lastUpdate = now;
@@ -273,7 +280,11 @@ export class Tracker {
     const live = candidates.map((t) => t.lastSeen === this.lastUpdate);
     const scores = dets.map((d) => candidates.map((t, ti) => {
       const gapped = !live[ti];
-      if (d.associationAmbiguous || !validBox(d.box)) return 0;
+      // An ambiguous face-to-body association says nothing about which body this is: the box still
+      // continues its track spatially. The flag keeps the frame from adding evidence, showing a lock
+      // or taking a shot (pipeline.ts); breaking continuity here would throw away the identity of a
+      // person who merely stood next to somebody for a frame.
+      if (!validBox(d.box)) return 0;
       const shape = Math.min(d.box[2] / t.box[2], t.box[2] / d.box[2], d.box[3] / t.box[3], t.box[3] / d.box[3]);
       if (shape < (gapped ? 0.55 : 0.4)) return 0;
       const m = this.motion.get(t.id)!;

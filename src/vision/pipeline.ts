@@ -369,9 +369,12 @@ export class VisionPipeline<C = unknown> {
       p.zoom ||= zoomed;
       // A frame in which the detector skipped the target is not the target leaving: the burst keeps
       // waiting while their track coasts within the gap and nobody else has stepped under the dot.
+      // Only a different person's body under the dot ends the burst early. The target's own body in a
+      // frame that cannot select them (ambiguous association, the dot off the observed torso, a
+      // neighbour's edge within the band) is a reason to wait for the next frame, not a miss.
       const cx = crosshair[0] + crosshair[2] / 2;
       const cy = crosshair[1] + crosshair[3] / 2;
-      const someoneElse = !t && dets.some((d) => containsPoint(d.box, cx, cy));
+      const someoneElse = !t && dets.some((d, j) => tracks[j].id !== p.trackId && containsPoint(d.box, cx, cy));
       const coasting = !t && !someoneElse && this.tracker.live().some((x) => x.id === p.trackId && now - x.lastSeen <= gapMs);
       if ((!t && !coasting) || r || decisionAt >= p.deadline || p.framesLeft <= 0) {
         this.pending = null;

@@ -176,6 +176,8 @@ export function updateBelief(track: Track, ev: Record<string, number>, alpha = 0
   }
   track.lastEvidenceAt = now;
   track.claimed = null;
+  // Fresh evidence on this body is what an ambiguous frame was waiting for.
+  track.unconfirmed = false;
 }
 
 export interface Resolution {
@@ -208,6 +210,8 @@ export const IDENTITY_TTL_MS = 1500;
 /** A hit only registers when the top candidate is a live opponent, confident, and clearly ahead of everyone else. */
 export function resolveHit(track: Track, eligible: Set<string>, threshold: number, margin: number, now = performance.now()): Resolution | null {
   if (!Number.isFinite(track.lastEvidenceAt) || now < track.lastEvidenceAt || now - track.lastEvidenceAt > IDENTITY_TTL_MS) return null;
+  // After a frame that could not tell whose face was whose, the identity waits for fresh evidence.
+  if (track.unconfirmed) return null;
   const b = bestBelief(track, eligible);
   if (!b || !Number.isFinite(b.score) || !Number.isFinite(b.margin) || b.score < threshold || b.margin < margin || b.margin <= 0) return null;
   return b;

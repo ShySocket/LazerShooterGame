@@ -3,6 +3,7 @@ import test from 'node:test';
 import type { BodyResult, FaceResult } from '@vladmandic/human';
 import { buildDetections, faceOwner, resetIdentity, Tracker, type Detection } from '../src/vision/tracker.ts';
 import type { NBox } from '../src/vision/geometry.ts';
+import { resolveHit, updateBelief } from '../src/vision/scoring.ts';
 
 const detection = (x: number, width = 0.2): Detection => ({ box: [x, 0.1, width, 0.7] });
 const body = (box: NBox, nose?: [number, number]): BodyResult => ({
@@ -137,13 +138,20 @@ test('indistinguishable crossing boxes do not inherit either old identity', () =
   assert.ok(current.every((t) => Object.keys(t.belief).length === 0));
 });
 
-test('ambiguous association removes previously confident identity immediately', () => {
+test('ambiguous association keeps the track and its identity but suspends locks and hits until fresh evidence', () => {
   const tracker = new Tracker();
   const [old] = tracker.update([detection(0.3)], 100);
-  old.belief.alice = 0.99;
+  updateBelief(old, { alice: 1 }, 1, 100);
+  updateBelief(old, { alice: 1 }, 1, 150);
+  assert.ok(resolveHit(old, new Set(['alice']), 0.5, 0.2, 160));
   const [current] = tracker.update([{ ...detection(0.3), associationAmbiguous: true }], 200);
-  assert.notEqual(current.id, old.id);
-  assert.deepEqual(current.belief, {});
+  assert.equal(current.id, old.id, 'the body continues its track');
+  assert.ok(current.belief.alice > 0.9, 'the identity is kept');
+  assert.equal(current.unconfirmed, true);
+  assert.equal(resolveHit(current, new Set(['alice']), 0.5, 0.2, 210), null, 'but it cannot take a hit yet');
+  updateBelief(current, { alice: 1 }, 0.3, 400);
+  assert.equal(current.unconfirmed, false);
+  assert.ok(resolveHit(current, new Set(['alice']), 0.5, 0.2, 410), 'fresh evidence restores it');
 });
 
 test('identity reset clears evidence freshness, conflict and face history together', () => {
