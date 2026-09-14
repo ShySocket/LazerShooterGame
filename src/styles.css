@@ -193,6 +193,17 @@ input, .code-input {
 .shot-outcome.unclear { color: var(--warn); }
 .shot-beliefs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 
+/* Shot review (results screen and lobby) */
+.review { background: var(--panel); border-radius: var(--radius); padding: 14px; display: flex; flex-direction: column; gap: 10px; text-align: left; width: 100%; }
+.review .prompt { font-weight: 700; line-height: 1.3; }
+.review-photo { width: 100%; border-radius: 10px; background: #000; display: block; max-height: 55vh; object-fit: contain; }
+.review .hint { color: var(--muted); }
+.review-answers { display: flex; flex-direction: column; gap: 8px; }
+.review-answers .btn { width: 100%; display: flex; align-items: center; gap: 10px; text-align: left; padding: 12px 14px; font-size: 16px; }
+.review-answers .btn.none { border-color: rgba(255, 210, 59, 0.5); }
+.review-foot { display: flex; justify-content: space-between; align-items: center; }
+.review.done { align-items: center; text-align: center; }
+
 /* Accounts */
 .note.ok { background: rgba(124, 255, 59, 0.12); color: var(--good); }
 .account-row { display: flex; align-items: center; gap: 10px; background: var(--panel); border-radius: var(--radius); padding: 10px 14px; text-align: left; }

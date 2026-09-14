@@ -1,5 +1,6 @@
 import type { Player, Profile, Room, RoomMeta, RoomSettings } from '../types';
 import { DEFAULT_SETTINGS, PLAYER_COLORS } from '../types';
+import type { ProfilesSnapshot, ShotSample } from '../feedback/sample';
 
 export type HitOutcome = 'hit' | 'eliminated' | 'invulnerable' | 'dead' | 'invalid';
 export type JoinResult = 'ok' | 'missing' | 'in-progress';
@@ -20,6 +21,11 @@ export interface RoomBackend {
   startRound(code: string, settings: RoomSettings, startAt: number): Promise<void>;
   resetForNewRound(code: string): Promise<void>;
   registerHit(code: string, shooter: string, target: string, score: number, via: string): Promise<HitOutcome>;
+  /**
+   * Uploads one labelled shot sample (never a photo) under its round. The round's profiles are
+   * written once, by whichever phone gets there first; later writes of them are refused and ignored.
+   */
+  submitShotFeedback(round: string, sample: ShotSample, profiles: ProfilesSnapshot | null): Promise<void>;
   /** Server-synchronised clock in ms. */
   now(): number;
 }

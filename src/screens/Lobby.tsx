@@ -5,6 +5,7 @@ import { outfitConflict } from '../vision/clothing';
 import { isCurrentFaceScan } from '../vision/human';
 import { haptic, sfx, unlockAudio } from '../audio/sfx';
 import { useAudioState } from '../hooks/useAudioState';
+import { ShotReview } from '../feedback/ShotReview';
 
 interface Props {
   room: Room;
@@ -88,6 +89,8 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
           {audio === 'none' ? 'Tap to enable sound and buzz' : 'Sound is blocked. Tap to turn it back on'}
         </button>
       )}
+
+      <ShotReview room={room} pid={pid} />
 
       <h3>Players ({connected.length})</h3>
       <ul className="players">

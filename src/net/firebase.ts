@@ -26,6 +26,7 @@ import {
   type RoomBackend,
 } from './backend';
 import { firebaseApp } from './firebaseApp';
+import type { ProfilesSnapshot, ShotSample } from '../feedback/sample';
 
 export { hasFirebaseConfig } from './firebaseApp';
 
@@ -225,6 +226,25 @@ export class FirebaseBackend implements RoomBackend {
     }
     return outcome;
   }
+
+  async submitShotFeedback(round: string, sample: ShotSample, profiles: ProfilesSnapshot | null): Promise<void> {
+    const base = `feedback/rounds/${round}`;
+    if (profiles) {
+      // Write-once by rule: the phone that lost the race gets a permission error, which is the
+      // expected outcome, not a failure of this upload.
+      await set(ref(this.db, `${base}/profiles`), jsonClean(profiles)).catch((e: unknown) => {
+        if (!/permission/i.test(String((e as { code?: string }).code ?? e))) throw e;
+      });
+    }
+    // Keyed by the shot id (write-once by rule), so a retry after a timed-out upload cannot store the
+    // sample twice; the refused retry is dropped by the queue after a few attempts.
+    await set(ref(this.db, `${base}/samples/${sample.shot.id}`), jsonClean(sample));
+  }
+}
+
+/** The database refuses undefined and non-finite numbers; a JSON round trip turns them into nulls. */
+function jsonClean<T>(v: T): T {
+  return JSON.parse(JSON.stringify(v)) as T;
 }
 
 function stripUndefined<T extends object>(obj: T): T {
