@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-09-14.7';
+export const CALIBRATION_VERSION = '2026-09-14.8';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /**
@@ -171,6 +171,8 @@ export const CLOTHING_AUDIT_MS = 1000;
  * confident (pending shot, unconfirmed, conflict, young track, no resolvable hit) is cropped every frame.
  */
 export const FACE_REFRESH_MS = 600;
+/** A confident target whose lead over the runner-up is thinner than this (beyond the hit margin) is still cropped every frame: look-alikes need the frames. */
+export const FACE_REFRESH_MIN_LEAD = 0.2;
 /** Belief step per face frame; two frames of a good match are enough for a lock. */
 export const FACE_BELIEF_ALPHA = 0.45;
 /** Live enrolment gates: see pipeline.ts learnFace. */

@@ -1,5 +1,5 @@
 import { UNKNOWN_ID, type BodyProps, type OutfitSig } from '../types';
-import { CLOTHING_AUDIT_MS, CLOTHING_BELIEF_ALPHA, CLOTHING_CONTRADICTION, CLOTHING_INTERVAL_MS, FACE_BELIEF_ALPHA, FACE_FRESH_MIN_MARGIN, FACE_FRESH_MS, FACE_REFRESH_MS, FACE_VIA_TIMEOUT_MS, MATURE_TRACK_OBSERVATIONS, TORSO_COVER_FRACTION, LIVE_FACE_ENROLLED_MIN, LIVE_FACE_MIN, LIVE_FACE_MIN_BELIEF, LIVE_FACE_MIN_QUALITY, LIVE_FACE_MIN_TRACK_SAMPLES, LIVE_FACE_NOVELTY, LIVE_FACE_RUNNER_UP, LIVE_FACES_PER_PLAYER } from './calibration';
+import { CLOTHING_AUDIT_MS, CLOTHING_BELIEF_ALPHA, CLOTHING_CONTRADICTION, CLOTHING_INTERVAL_MS, FACE_BELIEF_ALPHA, FACE_FRESH_MIN_MARGIN, FACE_FRESH_MS, FACE_REFRESH_MIN_LEAD, FACE_REFRESH_MS, FACE_VIA_TIMEOUT_MS, MATURE_TRACK_OBSERVATIONS, TORSO_COVER_FRACTION, LIVE_FACE_ENROLLED_MIN, LIVE_FACE_MIN, LIVE_FACE_MIN_BELIEF, LIVE_FACE_MIN_QUALITY, LIVE_FACE_MIN_TRACK_SAMPLES, LIVE_FACE_NOVELTY, LIVE_FACE_RUNNER_UP, LIVE_FACES_PER_PLAYER } from './calibration';
 import { containsPoint, faceOwner, resetIdentity, trackGapMs, Tracker, type Detection, type Track } from './tracker';
 import { crosshairCentre, indexInSight, intersectArea, type NBox } from './geometry';
 import {
@@ -305,7 +305,10 @@ export class VisionPipeline<C = unknown> {
     // A confident target is refreshed on a bounded interval so a contradiction is still caught.
     if (idx >= 0) {
       const t = tracks[idx];
-      const confident = !this.pending && !t.unconfirmed && !t.identityConflict && t.observations >= MATURE_TRACK_OBSERVATIONS && resolveHit(t, eligible, hitThreshold, hitMargin, now) !== null;
+      const hit = resolveHit(t, eligible, hitThreshold, hitMargin, now);
+      // A thin lead over the runner-up (look-alike faces, a shared shirt) is not confidence enough to
+      // rest on: those targets keep their crop every frame.
+      const confident = !this.pending && !t.unconfirmed && !t.identityConflict && t.observations >= MATURE_TRACK_OBSERVATIONS && hit !== null && hit.margin >= hitMargin + FACE_REFRESH_MIN_LEAD;
       if (!confident || now - t.lastFaceAt >= FACE_REFRESH_MS) order.push(idx);
     }
     // Everybody else takes turns, including bodies whose face the full-frame pass did not find (the
