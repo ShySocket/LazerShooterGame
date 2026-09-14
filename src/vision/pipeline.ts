@@ -407,6 +407,23 @@ export class VisionPipeline<C = unknown> {
         coasted = true;
       }
     }
+    if (!best && idx === -1 && !coasted) {
+      // The frame is a period old and everybody has moved since (a pan, a walk): nobody is under the
+      // dot in the old geometry, but the person whose motion carries them there now may be. They are
+      // only nominated: the burst still has to see them under the dot in a frame captured after the
+      // tap, so this can turn a premature miss into a wait, never into a hit from prediction.
+      const age = now - L.t;
+      const moved = (b: NBox, t: Track): NBox => [b[0] + t.vx * age, b[1] + t.vy * age, b[2], b[3]];
+      const j = indexInSight(
+        L.tracks.map((t, i) => moved(L.dets[i].box, t)),
+        crosshair,
+        L.tracks.map((t) => moved(t.hit, t)),
+      );
+      if (j >= 0 && !L.dets[j].associationAmbiguous && (L.tracks[j].vx !== 0 || L.tracks[j].vy !== 0)) {
+        best = L.tracks[j];
+        coasted = true;
+      }
+    }
     if (!best) {
       // Nobody under the dot in a frame too old to trust is not a miss the player can learn from.
       if (!freshFrame(L.t, now, allowanceMs)) return { kind: 'stale', frameAgeMs: Math.round(now - L.t), allowanceMs };

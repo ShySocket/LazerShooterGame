@@ -46,6 +46,9 @@ export interface Track {
   lastFaceSampleAt: number;
   /** How many frames this track has been matched to a detection; below CONFIRMED_OBSERVATIONS it is tentative. */
   observations: number;
+  /** Trusted velocity of the box centre in frame units per ms (0 until the motion has settled). */
+  vx: number;
+  vy: number;
 }
 
 /**
@@ -268,7 +271,7 @@ export class Tracker {
     const out = dets.map((d, i) => {
       let t = assigned.get(i);
       if (!t) {
-        t = { id: this.nextId++, box: [...d.box], hit: [...(d.hit ?? d.box)], hitObservedAt: d.body ? now : 0, lastSeen: now, belief: {}, claimed: null, via: 'none', lastFaceAt: 0, lastClothingAt: 0, lastEvidenceAt: 0, faceMean: null, faceSamples: 0, lastFaceSampleAt: 0, unconfirmed: false, observations: 1 };
+        t = { id: this.nextId++, box: [...d.box], hit: [...(d.hit ?? d.box)], hitObservedAt: d.body ? now : 0, lastSeen: now, belief: {}, claimed: null, via: 'none', lastFaceAt: 0, lastClothingAt: 0, lastEvidenceAt: 0, faceMean: null, faceSamples: 0, lastFaceSampleAt: 0, unconfirmed: false, observations: 1, vx: 0, vy: 0 };
         this.tracks.push(t);
         this.motion.set(t.id, { vx: 0, vy: 0, sw: 0, sh: 0, samples: 1 });
       } else {
@@ -289,6 +292,9 @@ export class Tracker {
         m.sh = (1 - alpha) * m.sh + alpha * (d.box[3] / t.box[3] - 1) / dt;
         m.samples++;
         t.observations++;
+        const settled = m.samples <= 1 ? 0 : m.samples === 2 ? 0.6 : 1;
+        t.vx = m.vx * settled;
+        t.vy = m.vy * settled;
       }
       // A frame in which only the face was found keeps the torso observed a moment ago, moved with the
       // box, so one dropped pose does not turn a chest shot into a head-only target. Never longer than

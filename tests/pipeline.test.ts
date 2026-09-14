@@ -59,7 +59,7 @@ function harness() {
   );
   const ops: FrameOps = {
     sampleOutfit: () => null,
-    cropFaces: async (region) => (region[2] > 0.3 ? [{ box: [0.48, 0.26, 0.08, 0.1], embedding: BOB_FACE, quality: 1 }] : []),
+    cropFaces: async (region) => (region[2] > 0.3 ? [{ box: [region[0] + 0.12, 0.26, 0.08, 0.1], embedding: BOB_FACE, quality: 1 }] : []),
     isCurrent: () => true,
   };
   let t = 0;
@@ -162,4 +162,32 @@ test('(d) a burst settles as a miss when a different track\'s body is under the 
   assert.ok(out.settled, 'the burst must settle');
   assert.equal(out.settled!.resolution, null, 'and it must be a miss, not a hit on anybody');
   assert.equal(h.pipeline.hasPending(), false);
+});
+
+
+test('(e) a tap while the target walks into the dot opens a burst on them from their motion, confirmed only by a post-tap sighting', async () => {
+  const h = harness();
+  // Bob walks left at 0.06 of the frame per frame: after seven frames his box starts at 0.44 and his
+  // torso spans 0.52 .. 0.71, so the dot at 0.50 is not on him in the stale frame. 200 ms later his
+  // motion puts the torso at 0.465 .. 0.655: under the dot.
+  const at = (x: number) => body([x, 0.24, 0.35, 0.61], [x + 0.08, 0.26, 0.19, 0.35]);
+  let last;
+  for (let i = 0; i < 7; i++) last = await h.frame([at(0.80 - i * 0.06)]);
+  assert.ok(last!.tracks[0].belief.bob > 0.9);
+  assert.ok(last!.tracks[0].vx < 0, 'the track carries his leftward velocity');
+  h.clock.now = h.t - PERIOD + 200;
+  const r = h.pipeline.fire({ tap: h.clock.now }, CROSSHAIR);
+  assert.equal(r.kind, 'pending', `expected a burst on the moving target, got ${r.kind}`);
+  const out = await h.frame([at(0.38)], h.clock.now + 20);
+  assert.equal(out.settled?.resolution?.id, 'bob', 'the post-tap frame shows him under the dot: hit');
+  assert.equal(out.settled?.elapsedMs, 240);
+});
+
+test('(f) a stationary target is not nominated by prediction: nobody under the dot is a miss', async () => {
+  const h = harness();
+  await h.establishBob(6);
+  h.clock.now = h.t - PERIOD + 200;
+  // Dot well to the right of Bob's box while he stands still.
+  const r = h.pipeline.fire({ tap: h.clock.now }, [0.9 - 0.21, 0.35, 0.42, 0.3]);
+  assert.equal(r.kind, 'miss');
 });
