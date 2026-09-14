@@ -4,7 +4,7 @@ import { UNKNOWN_ID } from '../../src/types';
 import type { Candidate } from '../../src/vision/scoring';
 import type { NBox } from '../../src/vision/geometry';
 import { Rng } from './rng';
-import { buildScene, cropFaces, DEFAULT_DETECTOR, detect, FRAME_H, FRAME_W, personBox, sampleOutfit, step, type DetectorModel, type Person, type PersonSpec } from './world';
+import { buildScene, cropFaces, DEFAULT_DETECTOR, detect, FRAME_H, FRAME_W, hitBox, personBox, sampleOutfit, step, type DetectorModel, type Person, type PersonSpec } from './world';
 
 export interface SimOptions {
   seed: number;
@@ -116,6 +116,8 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
    */
   interface Truth {
     visible: Person | null;
+    /** Whether the dot is on the visible person's head or torso (world.ts hitBox), where a shot may land. */
+    visibleHittable: boolean;
     /** Whether the dot is well inside the visible person, beyond the detector's jitter band of their edge. */
     visibleDeep: boolean;
     /** People whose body contains the dot but are farther than `visible` (hidden behind them). */
@@ -123,35 +125,45 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
     edge: Person[];
     hittable: (p: Person) => boolean;
   }
+  const inBox = (b: NBox, px: number, py: number, gx = 0, gy = 0) => px >= b[0] - gx && px <= b[0] + b[2] + gx && py >= b[1] - gy && py <= b[1] + b[3] + gy;
   const truthAt = (crosshair: NBox): Truth => {
     const cx = crosshair[0] + crosshair[2] / 2;
     const cy = crosshair[1] + crosshair[3] / 2;
     let visible: Person | null = null;
+    let visibleHittable = false;
     let visibleDeep = false;
     const inside: Person[] = [];
     const edge: Person[] = [];
     for (const p of scene.people) {
-      const [x, y, w, h] = personBox(p);
-      const isInside = cx >= x && cx <= x + w && cy >= y && cy <= y + h;
+      const full = personBox(p);
+      const [x, y, w, h] = full;
+      // The whole silhouette hides what is behind it; only the head and torso can take a hit.
+      const isInside = inBox(full, cx, cy);
       // Three sigma of the detector's box jitter (world.ts, 5% width): inside this band the detector cannot know.
       const gx = w * 0.15;
       const gy = h * 0.09;
-      const near = cx >= x - gx && cx <= x + w + gx && cy >= y - gy && cy <= y + h + gy;
+      const hit = hitBox(p);
+      const near = inBox(hit, cx, cy, gx, gy);
       const deep = cx >= x + gx && cx <= x + w - gx && cy >= y + gy && cy <= y + h - gy;
       if (isInside) {
         inside.push(p);
         if (!visible || p.distance < visible.distance) {
           visible = p;
+          visibleHittable = inBox(hit, cx, cy);
           visibleDeep = deep;
         }
       } else if (near) edge.push(p);
     }
-    return { visible, visibleDeep, behind: inside.filter((p) => p !== visible), edge, hittable: (p) => p.player && eligible.has(p.id) && !p.copyOf };
+    return { visible, visibleHittable, visibleDeep, behind: inside.filter((p) => p !== visible), edge, hittable: (p) => p.player && eligible.has(p.id) && !p.copyOf };
   };
   /** Verdict for a resolved id against the truth at the tap. */
   const judge = (truth: Truth, id: string): 'correct' | 'wrong' | 'ambiguous' => {
     const v = truth.visible;
     if (v && v.id === id && truth.hittable(v)) {
+      // The right person, but on an arm, a leg or the empty corner of their box: the game's region
+      // from jittered landmarks may honestly disagree with the ideal one, so this is never credited
+      // and never counted as a wrong hit either.
+      if (!truth.visibleHittable) return 'ambiguous';
       // Somebody nearer may actually have covered the point.
       return truth.edge.some((p) => p.distance < v.distance) ? 'ambiguous' : 'correct';
     }
@@ -227,7 +239,7 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
       advanceTo(now);
       const tapAim = aim();
       const truth = underDot(tapAim);
-      if (truth.visible?.id === target.id && truth.hittable(truth.visible)) result.possibleShots++;
+      if (truth.visible?.id === target.id && truth.hittable(truth.visible) && truth.visibleHittable) result.possibleShots++;
       const fire = pipeline.fire({ t: now, under: truth }, tapAim);
       if (fire.kind === 'pending') pending = { token: fire.token, deadline: fire.deadline };
       else if (fire.kind === 'instant') settle(fire.settlement);
@@ -259,7 +271,7 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
       if (!lockOk(truth, lock.id)) {
         result.wrongLockFrames++;
         recordWrong(capturedAt, `LOCK ${lock.id} shown while visible under the dot: ${truth.visible?.id ?? 'nobody'}`);
-      } else if (lock.id === target.id && truth.visible?.id === target.id) {
+      } else if (lock.id === target.id && truth.visible?.id === target.id && truth.visibleHittable) {
         result.lockedFrames++;
         result.firstLockMs ??= now;
       }

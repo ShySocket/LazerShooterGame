@@ -3,7 +3,7 @@ import type { BodyProps, OutfitSig, Profile } from '../../src/types';
 import { BODY_MODEL } from '../../src/types';
 import { FACE_MODEL, faceQuality } from '../../src/vision/embedding';
 import type { NBox } from '../../src/vision/geometry';
-import type { Detection } from '../../src/vision/tracker';
+import { hitRegion, type Detection } from '../../src/vision/tracker';
 import type { FaceObservation, OutfitObservation } from '../../src/vision/pipeline';
 import { Rng } from './rng';
 
@@ -186,6 +186,45 @@ export function facePx(p: Person): number {
   return faceBox(p)[3] * FRAME_H;
 }
 
+export interface Keypoint {
+  part: string;
+  positionRaw: [number, number];
+  score: number;
+}
+
+/**
+ * Ideal pose landmarks on the true silhouette: nose on the face, shoulders at 22% of the height
+ * spanning 55% of the width, hips at 52% spanning 40%. The detector jitters and drops these; the
+ * oracle uses them as they are.
+ */
+export function trueKeypoints(p: Person): Keypoint[] {
+  const [x, y, w, h] = personBox(p);
+  const fb = faceBox(p);
+  const cx = x + w / 2;
+  return [
+    { part: 'nose', positionRaw: [fb[0] + fb[2] / 2, fb[1] + fb[3] * 0.6], score: 0.9 },
+    { part: 'leftShoulder', positionRaw: [cx - w * 0.275, y + h * 0.22], score: 0.9 },
+    { part: 'rightShoulder', positionRaw: [cx + w * 0.275, y + h * 0.22], score: 0.9 },
+    { part: 'leftHip', positionRaw: [cx - w * 0.2, y + h * 0.52], score: 0.9 },
+    { part: 'rightHip', positionRaw: [cx + w * 0.2, y + h * 0.52], score: 0.9 },
+  ];
+}
+
+/**
+ * Where a shot may really land on this person: head and torso, computed by the same selector the
+ * pipeline uses (hitRegion) on the ideal landmarks, so the oracle and the game agree on what a body
+ * is. Arms, legs and the empty corners of the outer box are not part of it.
+ */
+export function hitBox(p: Person): NBox {
+  const box = personBox(p);
+  const body = { boxRaw: box, score: 1, keypoints: trueKeypoints(p) } as unknown as BodyResult;
+  const face = p.facing === 'back' ? undefined : ({ boxRaw: faceBox(p), boxScore: 1 } as unknown as FaceResult);
+  return hitRegion(box, body, face);
+}
+
+/** Share of frames in which the pose model misses one landmark of a person it found. */
+const KEYPOINT_DROPOUT = 0.05;
+
 export interface DetectedFrame {
   dets: Detection[];
   /** Which person a body/face detection came from, for scoring; ghosts map to null. */
@@ -232,13 +271,16 @@ export function detect(rng: Rng, scene: Scene, model: DetectorModel): { bodies: 
     const pVisible = hidden > 0.7 ? 0.1 : hidden > 0.35 ? 1 - hidden : 1;
     if (rng.chance(pBody(p.distance) * (1 - model.bodyDropout) * pVisible)) {
       const raw: NBox = [box[0] + jitter(), box[1] + jitter(), box[2] * (1 + rng.gauss(0, 0.05)), box[3] * (1 + rng.gauss(0, 0.04))];
-      const fb = faceBox(p);
-      const nose: [number, number] = [fb[0] + fb[2] / 2, fb[1] + fb[3] * 0.6];
       const headVisible = p.facing !== 'back' && rng.chance(0.9);
+      // Landmarks jitter less than the box and drop out one at a time; a missing shoulder or hip
+      // sends the game's hit region to its fallback, as a flaky pose model does on a phone.
+      const keypoints: Keypoint[] = trueKeypoints(p)
+        .filter((k) => (k.part === 'nose' ? headVisible : !rng.chance(KEYPOINT_DROPOUT)))
+        .map((k) => ({ part: k.part, positionRaw: [k.positionRaw[0] + jitter() * 0.5, k.positionRaw[1] + jitter() * 0.5], score: 0.5 + rng.next() * 0.4 }));
       const body = {
         boxRaw: raw,
         score: 0.6 + rng.next() * 0.35,
-        keypoints: headVisible ? [{ part: 'nose', positionRaw: nose, score: 0.8 }] : [],
+        keypoints,
       } as unknown as BodyResult;
       bodies.push(body);
       owner.set(body, p);
