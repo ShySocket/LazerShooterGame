@@ -420,7 +420,7 @@ One commit per item, tests written with the code; `npm test`, `npm run typecheck
 
    Root causes fixed, in order: a tentative neighbour track turning a good match into a tie (item 8), the velocity prediction overshooting a pan reversal (stationary hypothesis, item 8), Bob's body inheriting Alice's track as he emerged from behind her (face-presence cue and the crossing rule), and FIRE answering miss from a period-old frame while everybody had moved (motion-predicted nomination, still confirmed only by a post-tap sighting). What remains in crossing is the ambiguity refusal when two bodies cover the dot: 20 of the 24 misses in 12 seeds, plus 4 bursts refused for the same reason. That rule stays.
 10. **Frame timing**: `requestVideoFrameCallback` with fallback, drop superseded work, per-stage profile (9.1 to 9.3); 9.4 only if the profile says so. _(done in 8db33b7: rVFC capture timestamps, per-stage profile in the bench; crops measured at a third of the frame on a laptop, so need-based crops with a 600 ms refresh; bench age 58 to 26 ms; the sim now charges actual crops.)_
-11. **Detector-output recording and replay** (former 2.6), numbers only.
+11. **Detector-output recording and replay** (former 2.6), numbers only. _(done in 5b990aa.)_
 12. **Real-phone validation set** (section 10) and threshold selection on it (7.7, 7.8), plus 8.6 and 8.7.
 
 Dropped: 3.3 (frame copied at FIRE), 3.5 (continuity generation), 5.3 (Kalman), 6.4 and 6.5 (cost fusion, Hungarian), 6.7 (camera-motion compensation; the pan scenario measures it first).
