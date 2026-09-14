@@ -3,6 +3,7 @@ export interface ShotRecord {
   /** What happened: hit, miss, unclear, no target, shielded. */
   outcome: string;
   targetName?: string;
+  targetId?: string;
   via?: string;
   /** Top beliefs on the track that was in the crosshair, best first. */
   beliefs: { id: string; name: string; score: number }[];

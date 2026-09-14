@@ -3,6 +3,7 @@ import { backend } from '../net';
 import { enrolledPlayers, livesLabel, type Room } from '../types';
 import { sfx } from '../audio/sfx';
 import { shotLog } from '../debug/shotLog';
+import { ShotReview } from '../feedback/ShotReview';
 
 interface Props {
   room: Room;
@@ -41,6 +42,7 @@ export function Results({ room, pid, onLeave }: Props) {
           </li>
         ))}
       </ol>
+      <ShotReview room={room} pid={pid} />
       {isHost ? (
         <button className="btn primary big" onClick={() => backend.resetForNewRound(room.code)}>
           Back to lobby
