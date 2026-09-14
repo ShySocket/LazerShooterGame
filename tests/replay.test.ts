@@ -35,6 +35,10 @@ test('the synthetic fixture replays through the pipeline and lands on the target
   assert.deepEqual(Object.keys(r.hitsBy), ['alice'], 'nobody else is hit');
   assert.ok((r.locksBy.alice ?? 0) > 0);
   assert.equal(r.locksBy.bob, undefined);
+  // The simulation labels every tap with its target, so the replay can judge them.
+  assert.equal(r.labelled, rec.fires.length);
+  assert.equal(r.correct, r.hitsBy.alice);
+  assert.equal(r.wrong, 0);
 });
 
 test('a stricter threshold on replay turns hits into unclear reads, never into hits on somebody else', async () => {

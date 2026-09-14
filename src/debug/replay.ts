@@ -5,12 +5,16 @@ import { restoreDetection, type Recording } from './recorder';
 export interface ReplayResult {
   frames: number;
   periodMs: number;
-  /** Shots by verdict: who was hit, or why nothing registered. */
-  shots: { t: number; outcome: 'hit' | 'unclear' | 'miss' | 'stale' | 'busy'; id?: string; elapsedMs: number }[];
+  /** Shots by verdict: who was hit, or why nothing registered; `verdict` judges a hit against the tap's expected target when it was labelled. */
+  shots: { t: number; outcome: 'hit' | 'unclear' | 'miss' | 'stale' | 'busy'; id?: string; elapsedMs: number; expectedId?: string | null; verdict?: 'correct' | 'wrong' | 'unlabelled' }[];
   hitsBy: Record<string, number>;
   unclear: number;
   miss: number;
   stale: number;
+  /** Labelled taps (the shooter said who they aimed at), and how the hits among them were judged. */
+  labelled: number;
+  correct: number;
+  wrong: number;
   /** Frames per lock label kind, and per player for green locks. */
   lockFrames: Record<string, number>;
   locksBy: Record<string, number>;
@@ -27,7 +31,7 @@ export interface ReplayResult {
 export async function replayRecording(rec: Recording, overrides: { hitThreshold?: number; hitMargin?: number } = {}): Promise<ReplayResult> {
   let now = 0;
   const eligible = new Set(rec.candidates.map((c) => c.id).filter((id) => id !== rec.selfId));
-  const pipeline = new VisionPipeline<{ t: number }>(
+  const pipeline = new VisionPipeline<{ t: number; expectedId?: string | null }>(
     {
       candidates: rec.candidates,
       exclusiveIds: new Set(rec.candidates.map((c) => c.id)),
@@ -37,18 +41,24 @@ export async function replayRecording(rec: Recording, overrides: { hitThreshold?
     },
     () => now,
   );
-  const result: ReplayResult = { frames: 0, periodMs: NaN, shots: [], hitsBy: {}, unclear: 0, miss: 0, stale: 0, lockFrames: {}, locksBy: {}, calibration: CALIBRATION_VERSION, recordedWith: rec.calibration };
-  const settle = (t: number, s: { resolution: { id: string } | null; track: unknown; elapsedMs: number }) => {
+  const result: ReplayResult = { frames: 0, periodMs: NaN, shots: [], hitsBy: {}, unclear: 0, miss: 0, stale: 0, labelled: 0, correct: 0, wrong: 0, lockFrames: {}, locksBy: {}, calibration: CALIBRATION_VERSION, recordedWith: rec.calibration };
+  const settle = (t: number, s: { resolution: { id: string } | null; track: unknown; elapsedMs: number; context: { expectedId?: string | null } }) => {
+    const expectedId = s.context.expectedId;
+    const labelled = expectedId !== undefined;
     if (s.resolution) {
-      result.shots.push({ t, outcome: 'hit', id: s.resolution.id, elapsedMs: s.elapsedMs });
+      const verdict = !labelled ? 'unlabelled' : s.resolution.id === expectedId ? 'correct' : 'wrong';
+      result.shots.push({ t, outcome: 'hit', id: s.resolution.id, elapsedMs: s.elapsedMs, expectedId, verdict });
       result.hitsBy[s.resolution.id] = (result.hitsBy[s.resolution.id] ?? 0) + 1;
+      if (verdict === 'correct') result.correct++;
+      if (verdict === 'wrong') result.wrong++;
     } else if (s.track) {
-      result.shots.push({ t, outcome: 'unclear', elapsedMs: s.elapsedMs });
+      result.shots.push({ t, outcome: 'unclear', elapsedMs: s.elapsedMs, expectedId });
       result.unclear++;
     } else {
-      result.shots.push({ t, outcome: 'miss', elapsedMs: s.elapsedMs });
+      result.shots.push({ t, outcome: 'miss', elapsedMs: s.elapsedMs, expectedId });
       result.miss++;
     }
+    if (labelled) result.labelled++;
   };
   let pending: { token: object; deadline: number } | null = null;
   const fires = [...rec.fires].sort((a, b) => a.t - b.t);
@@ -70,16 +80,20 @@ export async function replayRecording(rec: Recording, overrides: { hitThreshold?
         if (s) settle(now, s);
       }
       now = fire.t;
-      const r = pipeline.fire({ t: now }, fire.crosshair);
+      const labelled = fire.expectedId !== undefined;
+      const r = pipeline.fire({ t: now, expectedId: fire.expectedId }, fire.crosshair);
       if (r.kind === 'pending') pending = { token: r.token, deadline: r.deadline };
       else if (r.kind === 'instant') settle(now, r.settlement);
-      else if (r.kind === 'stale' || r.kind === 'no-camera') {
-        result.shots.push({ t: now, outcome: 'stale', elapsedMs: 0 });
-        result.stale++;
-      } else if (r.kind === 'miss') {
-        result.shots.push({ t: now, outcome: 'miss', elapsedMs: 0 });
-        result.miss++;
-      } else result.shots.push({ t: now, outcome: 'busy', elapsedMs: 0 });
+      else {
+        if (r.kind === 'stale' || r.kind === 'no-camera') {
+          result.shots.push({ t: now, outcome: 'stale', elapsedMs: 0, expectedId: fire.expectedId });
+          result.stale++;
+        } else if (r.kind === 'miss') {
+          result.shots.push({ t: now, outcome: 'miss', elapsedMs: 0, expectedId: fire.expectedId });
+          result.miss++;
+        } else result.shots.push({ t: now, outcome: 'busy', elapsedMs: 0, expectedId: fire.expectedId });
+        if (labelled) result.labelled++;
+      }
     }
     now = completeAt;
     const dets = f.dets.map(restoreDetection);

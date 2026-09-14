@@ -62,7 +62,7 @@ JS
 
 ## Current work
 
-`TRACKING_IMPROVEMENT_PLAN.md` is the active plan for identity and aim fixes; its "Investigation" section at the top holds the probes and its "GSTACK REVIEW REPORT" at the end holds the locked implementation order. The two mechanisms behind the 2026-09-13 sweep failures (a near player's identity transferring onto a concentric far player's box on a dropout, and a burst giving up on its own target's ambiguous frame) are fixed and pinned by RNG-free tests in `tests/pipeline.test.ts`; the seed numbers in `tests/sim.test.ts` are a sweep, not a reproduction. The continuity targets (occlusion, range-8m, crossing, pan-crossing) are the open work.
+`TRACKING_IMPROVEMENT_PLAN.md` holds the 2026-09-13 review, the 2026-09-14 investigation with its probes, and the locked implementation order with a note on each item as it landed. All twelve items are done on this branch: the two wrong-hit mechanisms are pinned by RNG-free tests in `tests/pipeline.test.ts` (the seed numbers in `tests/sim.test.ts` are a sweep, not a reproduction); the tracker has states, a lost-track window, height gates, a face-presence cue and a crossing rule; belief smoothing is elapsed-time based; the simulation has torso landmarks, the measured stranger tail, a pan scenario, and maybeNP/latency columns; every tunable lives in `calibration.ts`; the loop has a frame clock and profile with need-based crops; and rounds can be recorded (`?record`) and replayed (`npm run replay`, `scripts/validate.mjs`). What remains needs phones: the validation set in `docs/validation.md`.
 
 ## LESSONS
 

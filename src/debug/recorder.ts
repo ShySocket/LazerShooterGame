@@ -44,6 +44,8 @@ export interface RecordedFrame {
 export interface RecordedFire {
   t: number;
   crosshair: NBox;
+  /** Who the shooter says they were aiming at (the range test's target), or null for a stranger; absent when unlabelled. */
+  expectedId?: string | null;
 }
 
 export interface Recording {
@@ -132,8 +134,10 @@ export class Recorder {
     };
   }
 
-  fire(t: number, crosshair: NBox): void {
-    this.fires.push({ t: round(t, 1), crosshair: roundBox(crosshair) });
+  fire(t: number, crosshair: NBox, expectedId?: string | null): void {
+    const f: RecordedFire = { t: round(t, 1), crosshair: roundBox(crosshair) };
+    if (expectedId !== undefined) f.expectedId = expectedId;
+    this.fires.push(f);
   }
 
   get frameCount(): number {

@@ -407,7 +407,8 @@ export function Game({ room, me, pid, onLeave }: Props) {
     const wrap = wrapRef.current;
     const usable = Boolean(L && wrap && !document.hidden && L.width === videoRef.current?.videoWidth && L.height === videoRef.current?.videoHeight);
     const ch = L && wrap ? crosshairRect(L.width, L.height, wrap.clientWidth, wrap.clientHeight) : ([0, 0, 0, 0] as NBox);
-    recorder.current?.fire(performance.now(), ch);
+    // In range mode the shooter has named their target, so the tap is labelled for the validation set.
+    recorder.current?.fire(performance.now(), ch, context.practice ? context.expectedId : undefined);
     const result = pipeline.current.fire(context, ch, usable);
     switch (result.kind) {
       case 'busy':

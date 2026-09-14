@@ -260,7 +260,7 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
       const tapAim = aim();
       const truth = underDot(tapAim);
       if (truth.visible?.id === target.id && truth.hittable(truth.visible) && truth.visibleHittable) result.possibleShots++;
-      opts.recorder?.fire(now, tapAim);
+      opts.recorder?.fire(now, tapAim, target.player ? target.id : null);
       const fire = pipeline.fire({ t: now, under: truth }, tapAim);
       if (fire.kind === 'pending') pending = { token: fire.token, deadline: fire.deadline };
       else if (fire.kind === 'instant') settle(fire.settlement);
