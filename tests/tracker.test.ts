@@ -213,3 +213,19 @@ test('a track seen last update but a long pause ago must not keep its identity a
   assert.notEqual(current.id, old.id);
   assert.deepEqual(current.belief, {});
 });
+
+test('a box under 60% of the track\'s height starts a new track; a jump between 60% and 75% keeps it unconfirmed', () => {
+  const box = (h: number): Detection => ({ box: [0.3, 0.2, 0.3, h] });
+  const cases: [number, 'same' | 'unconfirmed' | 'new'][] = [[0.8, 'same'], [0.7, 'unconfirmed'], [0.5, 'new']];
+  for (const [h, expected] of cases) {
+    const tracker = new Tracker();
+    const [old] = tracker.update([box(1)], 100);
+    updateBelief(old, { alice: 1 }, 1, 100);
+    const [current] = tracker.update([box(h)], 320);
+    if (expected === 'new') assert.notEqual(current.id, old.id, `height ${h}`);
+    else {
+      assert.equal(current.id, old.id, `height ${h}`);
+      assert.equal(current.unconfirmed, expected === 'unconfirmed', `height ${h}`);
+    }
+  }
+});

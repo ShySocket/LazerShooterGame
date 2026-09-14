@@ -44,6 +44,12 @@ export interface Track {
 
 const validBox = (b: number[]): boolean => b.length === 4 && b.every(Number.isFinite) && b[2] > 0 && b[3] > 0;
 const center = (b: NBox): [number, number] => [b[0] + b[2] / 2, b[1] + b[3] / 2];
+/** Smaller over larger box height: 1 for equal heights. */
+const heightRatio = (a: NBox, b: NBox): number => Math.min(a[3] / b[3], b[3] / a[3]);
+/** Below this height ratio a detection cannot continue a track at all. */
+export const HEIGHT_MATCH_MIN = 0.6;
+/** Below this ratio the match is kept but the identity waits for fresh evidence (Track.unconfirmed). */
+export const HEIGHT_CONFIRM_MIN = 0.75;
 const ASSOCIATION_MARGIN = 0.18;
 
 /** Confidence that a face belongs to a detection, using the actual head landmarks when present. */
@@ -246,6 +252,9 @@ export class Tracker {
         this.tracks.push(t);
         this.motion.set(t.id, { vx: 0, vy: 0, samples: 1 });
       } else {
+        // A box that shrank or grew by more than a quarter in one step is a suspicious match: the
+        // identity is kept but must be confirmed by fresh evidence before it can lock or take a hit.
+        if (heightRatio(d.box, t.box) < HEIGHT_CONFIRM_MIN) t.unconfirmed = true;
         const m = this.motion.get(t.id)!;
         const dt = now - t.lastSeen;
         const [oldX, oldY] = center(t.box);
@@ -287,6 +296,12 @@ export class Tracker {
       if (!validBox(d.box)) return 0;
       const shape = Math.min(d.box[2] / t.box[2], t.box[2] / d.box[2], d.box[3] / t.box[3], t.box[3] / d.box[3]);
       if (shape < (gapped ? 0.55 : 0.4)) return 0;
+      // A standing person's height changes little between frames, while their width swings with the
+      // arms. A box under 60% of the track's height is a different, farther person standing where
+      // this one was (or a crouch, which costs a re-acquisition, never a wrong hit): when the near
+      // player's detection drops for a frame, their track must not claim the far player's body and
+      // carry a confident identity onto it.
+      if (heightRatio(d.box, t.box) < HEIGHT_MATCH_MIN) return 0;
       const m = this.motion.get(t.id)!;
       // Predict to the actual observation time. A velocity measured from a single step is trusted
       // less than a settled one, and the prediction never carries a box further than its own size:
