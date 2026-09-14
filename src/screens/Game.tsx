@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { visionProfile } from '../vision/frameClock';
 import type { Human, Result } from '@vladmandic/human';
 import { backend, MIN_PLAYERS } from '../net';
 import { alivePlayers, enrolledPlayers, livesLabel, UNKNOWN_ID, type Player, type Room } from '../types';
@@ -329,17 +330,24 @@ export function Game({ room, me, pid, onLeave }: Props) {
     const ch = crosshairRect(res.width, res.height, wrap.clientWidth, wrap.clientHeight);
     const aspect = res.width / res.height;
     let img: ImageData | null | undefined;
+    let cropMs = 0;
+    let clothingMs = 0;
+    const frameStart = performance.now();
     const outcome = await pipeline.current.processFrame(dets, now, res.width, res.height, ch, {
       // The pixel readback is paid once per frame, and only when some track still needs clothing evidence.
       sampleOutfit: (d) => {
         if (!d.body) return null;
+        const t0 = performance.now();
         if (img === undefined) img = sampler.current.grab(frame.frame);
-        if (!img) return null;
-        return { sig: outfitSignature(img, d.body), props: bodyProportions(d.body) };
+        const obs = img ? { sig: outfitSignature(img, d.body), props: bodyProportions(d.body) } : null;
+        clothingMs += performance.now() - t0;
+        return obs;
       },
       cropFaces: async (_region, d): Promise<FaceObservation[]> => {
         const region: NBox = d.face ? faceRegion(toNBox(d.face.boxRaw), aspect) : d.body ? headRegion(d.body, d.box, aspect) : d.box;
+        const t0 = performance.now();
         const faces = await zoom.current.run(human, frame.frame, region);
+        cropMs += performance.now() - t0;
         return faces
           .map((zf) => ({ zf, px: Math.min(zf.box[2] * res.width, zf.box[3] * res.height) }))
           .filter(({ zf, px }) => isValidEmbedding(zf.face.embedding) && zf.face.score >= 0.7 && faceYawDeg(zf.face) <= MAX_YAW_DEG && px >= MIN_FACE_PX)
@@ -347,6 +355,9 @@ export function Game({ room, me, pid, onLeave }: Props) {
       },
       isCurrent: frame.isCurrent,
     });
+    visionProfile.record('crops', cropMs);
+    visionProfile.record('clothing', clothingMs);
+    visionProfile.record('tracking', Math.max(0, performance.now() - frameStart - cropMs - clothingMs));
     if (!outcome) return;
     if (outcome.settled) {
       window.clearTimeout(pendingTimer.current);

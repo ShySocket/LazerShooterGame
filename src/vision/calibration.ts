@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-09-14.4';
+export const CALIBRATION_VERSION = '2026-09-14.5';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /** Centred cosine below `reject` is no evidence for a player; above `accept` is a solid match. */
@@ -113,6 +113,13 @@ export const FACE_FRESH_MS = 1500;
 export const CLOTHING_INTERVAL_MS = 150;
 /** While the face carries the identity, the outfit is still checked this often for a contradiction. */
 export const CLOTHING_AUDIT_MS = 1000;
+/**
+ * A crosshair target whose identity already resolves to a hit is re-cropped only this often; a face
+ * crop costs about a third of a frame on a laptop and more on a phone, and a confident identity
+ * needs a bounded refresh for contradiction detection, not a crop every frame. Anything less than
+ * confident (pending shot, unconfirmed, conflict, young track, no resolvable hit) is cropped every frame.
+ */
+export const FACE_REFRESH_MS = 600;
 /** Belief step per face frame; two frames of a good match are enough for a lock. */
 export const FACE_BELIEF_ALPHA = 0.45;
 /** Live enrolment gates: see pipeline.ts learnFace. */

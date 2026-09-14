@@ -57,9 +57,13 @@ function harness() {
     { candidates: CANDIDATES, exclusiveIds: new Set(CANDIDATES.map((c) => c.id)), eligible: new Set(['alice', 'bob']), hitThreshold: 0.5, hitMargin: 0.2 },
     () => clock.now,
   );
+  const cropCalls: number[] = [];
   const ops: FrameOps = {
     sampleOutfit: () => null,
-    cropFaces: async (region) => (region[2] > 0.3 ? [{ box: [region[0] + 0.12, 0.26, 0.08, 0.1], embedding: BOB_FACE, quality: 1 }] : []),
+    cropFaces: async (region) => {
+      cropCalls.push(clock.now);
+      return region[2] > 0.3 ? [{ box: [region[0] + 0.12, 0.26, 0.08, 0.1], embedding: BOB_FACE, quality: 1 }] : [];
+    },
     isCurrent: () => true,
   };
   let t = 0;
@@ -86,7 +90,7 @@ function harness() {
     assert.equal(r.kind, 'pending', 'a stale tap on a recognised player opens a burst');
     return { tap: clock.now, result: r };
   };
-  return { pipeline, clock, frame, establishBob, tapStale, get t() { return t; } };
+  return { pipeline, clock, frame, establishBob, tapStale, cropCalls, get t() { return t; } };
 }
 
 test('(a) a near player\'s identity does not transfer to a concentric far player when the near detection drops for a frame', async () => {
@@ -190,4 +194,23 @@ test('(f) a stationary target is not nominated by prediction: nobody under the d
   // Dot well to the right of Bob's box while he stands still.
   const r = h.pipeline.fire({ tap: h.clock.now }, [0.9 - 0.21, 0.35, 0.42, 0.3]);
   assert.equal(r.kind, 'miss');
+});
+
+
+test('(g) a confident crosshair target is re-cropped every 600 ms, not every frame; anything less than confident every frame', async () => {
+  const h = harness();
+  await h.establishBob(7);
+  const before = h.cropCalls.length;
+  // Seven frames at 220 ms: the first three establish him (young track), then a lock; cropped every
+  // frame until then, and at the bounded refresh afterwards.
+  assert.ok(before >= 3 && before < 7, `crops while establishing: ${before}`);
+  for (let i = 0; i < 6; i++) await h.frame([body(BOB_BOX, BOB_HIT)]);
+  const steady = h.cropCalls.length - before;
+  // 6 frames = 1320 ms: refreshes at 600 ms spacing give 2 or 3 crops, never 6.
+  assert.ok(steady >= 2 && steady <= 3, `crops while confident over 6 frames: ${steady}`);
+  // A pending shot brings back a crop every frame.
+  h.tapStale();
+  const at = h.cropCalls.length;
+  await h.frame([body(BOB_BOX, BOB_HIT)], h.clock.now + 20);
+  assert.equal(h.cropCalls.length, at + 1);
 });

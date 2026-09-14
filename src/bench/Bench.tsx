@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { visionProfile } from '../vision/frameClock';
 import type { Human, Result } from '@vladmandic/human';
 import { BODY_MODEL, UNKNOWN_ID, type OutfitSig, type Profile } from '../types';
 import { useVisionLoop, type VisionFrame } from '../hooks/useVisionLoop';
@@ -343,15 +344,23 @@ export function Bench() {
     const dets = buildDetections(res.body, res.face);
     const aspect = res.width / res.height;
     let img: ImageData | null | undefined;
+    let cropMs = 0;
+    let clothingMs = 0;
+    const frameStart = performance.now();
     const outcome = await pipeline.current.processFrame(dets, frame.capturedAt, res.width, res.height, crosshair, {
       sampleOutfit: (d: Detection) => {
         if (!d.body) return null;
+        const t0 = performance.now();
         if (img === undefined) img = sampler.current.grab(frame.frame);
-        return img ? { sig: outfitSignature(img, d.body), props: bodyProportions(d.body) } : null;
+        const obs = img ? { sig: outfitSignature(img, d.body), props: bodyProportions(d.body) } : null;
+        clothingMs += performance.now() - t0;
+        return obs;
       },
       cropFaces: async (_region, d): Promise<FaceObservation[]> => {
         const region: NBox = d.face ? faceRegion(toNBox(d.face.boxRaw), aspect) : d.body ? headRegion(d.body, d.box, aspect) : d.box;
+        const t0 = performance.now();
         const faces = await zoom.current.run(human, frame.frame, region);
+        cropMs += performance.now() - t0;
         return faces
           .map((zf) => ({ zf, px: Math.min(zf.box[2] * res.width, zf.box[3] * res.height) }))
           .filter(({ zf, px }) => isValidEmbedding(zf.face.embedding) && zf.face.score >= 0.7 && faceYawDeg(zf.face) <= MAX_YAW_DEG && px >= MIN_FACE_PX)
@@ -359,6 +368,9 @@ export function Bench() {
       },
       isCurrent: frame.isCurrent,
     });
+    visionProfile.record('crops', cropMs);
+    visionProfile.record('clothing', clothingMs);
+    visionProfile.record('tracking', Math.max(0, performance.now() - frameStart - cropMs - clothingMs));
     if (!outcome) return;
     const s = stats.current;
     s.frames++;
@@ -577,6 +589,11 @@ export function Bench() {
       {photoName && (
         <p className="tag bench-line" style={{ fontSize: 15, color: 'var(--text)' }}>
           {running ? 'RUN' : 'IDLE'} · {sum.frames} frames · {Number.isFinite(sum.periodMs) ? sum.periodMs : '-'} ms · lock {sum.lockPct}% · tracks {sum.tracks} · shots {sum.shots}: hit {sum.correct} wrong {sum.wrong} unclear {sum.unclear} miss {sum.miss} off {sum.offTarget} stale {sum.stale}
+        </p>
+      )}
+      {photoName && (
+        <p className="tag bench-line" style={{ fontSize: 13 }}>
+          {visionProfile.line()}
         </p>
       )}
       {rangeRows.length > 0 && (

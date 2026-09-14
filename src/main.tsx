@@ -1,4 +1,5 @@
 import { StrictMode } from 'react';
+import { visionProfile } from './vision/frameClock';
 import { createRoot } from 'react-dom/client';
 import { initPwa } from './pwa';
 import { installDiagnostics } from './diag';
@@ -9,7 +10,7 @@ import { bodyProportions, FrameSampler, outfitSignature, profileOutfitSim } from
 import { buildDetections } from './vision/tracker';
 
 // Development only: lets measurement scripts in the browser console reuse the app's vision helpers.
-if (import.meta.env.DEV) (window as unknown as { __lzVision?: unknown }).__lzVision = { bodyProportions, FrameSampler, outfitSignature, profileOutfitSim, buildDetections };
+if (import.meta.env.DEV) (window as unknown as { __lzVision?: unknown }).__lzVision = { bodyProportions, FrameSampler, outfitSignature, profileOutfitSim, buildDetections, profile: () => visionProfile.summary(), profileLine: () => visionProfile.line() };
 import './styles.css';
 
 installDiagnostics();

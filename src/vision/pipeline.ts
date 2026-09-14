@@ -1,5 +1,5 @@
 import { UNKNOWN_ID, type BodyProps, type OutfitSig } from '../types';
-import { CLOTHING_AUDIT_MS, CLOTHING_INTERVAL_MS, FACE_BELIEF_ALPHA, FACE_FRESH_MS, LIVE_FACE_ENROLLED_MIN, LIVE_FACE_MIN, LIVE_FACE_MIN_BELIEF, LIVE_FACE_MIN_QUALITY, LIVE_FACE_MIN_TRACK_SAMPLES, LIVE_FACE_NOVELTY, LIVE_FACE_RUNNER_UP, LIVE_FACES_PER_PLAYER } from './calibration';
+import { CLOTHING_AUDIT_MS, CLOTHING_INTERVAL_MS, FACE_BELIEF_ALPHA, FACE_FRESH_MS, FACE_REFRESH_MS, LIVE_FACE_ENROLLED_MIN, LIVE_FACE_MIN, LIVE_FACE_MIN_BELIEF, LIVE_FACE_MIN_QUALITY, LIVE_FACE_MIN_TRACK_SAMPLES, LIVE_FACE_NOVELTY, LIVE_FACE_RUNNER_UP, LIVE_FACES_PER_PLAYER } from './calibration';
 import { containsPoint, faceOwner, resetIdentity, trackGapMs, Tracker, type Detection, type Track } from './tracker';
 import { indexInSight, intersectArea, type NBox } from './geometry';
 import {
@@ -290,7 +290,14 @@ export class VisionPipeline<C = unknown> {
     const inSight: Track | null = idx >= 0 && !blocked && !dets[idx].associationAmbiguous ? tracks[idx] : null;
     let zoomed = false;
     const order: number[] = [];
-    if (idx >= 0) order.push(idx);
+    // The crosshair target is cropped every frame only while its identity is not yet a hit: a pending
+    // shot, an unconfirmed or conflicted identity, a young track, or a belief that does not resolve.
+    // A confident target is refreshed on a bounded interval so a contradiction is still caught.
+    if (idx >= 0) {
+      const t = tracks[idx];
+      const confident = !this.pending && !t.unconfirmed && !t.identityConflict && t.observations >= 3 && resolveHit(t, eligible, hitThreshold, hitMargin, now) !== null;
+      if (!confident || now - t.lastFaceAt >= FACE_REFRESH_MS) order.push(idx);
+    }
     // Everybody else takes turns, including bodies whose face the full-frame pass did not find (the
     // head crop is where a distant face turns up) and a lone person the shooter is not aiming at yet,
     // so an identity is ready by the time the dot reaches them.

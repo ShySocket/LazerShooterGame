@@ -207,6 +207,7 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
   };
 
   let pending: { token: object; deadline: number } | null = null;
+  let lastCrops = 2;
   let nextFire = 1500;
   let t = 0;
   let lastStep = 0;
@@ -233,7 +234,10 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
     // one inference period later, but it describes what the detector saw; judging it against a
     // scene the taps have since advanced would penalise display latency, not recognition.
     const captureTruth = underDot(crosshair);
-    const crops = dets.length > 1 ? 2 : dets.length;
+    // The pipeline decides how many faces to crop only while processing, but the frame's completion
+    // time is needed first (taps happen during inference). The previous frame's actual crop count is
+    // the estimate, bounded by what this frame could at most need.
+    const crops = Math.min(dets.length > 1 ? 2 : dets.length, lastCrops);
     const slow = rng.chance(opts.hiccupChance) ? opts.hiccupFactor : 1;
     const completeAt = capturedAt + (opts.inferenceMs + crops * opts.cropMs) * slow;
 
@@ -263,12 +267,14 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
     }
 
     now = completeAt;
+    let cropsThisFrame = 0;
     const outcome = await pipeline.processFrame(dets, capturedAt, FRAME_W, FRAME_H, crosshair, {
       sampleOutfit: (d) => (d.body ? sampleOutfit(rng, raw.owner.get(d.body) ?? null) : null),
-      cropFaces: async (region) => cropFaces(rng, scene, region, opts.detector),
+      cropFaces: async (region) => { cropsThisFrame++; return cropFaces(rng, scene, region, opts.detector); },
       isCurrent: () => true,
     });
     if (!outcome) throw new Error('frame abandoned');
+    lastCrops = cropsThisFrame;
     result.frames++;
     result.periodMs = outcome.periodMs;
     noteFrame(`${capturedAt}@${Math.round(now)} ` + dets.map((d, i) => { const o = raw.owner.get(d.body ?? d.face!); const tr = outcome.tracks[i]; const top = Object.entries(tr.belief).sort((a, b) => b[1] - a[1])[0]; return `#${tr.id}=${o ? o.id : 'ghost'}[${d.box.map((v) => v.toFixed(2)).join(',')}]${d.associationAmbiguous ? 'A' : ''}${d.face ? 'F' : ''}${top ? `{${top[0]} ${top[1].toFixed(2)} ${tr.via}}` : ''}`; }).join(' ') + ` aim=${(crosshair[0] + 0.21).toFixed(2)},${(crosshair[1] + 0.15).toFixed(2)}`);

@@ -1,6 +1,7 @@
 import { useEffect, useRef, type RefObject } from 'react';
 import type { Human, Result } from '@vladmandic/human';
 import { configurePass, loadHuman, withHumanSession } from '../vision/human';
+import { visionProfile, waitForVideoFrame } from '../vision/frameClock';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -36,6 +37,10 @@ export function useVisionLoop(
       }
       let lastTime = -1;
       let lastStream: HTMLVideoElement['srcObject'] = null;
+      // The next frame is sampled only after this one is fully handled, and only once the video has
+      // presented a new frame (requestVideoFrameCallback where the browser offers it): one frame in
+      // flight, never a backlog, and a capture timestamp from the camera pipeline when available.
+      let presented = await waitForVideoFrame(video.current);
       while (running) {
         try {
           await withHumanSession(async () => {
@@ -49,31 +54,40 @@ export function useVisionLoop(
             lastTime = v.currentTime;
             if (frame.width !== v.videoWidth) frame.width = v.videoWidth;
             if (frame.height !== v.videoHeight) frame.height = v.videoHeight;
+            const copyStart = performance.now();
             ctx.drawImage(v, 0, 0, frame.width, frame.height);
+            visionProfile.record('copy', performance.now() - copyStart);
             const width = frame.width;
             const height = frame.height;
             const streamIsLive = () => !stream || !('getVideoTracks' in stream) || stream.getVideoTracks().some((track) => track.readyState === 'live');
+            // A capture time that predates the copy by more than a second is a stale callback (a
+            // paused tab resuming): the copy time is the honest stamp then.
+            const capturedAt = presented.source !== 'sampled' && copyStart - presented.capturedAt < 1000 && presented.capturedAt <= copyStart ? presented.capturedAt : copyStart;
             const context: VisionFrame = {
               frame,
-              capturedAt: performance.now(),
+              capturedAt,
               isCurrent: () => running && video.current === v && v.srcObject === stream && streamIsLive()
                 && v.videoWidth === width && v.videoHeight === height && v.readyState >= 2 && !v.paused && !v.ended,
             };
             const handler = cb.current;
             configurePass(human, 'frame');
+            const detectStart = performance.now();
             const res = await human.detect(frame);
+            visionProfile.record('detect', performance.now() - detectStart);
             if (res.error) throw new Error(res.error);
             if (!context.isCurrent()) return;
+            const handlerStart = performance.now();
             await handler(res, human, context);
+            visionProfile.record('handler', performance.now() - handlerStart);
+            visionProfile.record('age', performance.now() - capturedAt);
           });
         } catch (e) {
           console.warn('vision frame failed', e);
           await sleep(200);
         }
-        // Yield so the page can paint, but never wait on requestAnimationFrame alone: an occluded but
-        // visible document (a webview behind another pane, a PWA in split view) stalls it to 1 Hz while
-        // timers keep running, and the loop would drop to one frame per second for no reason.
-        if (running) await Promise.race([new Promise(requestAnimationFrame), sleep(40)]);
+        // Wait for the next presented frame; the fallback never waits on requestAnimationFrame alone,
+        // because an occluded but visible document stalls it to 1 Hz while timers keep running.
+        if (running) presented = await waitForVideoFrame(video.current);
       }
     })();
     return () => {
