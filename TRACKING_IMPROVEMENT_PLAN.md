@@ -453,3 +453,9 @@ All twelve items of the locked order landed on `tracking-robustness`. Final gate
 ```
 
 What only phones can settle next: the validation set in `docs/validation.md`, and on it the threshold selection of 7.7 and 7.8.
+
+### After the run: continuity follow-up (2026-09-14, same branch)
+
+- Motion nomination extended to coasting tracks and a centre-jump confirmation rule (0d01aad): zero wrong; range-8m and occlusion misses down slightly, pan crossing unchanged at 76%.
+- Tried nominating from the moved outer box instead of the moved torso: pan crossing 76% to 85%, misses down in every scenario, but approach seed 95 produced a hit on a player nobody was aiming at when the tap happened (confirmed by the burst 332 ms later). Reverted; the rule is now a LESSON in CLAUDE.md and test (j) in `tests/pipeline.test.ts`.
+- The remaining pan-crossing misses are refusals at the tap: two boxes covering the dot during the overlap (by design) and constant-velocity prediction missing a turning pan by about a torso half-width when the frame is 400 ms old. The honest fix for the second is a shorter frame age (a faster detector input, plan 9.5) or an acceleration-aware prediction measured on phone recordings, not a wider nomination.

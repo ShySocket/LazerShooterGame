@@ -435,6 +435,10 @@ export class VisionPipeline<C = unknown> {
         return [b[0] + t.vx * age, b[1] + t.vy * age, b[2], b[3]];
       };
       const moving = (t: Track) => t.vx !== 0 || t.vy !== 0;
+      // The nomination keeps the tap-time rule: the dot has to be on the moved observed torso, not
+      // merely inside the moved outer box. Nominating from the outer box was tried (2026-09-14): it
+      // lifted the pan-crossing hit rate by nine points and produced a hit on a player nobody was
+      // aiming at when the tap happened, which the burst then confirmed 332 ms later. Never again.
       const j = indexInSight(
         L.tracks.map((t, i) => moved(L.dets[i].box, t)),
         crosshair,

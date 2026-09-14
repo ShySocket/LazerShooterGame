@@ -231,3 +231,16 @@ test('(i) a moving target the detector skipped for a frame is nominated from the
   const out = await h.frame([at(0.32)], h.clock.now + 20);
   assert.equal(out.settled?.resolution?.id, 'bob');
 });
+
+
+test('(j) a nomination from motion needs the dot on the moved torso, not merely inside the moved outer box', async () => {
+  // Tried the other way on 2026-09-14: nine points more in the pan crossing and one hit on a player
+  // nobody was aiming at when the tap happened. The tap-time rule stands.
+  const h = harness();
+  const at = (x: number) => body([x, 0.24, 0.35, 0.61], [x + 0.08, 0.26, 0.19, 0.35]);
+  for (let i = 0; i < 7; i++) await h.frame([at(0.80 - i * 0.06)]);
+  // Bob's box is at 0.44 .. 0.79 moving left; 100 ms later the moved torso (0.49 .. 0.68) does not
+  // reach a dot at 0.48, although the moved outer box does.
+  h.clock.now = h.t - PERIOD + 100;
+  assert.equal(h.pipeline.fire({ tap: h.clock.now }, [0.29 - 0.02, 0.35, 0.42, 0.3]).kind, 'miss');
+});

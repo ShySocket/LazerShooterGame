@@ -68,3 +68,4 @@ JS
 ## LESSONS
 
 - Raising hit confidence or extending tracking timeouts alone is not a fix; find the identity/aim root cause.
+- A tap must keep its tap-time rule: a burst may be nominated only from the observed torso (moved by the track's motion), never from the outer box. Outer-box nomination bought nine points in the pan crossing and one hit on a player nobody was aiming at when the tap happened (approach seed 95, 2026-09-14). Hit-rate gains that come from loosening what counts as "under the dot" are not gains.
