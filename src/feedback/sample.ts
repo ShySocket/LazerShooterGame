@@ -17,7 +17,9 @@ export const UNKNOWN_PID = 'unknown';
 
 export interface OutfitMatchSummary {
   sim: number;
+  /** Share of the outfit compared; 1 on builds that compare whole outfits without a coverage measure. */
   cov: number;
+  /** Whether the trousers were compared; true on builds that do not track it. */
   thighs: boolean;
 }
 

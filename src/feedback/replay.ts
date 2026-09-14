@@ -30,16 +30,16 @@ export interface ReplayParams {
   clothingAuditMs: number;
 }
 
-/** The values in src/vision as of this build; keep in step when those change. */
+/** The values in src/vision as of this build (FACE_CALIB, scoring weights, pipeline gates); keep in step when those change. */
 export const DEFAULT_PARAMS: ReplayParams = {
-  faceReject: 0.25,
-  faceAccept: 0.55,
+  faceReject: 0.26,
+  faceAccept: 0.5,
   wFace: 0.6,
   wCloth: 0.3,
   wBody: 0.1,
   clothFloor: 0.45,
   clothSpan: 0.35,
-  strangerBase: 0.95,
+  strangerBase: 0.9,
   faceAlpha: 0.45,
   clothAlpha: 0.35,
   noFaceCap: 0.85,
@@ -47,7 +47,8 @@ export const DEFAULT_PARAMS: ReplayParams = {
   hitThreshold: null,
   hitMargin: null,
   faceFreshMs: 1500,
-  clothingAuditMs: 1000,
+  // This build never audits clothing while the face is fresh; it skips it.
+  clothingAuditMs: Infinity,
 };
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));

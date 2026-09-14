@@ -37,11 +37,10 @@ const CANDIDATES: Candidate[] = [
   { id: 'bob', profile: profile(BOB_FACE) },
 ];
 const BOB_BOX: NBox = [0.36, 0.24, 0.35, 0.61];
-const BOB_HIT: NBox = [0.44, 0.26, 0.19, 0.35];
 const CROSSHAIR: NBox = [0.29, 0.35, 0.42, 0.3];
 const OFF_TARGET: NBox = [0.0, 0.0, 0.2, 0.2];
 const PERIOD = 220;
-const body = (box: NBox, hit: NBox): Detection => ({ box, hit, body: { keypoints: [] } as unknown as Detection['body'] });
+const body = (box: NBox): Detection => ({ box, body: { keypoints: [] } as unknown as Detection['body'] });
 
 /** A round of Bob alone, recorded: `frames` drives the pipeline through recorder-wrapped ops. */
 function harness() {
@@ -72,7 +71,7 @@ function harness() {
     clock.now = t - PERIOD + 30;
     const L = pipeline.getLatest()!;
     const result = pipeline.fire({ shotId: id }, crosshair);
-    const track = result.kind === 'instant' ? result.settlement.track : L.tracks.find((x) => x.hit[0] <= 0.5 && x.hit[0] + x.hit[2] >= 0.5) ?? null;
+    const track = result.kind === 'instant' ? result.settlement.track : L.tracks.find((x) => x.box[0] <= 0.5 && x.box[0] + x.box[2] >= 0.5) ?? null;
     recorder.beginShot({
       id,
       tapAt: clock.now,
@@ -89,18 +88,18 @@ function harness() {
       periodMs: pipeline.periodMs(),
       staleMs: pipeline.staleMs(),
       burstMs: pipeline.burstMs(),
-      liveFaces: pipeline.liveFaceCounts(),
+      liveFaces: {},
       eligible,
     });
     return result;
   };
-  return { pipeline, recorder, key, frame, tap, clock };
+  return { pipeline, recorder, key, frame, tap, clock, get t() { return t; } };
 }
 
 test('a recorded instant hit names nobody and carries the raw similarities behind the belief', async () => {
   const h = harness();
   let last;
-  for (let i = 0; i < 7; i++) last = await h.frame([body(BOB_BOX, BOB_HIT)]);
+  for (let i = 0; i < 7; i++) last = await h.frame([body(BOB_BOX)]);
   assert.equal(last!.lock?.kind, 'lock');
   const result = h.tap('s1');
   assert.equal(result.kind, 'instant');
@@ -130,7 +129,7 @@ test('a recorded instant hit names nobody and carries the raw similarities behin
 
 test('a tap at empty space is recorded as a miss with no target, and only failed shots with a body are preferred for review', async () => {
   const h = harness();
-  for (let i = 0; i < 4; i++) await h.frame([body(BOB_BOX, BOB_HIT)], OFF_TARGET);
+  for (let i = 0; i < 4; i++) await h.frame([body(BOB_BOX)], OFF_TARGET);
   const result = h.tap('s2', OFF_TARGET);
   assert.equal(result.kind, 'miss');
   const sample = h.recorder.endShot('s2', { outcome: 'miss', resolvedTo: null, via: null, resolveMs: 0, zoom: false, track: null, settledBy: 'tap' })!;
@@ -151,18 +150,20 @@ test('a tap at empty space is recorded as a miss with no target, and only failed
 
 test('a burst records the frames after the tap and the replay reproduces the verdict', async () => {
   const h = harness();
-  for (let i = 0; i < 6; i++) await h.frame([body(BOB_BOX, BOB_HIT)]);
-  h.clock.now += 400; // older than the geometry budget: the tap opens a burst
+  // One face frame leaves Bob at belief 0.45, under the 0.5 threshold: the tap opens a burst.
+  await h.frame([body(BOB_BOX)]);
+  h.clock.now = h.t - PERIOD + 30;
   const L = h.pipeline.getLatest()!;
   const result = h.pipeline.fire({ shotId: 's3' }, CROSSHAIR);
   assert.equal(result.kind, 'pending');
   h.recorder.beginShot({ id: 's3', tapAt: h.clock.now, roundNow: 1_000_000 + h.clock.now, kind: 'pending', crosshair: CROSSHAIR, frameT: L.t, frameAgeMs: Math.round(h.clock.now - L.t), allowanceMs: h.pipeline.staleMs(), trackId: L.tracks[0].id, track: L.tracks[0], width: 1280, height: 720, periodMs: h.pipeline.periodMs(), staleMs: h.pipeline.staleMs(), burstMs: h.pipeline.burstMs(), liveFaces: {}, eligible: ['alice', 'bob'] });
-  const out = await h.frame([body(BOB_BOX, BOB_HIT)], CROSSHAIR, h.clock.now + 20);
+  const out = await h.frame([body(BOB_BOX)], CROSSHAIR, h.clock.now + 20);
   assert.ok(out.settled, 'the post-tap frame settles the burst');
+  assert.equal(out.settled!.resolution?.id, 'bob');
   const sample = h.recorder.endShot('s3', { outcome: 'hit', resolvedTo: out.settled!.resolution!.id, via: 'face', resolveMs: 240, zoom: true, track: out.settled!.track, settledBy: 'frame' })!;
-  assert.equal(sample.frames.length, 7);
-  assert.ok(sample.frames[5].t < 0 && sample.frames[6].t > 0, 'frames are timed relative to the tap');
-  assert.equal(sample.shot.decidedAtFrame, 6);
+  assert.equal(sample.frames.length, 2);
+  assert.ok(sample.frames[0].t < 0 && sample.frames[1].t > 0, 'frames are timed relative to the tap');
+  assert.equal(sample.shot.decidedAtFrame, 1);
   assert.equal(sample.shot.settledBy, 'frame');
 
   const ids = new IdMap(['me', 'alice', 'bob']);
@@ -191,14 +192,14 @@ test('a burst records the frames after the tap and the replay reproduces the ver
     return v;
   }));
   const back = collectSamples({ samples: { a: exported } })[0];
-  assert.equal(back.frames.length, 8);
+  assert.equal(back.frames.length, 3);
   assert.deepEqual(back.frames[0], { t: -900, tracks: [], lock: null });
   assert.equal(back.shot.resolvedTo, bob);
-  assert.equal(replayShot({ ...back, shot: { ...back.shot, decidedAtFrame: 7 } }).resolved, bob);
-  assert.equal(agreement([{ ...back, shot: { ...back.shot, decidedAtFrame: 7 } }]), 1);
+  assert.equal(replayShot({ ...back, shot: { ...back.shot, decidedAtFrame: 2 } }).resolved, bob);
+  assert.equal(agreement([{ ...back, shot: { ...back.shot, decidedAtFrame: 2 } }]), 1);
   const missNone = normaliseSample(JSON.parse(JSON.stringify({ ...none, shot: { ...none.shot, resolvedTo: null } }, (_k, v) => (v === null ? undefined : v))));
   assert.equal(asPlayed(missNone), null);
-  assert.equal(replayShot({ ...labelled, frames: labelled.frames.map((f, i) => (i === 6 ? { ...f, tracks: f.tracks.map((t) => ({ ...t, conflict: true })) } : f)) }).resolved, null, 'an identity conflict at decision time refuses the hit');
+  assert.equal(replayShot({ ...labelled, frames: labelled.frames.map((f, i) => (i === 1 ? { ...f, tracks: f.tracks.map((t) => ({ ...t, conflict: true })) } : f)) }).resolved, null, 'an identity conflict at decision time refuses the hit');
 });
 
 test('a sample that grows past the upload budget loses its oldest frames first', () => {

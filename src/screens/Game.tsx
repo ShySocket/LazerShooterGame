@@ -380,7 +380,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
     }, dets);
     const outcome = await pipeline.current.processFrame(dets, now, res.width, res.height, ch, ops);
     if (!outcome) return;
-    recorder.current.frameDone(outcome, dets, now, pipeline.current.galleries());
+    recorder.current.frameDone(outcome, dets, now, candidates);
     if (outcome.settled) {
       window.clearTimeout(pendingTimer.current);
       settledBy.current = 'frame';
@@ -423,7 +423,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
     settledBy.current = 'tap';
     if (result.kind !== 'busy' && !context.practice && L && recorder.current.active()) {
       const tapAt = performance.now();
-      const idx = indexInSight(L.dets.map((d) => d.box), ch, L.tracks.map((t) => t.hit));
+      const idx = indexInSight(L.dets.map((d) => d.box), ch);
       const track = result.kind === 'instant' ? result.settlement.track : idx >= 0 ? L.tracks[idx] : null;
       recorder.current.beginShot({
         id: shotId,
@@ -441,7 +441,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
         periodMs: pipeline.current.periodMs(),
         staleMs: pipeline.current.staleMs(),
         burstMs: pipeline.current.burstMs(),
-        liveFaces: pipeline.current.liveFaceCounts(),
+        liveFaces: {},
         eligible,
       });
       const kept = keeper.current.take(L.t);
