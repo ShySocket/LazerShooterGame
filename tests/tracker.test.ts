@@ -414,3 +414,21 @@ test('a body moving over a briefly skipped neighbour\'s place comes out unconfir
   assert.equal(onlyA.unconfirmed, true);
   assert.equal(resolveHit(onlyA, new Set(['alice', 'bob']), 0.5, 0.2, 550), null);
 });
+
+
+test('a box whose centre jumped more than half its width in one step keeps its identity unconfirmed', () => {
+  const tracker = new Tracker();
+  const [old] = tracker.update([detection(0.3, 0.2)], 100);
+  tracker.update([detection(0.31, 0.2)], 320);
+  updateBelief(old, { alice: 1 }, 1, 320);
+  const [jumped] = tracker.update([detection(0.43, 0.2)], 540);
+  assert.equal(jumped.id, old.id, 'still the best match');
+  assert.equal(jumped.unconfirmed, true);
+  assert.equal(resolveHit(jumped, new Set(['alice']), 0.5, 0.2, 550), null);
+  const steady = new Tracker();
+  const [a] = steady.update([detection(0.3, 0.2)], 100);
+  steady.update([detection(0.31, 0.2)], 320);
+  const [b] = steady.update([detection(0.36, 0.2)], 540);
+  assert.equal(b.id, a.id);
+  assert.equal(b.unconfirmed, false, 'a quarter of a box width is ordinary motion');
+});

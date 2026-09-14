@@ -1,5 +1,5 @@
 import type { BodyResult, FaceResult } from '@vladmandic/human';
-import { ASSOCIATION_MARGIN, CONFIRMED_OBSERVATIONS, CROSSING_IOU, FACE_CUE, FACE_CUE_FRESH_MS, LIVE_RIVAL_MIN, LOST_RECLAIM, MATCH_MIN_SCORE, MATCH_WIN_MARGIN, STATIONARY_HYPOTHESIS, TENTATIVE_WIN_MARGIN, HEIGHT_CONFIRM_MIN, HEIGHT_MATCH_MIN, LOST_TRACK_MS, MAX_TRACK_GAP_MS, TRACK_GAP_MS } from './calibration';
+import { ASSOCIATION_MARGIN, CENTRE_JUMP_CONFIRM, CONFIRMED_OBSERVATIONS, CROSSING_IOU, FACE_CUE, FACE_CUE_FRESH_MS, LIVE_RIVAL_MIN, LOST_RECLAIM, MATCH_MIN_SCORE, MATCH_WIN_MARGIN, STATIONARY_HYPOTHESIS, TENTATIVE_WIN_MARGIN, HEIGHT_CONFIRM_MIN, HEIGHT_MATCH_MIN, LOST_TRACK_MS, MAX_TRACK_GAP_MS, TRACK_GAP_MS } from './calibration';
 import { clampBox, intersectArea, iou, toNBox, type NBox } from './geometry';
 
 export interface Detection {
@@ -274,9 +274,11 @@ export class Tracker {
         this.tracks.push(t);
         this.motion.set(t.id, { vx: 0, vy: 0, sw: 0, sh: 0, samples: 1 });
       } else {
-        // A box that shrank or grew by more than a quarter in one step is a suspicious match: the
-        // identity is kept but must be confirmed by fresh evidence before it can lock or take a hit.
+        // A box that shrank or grew by more than a quarter in one step, or whose centre jumped more
+        // than half a box width, is a suspicious match: the identity is kept but must be confirmed by
+        // fresh evidence before it can lock or take a hit.
         if (heightRatio(d.box, t.box) < HEIGHT_CONFIRM_MIN) t.unconfirmed = true;
+        if (Math.abs(center(d.box)[0] - center(t.box)[0]) > CENTRE_JUMP_CONFIRM * Math.max(d.box[2], t.box[2])) t.unconfirmed = true;
         const m = this.motion.get(t.id)!;
         const dt = now - t.lastSeen;
         // Reclaimed after more than the continuity gap: the body is where it was expected, but the

@@ -214,3 +214,20 @@ test('(g) a confident crosshair target is re-cropped every 600 ms, not every fra
   await h.frame([body(BOB_BOX, BOB_HIT)], h.clock.now + 20);
   assert.equal(h.cropCalls.length, at + 1);
 });
+
+
+test('(i) a moving target the detector skipped for a frame is nominated from their motion, confirmed only by a post-tap sighting', async () => {
+  const h = harness();
+  const at = (x: number) => body([x, 0.24, 0.35, 0.61], [x + 0.08, 0.26, 0.19, 0.35]);
+  let last;
+  for (let i = 0; i < 7; i++) last = await h.frame([at(0.80 - i * 0.06)]);
+  assert.ok(last!.tracks[0].belief.bob > 0.9 && last!.tracks[0].vx < 0);
+  // The detector skips Bob for one frame: he coasts. His last torso spanned 0.52 .. 0.71.
+  await h.frame([]);
+  // 200 ms after that empty capture his motion has carried the torso under the dot at 0.50.
+  h.clock.now = h.t - PERIOD + 200;
+  const r = h.pipeline.fire({ tap: h.clock.now }, CROSSHAIR);
+  assert.equal(r.kind, 'pending', `expected a burst on the coasting target, got ${r.kind}`);
+  const out = await h.frame([at(0.32)], h.clock.now + 20);
+  assert.equal(out.settled?.resolution?.id, 'bob');
+});

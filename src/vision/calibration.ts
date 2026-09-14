@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-09-14.5';
+export const CALIBRATION_VERSION = '2026-09-14.6';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /**
@@ -109,6 +109,8 @@ export const CROSSING_IOU = 0.25;
 export const HEIGHT_MATCH_MIN = 0.6;
 /** Below this ratio the match is kept but the identity waits for fresh evidence. */
 export const HEIGHT_CONFIRM_MIN = 0.75;
+/** A box centre that jumped more than this fraction of the box width in one step keeps its identity only until fresh evidence confirms it. */
+export const CENTRE_JUMP_CONFIRM = 0.5;
 /** Two bodies within this face-association score of each other make the face's owner ambiguous. */
 export const ASSOCIATION_MARGIN = 0.18;
 
