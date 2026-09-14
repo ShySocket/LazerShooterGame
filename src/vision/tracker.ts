@@ -40,15 +40,16 @@ export interface Track {
   lastEvidenceAt: number;
   /** Running mean of the unit face embeddings seen on this track. */
   faceMean: number[] | null;
+  /** Independent face samples folded into the mean: frames closer than the spacing count once. */
   faceSamples: number;
+  /** When the last independent face sample was counted. */
+  lastFaceSampleAt: number;
 }
 
 const validBox = (b: number[]): boolean => b.length === 4 && b.every(Number.isFinite) && b[2] > 0 && b[3] > 0;
 const center = (b: NBox): [number, number] => [b[0] + b[2] / 2, b[1] + b[3] / 2];
 /** Smaller over larger box height: 1 for equal heights. */
 const heightRatio = (a: NBox, b: NBox): number => Math.min(a[3] / b[3], b[3] / a[3]);
-/** Below this height ratio a detection cannot continue a track at all. */
-/** Below this ratio the match is kept but the identity waits for fresh evidence (Track.unconfirmed). */
 export { HEIGHT_CONFIRM_MIN, HEIGHT_MATCH_MIN, MAX_TRACK_GAP_MS, TRACK_GAP_MS };
 
 /** Confidence that a face belongs to a detection, using the actual head landmarks when present. */
@@ -197,6 +198,7 @@ export function resetIdentity(track: Track): void {
   track.lastEvidenceAt = 0;
   track.faceMean = null;
   track.faceSamples = 0;
+  track.lastFaceSampleAt = 0;
 }
 
 interface Motion {
@@ -245,7 +247,7 @@ export class Tracker {
     const out = dets.map((d, i) => {
       let t = assigned.get(i);
       if (!t) {
-        t = { id: this.nextId++, box: [...d.box], hit: [...(d.hit ?? d.box)], hitObservedAt: d.body ? now : 0, lastSeen: now, belief: {}, claimed: null, via: 'none', lastFaceAt: 0, lastClothingAt: 0, lastEvidenceAt: 0, faceMean: null, faceSamples: 0, unconfirmed: false };
+        t = { id: this.nextId++, box: [...d.box], hit: [...(d.hit ?? d.box)], hitObservedAt: d.body ? now : 0, lastSeen: now, belief: {}, claimed: null, via: 'none', lastFaceAt: 0, lastClothingAt: 0, lastEvidenceAt: 0, faceMean: null, faceSamples: 0, lastFaceSampleAt: 0, unconfirmed: false };
         this.tracks.push(t);
         this.motion.set(t.id, { vx: 0, vy: 0, samples: 1 });
       } else {

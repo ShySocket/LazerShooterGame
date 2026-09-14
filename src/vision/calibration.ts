@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-09-14.1';
+export const CALIBRATION_VERSION = '2026-09-14.2';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /** Centred cosine below `reject` is no evidence for a player; above `accept` is a solid match. */
@@ -38,6 +38,17 @@ export const MEAN_ALPHA = 0.3;
 export const MEAN_RESET_SIM = 0.15;
 /** Evidence older than this cannot resolve a shot. */
 export const IDENTITY_TTL_MS = 1500;
+/**
+ * Belief smoothing is elapsed-time based: an `alpha` given to updateBelief is the step for one
+ * frame of this period, and a frame `dt` later steps by 1 - (1 - alpha) ^ (dt / period). Two frames
+ * 200 ms apart therefore move the belief exactly as far as one frame 400 ms later, and a fast phone
+ * showing near-duplicate frames does not count each one as independent proof.
+ */
+export const BELIEF_REF_PERIOD_MS = 220;
+/** A single frame after a long silence never jumps further than this many reference periods. */
+export const BELIEF_MAX_STEPS = 2.5;
+/** Face frames closer together than this count as one sample for the live-enrolment gates. */
+export const LIVE_FACE_SAMPLE_SPACING_MS = 150;
 
 // ---- Tracking (tracker.ts) ----------------------------------------------------------------------
 /** A person skipped by the detector for this long is still the same person. */

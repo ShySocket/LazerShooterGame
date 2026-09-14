@@ -216,7 +216,7 @@ export class VisionPipeline<C = unknown> {
     const ranked = Object.entries(raw).sort((a, b) => b[1] - a[1]);
     if (current && ranked[0] && ranked[0][0] !== current.id && ranked[0][1] >= 0.8 && (raw[current.id] ?? 0) < 0.2) resetIdentity(t);
     if (ranked[0]) this.learnFace(ranked[0][0], emb, ranked, quality, t);
-    const mean = updateFaceMean(t, emb);
+    const mean = updateFaceMean(t, emb, now);
     const fe = faceEvidence(mean, candidates, centredSimilarity, FACE_CALIB, quality);
     const ev = combineEvidence({ face: fe, cloth: null, body: null });
     // The running mean already smooths frame noise, so the belief may follow it quickly.

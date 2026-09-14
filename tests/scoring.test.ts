@@ -72,8 +72,14 @@ test('several observations are required for a new face lock', () => {
   const t = track();
   updateBelief(t, { alice: 1, [UNKNOWN_ID]: 0 }, 0.35, 100);
   assert.equal(resolveHit(t, eligible, 0.5, 0.2, 100), null);
+  // A second frame only 100 ms later is less than a frame period of new evidence: still no lock.
   updateBelief(t, { alice: 1, [UNKNOWN_ID]: 0 }, 0.35, 200);
-  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 200)?.id, 'alice');
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 200), null);
+  // Two frames a full period apart are enough.
+  const u = track();
+  updateBelief(u, { alice: 1, [UNKNOWN_ID]: 0 }, 0.35, 100);
+  updateBelief(u, { alice: 1, [UNKNOWN_ID]: 0 }, 0.35, 320);
+  assert.equal(resolveHit(u, eligible, 0.5, 0.2, 320)?.id, 'alice');
 });
 
 test('body proportions alone abstain and legacy ratios are excluded', () => {
@@ -105,4 +111,46 @@ test('a 512-d running face mean compares up to date after every update (no stale
     assert.equal(centredSimilarity(mean, b), centredSimilarity(mean.slice(), b));
   }
   assert.ok(centredSimilarity(track.faceMean!, b) > 0.95);
+});
+
+test('belief smoothing follows elapsed time: two frames 200 ms apart equal one frame 400 ms later', async () => {
+  const { elapsedAlpha } = await import('../src/vision/scoring');
+  const ev = { alice: 1, [UNKNOWN_ID]: 0 };
+  const twoSteps = track({ alice: 0.2 });
+  twoSteps.lastEvidenceAt = 1000;
+  updateBelief(twoSteps, ev, 0.45, 1200);
+  updateBelief(twoSteps, ev, 0.45, 1400);
+  const oneStep = track({ alice: 0.2 });
+  oneStep.lastEvidenceAt = 1000;
+  updateBelief(oneStep, ev, 0.45, 1400);
+  assert.ok(Math.abs(twoSteps.belief.alice - oneStep.belief.alice) < 0.02, `${twoSteps.belief.alice} vs ${oneStep.belief.alice}`);
+  // Near-duplicate frames 20 ms apart barely move the belief; a first observation takes the full step.
+  const dup = track({ alice: 0.2 });
+  dup.lastEvidenceAt = 1000;
+  updateBelief(dup, ev, 0.45, 1020);
+  assert.ok(dup.belief.alice < 0.26, `20 ms step moved to ${dup.belief.alice}`);
+  const first = track({});
+  first.lastEvidenceAt = 0;
+  updateBelief(first, ev, 0.45, 5000);
+  assert.ok(Math.abs(first.belief.alice - 0.45) < 1e-9);
+  // A long silence is capped, and alpha 1 stays a full replacement.
+  assert.ok(elapsedAlpha(0.45, 60000) < 0.8);
+  assert.equal(elapsedAlpha(1, 5), 1);
+});
+
+test('face frames closer than the spacing refine the mean but count as one sample', () => {
+  const unit = (v: number[]) => { const n = Math.hypot(...v); return v.map((x) => x / n); };
+  const a = unit([1, 0.1]);
+  const t = track({});
+  updateFaceMean(t, a, 1000);
+  updateFaceMean(t, unit([1, 0.12]), 1050);
+  updateFaceMean(t, unit([1, 0.08]), 1100);
+  assert.equal(t.faceSamples, 1, 'three frames within 100 ms are one sample');
+  updateFaceMean(t, unit([1, 0.11]), 1200);
+  updateFaceMean(t, unit([1, 0.09]), 1400);
+  assert.equal(t.faceSamples, 3, 'frames 150 ms or more apart each count');
+  const legacy = track({});
+  updateFaceMean(legacy, a);
+  updateFaceMean(legacy, unit([1, 0.12]));
+  assert.equal(legacy.faceSamples, 2, 'without a clock every frame counts, as before');
 });

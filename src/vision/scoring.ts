@@ -1,5 +1,5 @@
 import type { BodyProps, OutfitSig, Profile } from '../types';
-import { EVIDENCE_WEIGHTS, IDENTITY_TTL_MS, MEAN_ALPHA, MEAN_RESET_SIM, STRANGER_BASELINE } from './calibration';
+import { BELIEF_MAX_STEPS, BELIEF_REF_PERIOD_MS, EVIDENCE_WEIGHTS, IDENTITY_TTL_MS, LIVE_FACE_SAMPLE_SPACING_MS, MEAN_ALPHA, MEAN_RESET_SIM, STRANGER_BASELINE } from './calibration';
 import { BODY_MODEL, UNKNOWN_ID } from '../types';
 import { profileOutfitMatch, propsSimilarity } from './clothing';
 import { resetIdentity, type Track } from './tracker';
@@ -121,12 +121,16 @@ export function combineEvidence(sig: Signals): Record<string, number> | null {
  * Fold one unit embedding into the track's running mean and return the mean. Matching against the
  * mean instead of each frame turns many noisy frames into one clean one.
  */
-export function updateFaceMean(track: Track, emb: number[]): number[] {
+export function updateFaceMean(track: Track, emb: number[], now?: number): number[] {
   const m = track.faceMean;
+  // Frames closer together than the spacing are the same moment seen twice: they refine the mean
+  // but do not count as another independent sample for the live-enrolment gates.
+  const independent = now === undefined || !(now - track.lastFaceSampleAt < LIVE_FACE_SAMPLE_SPACING_MS);
   if (!m || m.length !== emb.length || centredSimilarity(m, emb) < MEAN_RESET_SIM) {
     if (m) resetIdentity(track);
     track.faceMean = emb.slice();
     track.faceSamples = 1;
+    track.lastFaceSampleAt = now ?? 0;
     return track.faceMean;
   }
   // A fresh array every update: centredSimilarity caches per array identity, so mutating the mean in
@@ -141,7 +145,10 @@ export function updateFaceMean(track: Track, emb: number[]): number[] {
   const inv = n > 0 ? 1 / Math.sqrt(n) : 0;
   for (let i = 0; i < m.length; i++) next[i] *= inv;
   track.faceMean = next;
-  track.faceSamples++;
+  if (independent) {
+    track.faceSamples++;
+    track.lastFaceSampleAt = now ?? 0;
+  }
   return next;
 }
 
@@ -165,10 +172,25 @@ export function assignIdentities(tracks: Track[], exclusive: Set<string>): void 
   }
 }
 
+/** The per-reference-period step `alpha`, rescaled to an elapsed `dtMs`, capped at BELIEF_MAX_STEPS periods. */
+export function elapsedAlpha(alpha: number, dtMs: number): number {
+  const a = clamp01(alpha);
+  if (a >= 1) return 1;
+  const steps = Math.min(BELIEF_MAX_STEPS, Math.max(0, dtMs) / BELIEF_REF_PERIOD_MS);
+  return 1 - Math.pow(1 - a, steps);
+}
+
+/**
+ * Blend one frame of evidence into the belief. `alpha` is the step for one reference frame period;
+ * the actual step follows the time since the last evidence, so the belief moves at the same
+ * wall-clock rate on a 100 ms phone and a 400 ms phone, and a burst of near-duplicate frames is not
+ * a burst of independent proof. The first evidence on a track takes the full step.
+ */
 export function updateBelief(track: Track, ev: Record<string, number>, alpha = 0.35, now = performance.now()): void {
+  const a = elapsedAlpha(alpha, track.lastEvidenceAt > 0 && now > track.lastEvidenceAt ? now - track.lastEvidenceAt : BELIEF_REF_PERIOD_MS);
   for (const id of new Set([...Object.keys(track.belief), ...Object.keys(ev)])) {
     const v = Number.isFinite(ev[id]) ? clamp01(ev[id]) : 0;
-    track.belief[id] = (1 - alpha) * (track.belief[id] ?? 0) + alpha * v;
+    track.belief[id] = (1 - a) * (track.belief[id] ?? 0) + a * v;
   }
   track.lastEvidenceAt = now;
   track.claimed = null;
