@@ -117,12 +117,26 @@ test('frame sampler reads the dimensions of a frozen canvas as well as video', (
     const sampler = new FrameSampler();
     const still = { width: 640, height: 480 } as HTMLCanvasElement;
     const video = { videoWidth: 480, videoHeight: 640 } as HTMLVideoElement;
-    assert.deepEqual(sampler.grab(still), { width: 192, height: 144 });
-    assert.deepEqual(sampler.grab(video), { width: 192, height: 256 });
+    assert.deepEqual(sampler.grab(still), { width: 384, height: 288 });
+    assert.deepEqual(sampler.grab(video), { width: 384, height: 512 });
     assert.equal(sampler.grab({ width: 0, height: 0 } as HTMLCanvasElement), null);
     assert.deepEqual(drawn, [still, video]);
   } finally {
     if (original === undefined) Reflect.deleteProperty(globalThis, 'document');
     else Object.defineProperty(globalThis, 'document', { configurable: true, value: original });
   }
+});
+
+
+test('a clearly different top or trousers caps the whole outfit match, a mild hair mismatch does not', async () => {
+  const { profileOutfitMatch } = await import('../src/vision/clothing');
+  const hist = (bin: number) => { const h = new Array(51).fill(0); h[bin] = 0.7; h[bin + 1] = 0.3; return h; };
+  const mine = { top: hist(0), thighs: hist(24), shins: hist(24), hair: hist(48) };
+  const profile = { front: mine, back: mine };
+  const same = profileOutfitMatch(mine, profile);
+  assert.ok(same.sim > 0.99 && same.thighs && same.coverage > 0.99, JSON.stringify(same));
+  const otherTrousers = profileOutfitMatch({ ...mine, thighs: hist(8), shins: hist(8) }, profile);
+  assert.ok(otherTrousers.sim <= 0.4, `different trousers: ${otherTrousers.sim}`);
+  const topOnly = profileOutfitMatch({ top: hist(0) }, profile);
+  assert.ok(!topOnly.thighs && topOnly.coverage < 0.5 && topOnly.sim > 0.99, JSON.stringify(topOnly));
 });

@@ -12,20 +12,41 @@ import { faceRegion, ZoomPass } from '../vision/zoom';
 import type { Detection } from '../vision/tracker';
 import { haptic, sfx } from '../audio/sfx';
 
-/** One prompt per stored head angle; a stored scan is only reused when all FACE_SAMPLES are present. */
-const FACE_PROMPTS: string[] = [
-  'Look straight at the camera',
-  'Turn your head slightly to the left',
-  'Turn your head slightly to the right',
-  'Turn a little further left',
-  'Turn a little further right',
-  'Tilt your chin up',
-  'Tilt your chin down',
-  'Smile, or make a face',
+/**
+ * One prompt per stored head angle; a stored scan is only reused when all FACE_SAMPLES are present.
+ * Each step also says what the head must actually do, so standing still cannot complete the scan:
+ * `yaw` is the required absolute yaw range in degrees and `side` which way relative to the first
+ * turned sample (the model's sign convention and the mirrored preview cancel out by only requiring
+ * left and right to have opposite signs); `pitch` is the required signed pitch range.
+ */
+interface FacePrompt {
+  text: string;
+  yaw?: [number, number];
+  side?: 'a' | 'b';
+  pitch?: [number, number];
+}
+const FACE_PROMPTS: FacePrompt[] = [
+  { text: 'Look straight at the camera', yaw: [0, 12] },
+  { text: 'Turn your head slightly to the left', yaw: [14, 34], side: 'a' },
+  { text: 'Turn your head slightly to the right', yaw: [14, 34], side: 'b' },
+  { text: 'Turn a little further left', yaw: [28, 45], side: 'a' },
+  { text: 'Turn a little further right', yaw: [28, 45], side: 'b' },
+  { text: 'Tilt your chin up', pitch: [8, 40] },
+  { text: 'Tilt your chin down', pitch: [-40, -8] },
+  { text: 'Smile, or make a face' },
 ];
+/** Consecutive frames that must satisfy the prompt before a sample is taken: a short, deliberate hold. */
+const POSE_HOLD_FRAMES = 2;
 const BODY_SAMPLES = 12;
-const FAR_FACE_SAMPLES = 6;
-const FAR_FACE_INTERVAL_MS = 350;
+/**
+ * Face samples taken from metres away during the front body scan. These match a round far better
+ * than the close selfie set, so the front stage keeps recording until it has MIN_FAR_FACES of them
+ * (or gives up after FAR_FACE_PATIENCE_MS in poor light), not just until the outfit is sampled.
+ */
+const FAR_FACE_SAMPLES = 12;
+const MIN_FAR_FACES = 6;
+const FAR_FACE_INTERVAL_MS = 250;
+const FAR_FACE_PATIENCE_MS = 9000;
 const PROP_COUNTDOWN = 5;
 const BODY_SAMPLE_INTERVAL_MS = 150;
 
@@ -76,6 +97,9 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const faces = useRef<number[][]>([]);
   const farFaces = useRef<number[][]>([]);
+  /** Sign of the yaw on the first turned sample: the other side must have the opposite sign. */
+  const sideSign = useRef(0);
+  const holdFrames = useRef(0);
   const lastFarFace = useRef(0);
   const outfits = useRef<OutfitSig[]>([]);
   const props = useRef<BodyProps[]>([]);
@@ -131,6 +155,8 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
     window.clearInterval(countdownTimer.current);
     faces.current = [];
     farFaces.current = [];
+    sideSign.current = 0;
+    holdFrames.current = 0;
     outfits.current = [];
     props.current = [];
     stageProps.current = [];
@@ -215,7 +241,26 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
       }
       const f = crops[0].face;
       if (!isValidEmbedding(f.embedding) || f.score < 0.7 || faceYawDeg(f) > MAX_YAW_DEG) return setHint('Hold still and face the camera a little more.');
-      if (faces.current.length === 0 && faceYawDeg(f) > 15) return setHint('Look straight at the camera for the first sample.');
+      // The prompt must actually be performed: the head angle has to sit in the requested range, and
+      // stay there for a couple of frames, before the sample counts.
+      const prompt = FACE_PROMPTS[Math.min(faces.current.length, FACE_PROMPTS.length - 1)];
+      const yawSigned = (f.rotation?.angle?.yaw ?? 0) * 180 / Math.PI;
+      const pitchSigned = (f.rotation?.angle?.pitch ?? 0) * 180 / Math.PI;
+      const yawAbs = Math.abs(yawSigned);
+      let posed = true;
+      if (prompt.yaw && (yawAbs < prompt.yaw[0] || yawAbs > prompt.yaw[1])) posed = false;
+      if (posed && prompt.side) {
+        const sign = Math.sign(yawSigned);
+        if (sideSign.current === 0) sideSign.current = prompt.side === 'a' ? sign : -sign;
+        else if (sign !== (prompt.side === 'a' ? sideSign.current : -sideSign.current)) posed = false;
+      }
+      if (prompt.pitch && (pitchSigned < prompt.pitch[0] || pitchSigned > prompt.pitch[1])) posed = false;
+      if (!posed) {
+        holdFrames.current = 0;
+        return setHint(prompt.side ? 'Turn your head the other way, then hold it there.' : prompt.pitch ? 'Tilt a little more and hold it.' : 'Hold that pose for a moment.');
+      }
+      if (++holdFrames.current < POSE_HOLD_FRAMES) return setHint('Hold it…');
+      holdFrames.current = 0;
       if (faces.current.length > 0 && faceSimilarity(f.embedding, faces.current[0]) < SAME_PERSON_MIN) {
         return setHint('That does not look like the same person as frame 1.');
       }
@@ -278,8 +323,14 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
       lastBodySample.current = now;
       const bp = bodyProportions(b, 0.4);
       if (bp) stageProps.current.push(bp);
-      setProgress(outfits.current.length / BODY_SAMPLES);
+      setProgress(Math.min(1, outfits.current.length / BODY_SAMPLES));
       setHint(wholeBody ? '' : 'Feet are out of frame. Still scanning, but legs will not count.');
+      const farDone = s !== 'bodyFront' || farFaces.current.length >= MIN_FAR_FACES || now - stageStart.current > FAR_FACE_PATIENCE_MS;
+      if (outfits.current.length >= BODY_SAMPLES && !farDone) {
+        // Outfit done; hold the pose a little longer so the far face set fills up.
+        setHint(res.face.length === 1 ? `Look at the phone: ${farFaces.current.length} of ${MIN_FAR_FACES} far face samples.` : 'Look at the phone so it can learn your face from here.');
+        return;
+      }
       if (outfits.current.length >= BODY_SAMPLES) {
         const avg = averageOutfits(outfits.current);
         props.current.push(...stageProps.current);
@@ -302,7 +353,7 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
   const copy = ((): { heading: string; prompt: string } => {
     switch (stage) {
       case 'face':
-        return { heading: `Face ${faceIdx + 1} of ${FACE_SAMPLES}`, prompt: FACE_PROMPTS[Math.min(faceIdx, FACE_PROMPTS.length - 1)] };
+        return { heading: `Face ${faceIdx + 1} of ${FACE_SAMPLES}`, prompt: FACE_PROMPTS[Math.min(faceIdx, FACE_PROMPTS.length - 1)].text };
       case 'bodyMode':
         return { heading: 'Body scan', prompt: 'The scan needs your whole body, head to feet. Who is holding the phone?' };
       case 'bodyFront':

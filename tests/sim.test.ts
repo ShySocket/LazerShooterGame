@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aggregate, SCENARIOS, type Aggregate } from './sim/engine';
+import { aggregate, SCENARIOS, simulate, type Aggregate } from './sim/engine';
 
 /**
  * Whole-round simulation of the shooting pipeline against a synthetic detector (tests/sim/world.ts).
@@ -15,7 +15,8 @@ const run = async (name: string): Promise<Aggregate> => {
   if (!results.has(name)) results.set(name, await aggregate(scenario, SEEDS));
   return results.get(name)!;
 };
-const hitRate = (a: Aggregate) => a.correct / Math.max(1, a.shots);
+/** Hits per shot that could have hit: the target was the visible person under the dot at the tap. */
+const hitRate = (a: Aggregate) => a.correct / Math.max(1, a.possible);
 const describe = (a: Aggregate) => `${a.name}: ${JSON.stringify(a)}`;
 
 test('face-on at close range nearly every shot lands and the target keeps one track', async () => {
@@ -51,6 +52,16 @@ test('crossing players never swap identities', async () => {
   assert.ok(hitRate(a) >= 0.5, describe(a));
 });
 
+test('a crossing during a camera pan never swaps identities', async () => {
+  const a = await run('pan-crossing');
+  assert.equal(a.wrong, 0, describe(a));
+  assert.equal(a.wrongLockFrames, 0, describe(a));
+  // Measured 55% over 100 seeds on 2026-09-14 (84% without the pan, 3.2 track ids per run against
+  // 1.5): the pan costs continuity, not safety. The bound is loose on purpose; the continuity work
+  // in the tracking plan is measured against this scenario.
+  assert.ok(hitRate(a) >= 0.35, describe(a));
+});
+
 test('same-hue tops of a different shade are still told apart from behind', async () => {
   const a = await run('lookalike-tops');
   assert.equal(a.wrong, 0, describe(a));
@@ -63,11 +74,14 @@ test('identical tops from behind refuse rather than guess', async () => {
   assert.equal(a.wrongLockFrames, 0, describe(a));
 });
 
-test('strangers and mirrors are never hit', async () => {
+test('strangers and mirrors are never hit, and never wear a player\'s name even hedged', async () => {
   for (const name of ['stranger', 'mirror']) {
     const a = await run(name);
     assert.equal(a.correct + a.wrong, 0, describe(a));
     assert.equal(a.wrongLockFrames, 0, describe(a));
+    // Measured 0 over 100 seeds (2026-09-14): the real player's track claims the id, so a stranger's
+    // partial face match never reaches the label. A nonzero here is the first sign of a wrong lock.
+    assert.equal(a.maybeOnNonPlayer, 0, describe(a));
   }
 });
 
@@ -89,4 +103,82 @@ test('dim light lowers confidence, not correctness', async () => {
   const a = await run('dim-light');
   assert.ok(hitRate(a) >= 0.8, describe(a));
   assert.equal(a.wrong, 0, describe(a));
+});
+
+test('a crossing with both players facing away never swaps their identities', async () => {
+  const a = await run('crossing-backs');
+  assert.equal(a.wrong, 0, describe(a));
+  assert.equal(a.wrongLockFrames, 0, describe(a));
+  assert.ok(hitRate(a) >= 0.75, describe(a));
+});
+
+test('a player walking in front of the target does not become the target', async () => {
+  const a = await run('occlusion');
+  assert.equal(a.wrong, 0, describe(a));
+  assert.equal(a.wrongLockFrames, 0, describe(a));
+  assert.ok(hitRate(a) >= 0.8, describe(a));
+});
+
+test('a target who turns their back and then faces the shooter again stays hittable throughout', async () => {
+  const a = await run('turn-around');
+  assert.equal(a.wrong, 0, describe(a));
+  assert.ok(hitRate(a) >= 0.85, describe(a));
+  assert.ok(a.trackChurn <= 2, describe(a));
+});
+
+test('a phone with occasional slow frames still fires and hits instead of refusing shots as stale', async () => {
+  const a = await run('hiccups');
+  assert.ok(a.stale <= 1, describe(a));
+  assert.ok(hitRate(a) >= 0.85, describe(a));
+  assert.equal(a.wrong, 0, describe(a));
+});
+
+test('players with look-alike faces are never confused with each other', async () => {
+  const a = await run('lookalike-faces');
+  assert.equal(a.wrong, 0, describe(a));
+  assert.equal(a.wrongLockFrames, 0, describe(a));
+});
+
+/**
+ * Seeds that once produced a wrong hit or a wrong lock in a 100-seed sweep (2026-09-13 review). The
+ * occlusion ones were instant hits from a frame whose geometry predated the nearer player moving out
+ * from under the dot; the stranger ones were single false player-lock frames.
+ */
+const REGRESSION_SEEDS: [string, number][] = [
+  ['occlusion', 60],
+  ['stranger', 23],
+  ['occlusion', 39],
+  ['stranger', 45],
+  ['stranger', 61],
+];
+for (const [name, seed] of REGRESSION_SEEDS) {
+  test(`regression: ${name} seed ${seed} has no wrong hit and no wrong lock`, async () => {
+    const scenario = SCENARIOS.find((s) => s.name === name)!;
+    const r = await simulate(scenario, { seed });
+    assert.equal(r.counts.wrong, 0, r.wrongTraces.map((t) => t.join('\n')).join('\n\n'));
+    assert.equal(r.wrongLockFrames, 0, r.wrongTraces.map((t) => t.join('\n')).join('\n\n'));
+  });
+}
+
+test('ambiguous verdicts are counted: zero where people stand apart, a small share where they overlap', async () => {
+  // Measured 2026-09-14 at 3 seeds: 0 everywhere except occlusion 4/45, range-8m 3/66, back-shot,
+  // turn-around and lookalike-faces 1 each. A growing count here is where a wrong hit would hide.
+  for (const name of ['duel-close', 'stranger', 'mirror', 'same-shirt-stranger', 'identical-tops', 'slow-phone', 'dim-light']) {
+    const a = await run(name);
+    assert.equal(a.ambiguous, 0, describe(a));
+  }
+  // Crossings can land a hit within jitter of the other player's edge; that is ambiguous by the
+  // oracle, never wrong.
+  for (const [name, ceiling] of [['occlusion', 0.2], ['range-8m', 0.12], ['crossing', 0.08], ['pan-crossing', 0.08], ['back-shot', 0.08], ['turn-around', 0.08], ['lookalike-faces', 0.08]] as const) {
+    const a = await run(name);
+    assert.ok(a.ambiguous / Math.max(1, a.shots) <= ceiling, describe(a));
+  }
+});
+
+test('a stranger wearing the same top as a player is never hit, and never wears their name even hedged', async () => {
+  const a = await run('same-shirt-stranger');
+  assert.equal(a.correct + a.wrong, 0, describe(a));
+  assert.equal(a.wrongLockFrames, 0, describe(a));
+  // Measured 0 over 100 seeds (2026-09-14) with the stranger's belief peaking at 0.40 on 13 frames.
+  assert.equal(a.maybeOnNonPlayer, 0, describe(a));
 });

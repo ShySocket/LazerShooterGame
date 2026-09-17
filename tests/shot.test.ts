@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { crosshairRect, indexInSight } from '../src/vision/geometry';
+import { crosshairRect, indexInSight, type NBox } from '../src/vision/geometry';
 import { burstAllowanceMs, canConfirmShot, FramePeriod, freshFrame, MAX_STALE_FRAME_MS, snapshotTrack, STALE_FRAME_MS, staleAllowanceMs } from '../src/vision/shot';
 import { Tracker } from '../src/vision/tracker';
 
-test('the centre dot selects one person, never a larger neighbour touching the reticle edge', () => {
-  assert.equal(indexInSight([[0, 0, 0.49, 1], [0.49, 0.4, 0.1, 0.2]], [0.29, 0.35, 0.42, 0.3]), 1);
+test('the centre dot selects one person; a neighbour whose edge is within jitter of the dot makes the aim ambiguous', () => {
+  // A large neighbour ending clearly short of the dot does not steal or block the small person under it.
+  assert.equal(indexInSight([[0, 0, 0.45, 1], [0.49, 0.4, 0.1, 0.2]], [0.29, 0.35, 0.42, 0.3]), 1);
+  // The same neighbour ending 1% from the dot may really cover it: refuse rather than guess.
+  assert.equal(indexInSight([[0, 0, 0.49, 1], [0.49, 0.4, 0.1, 0.2]], [0.29, 0.35, 0.42, 0.3]), -1);
   assert.equal(indexInSight([[0, 0, 0.49, 1]], [0.29, 0.35, 0.42, 0.3]), -1);
 });
 
@@ -71,4 +74,14 @@ test('the frame period is a median that ignores one hiccup and resets with the c
   assert.equal(p.ms(), 200);
   p.reset();
   assert.ok(Number.isNaN(p.ms()));
+});
+
+
+test('the dot must also sit on the observed hit region, and a neighbour within the vertical band blocks the aim', () => {
+  const box: NBox = [0.3, 0.2, 0.4, 0.6];
+  const crosshair: NBox = [0.29, 0.35, 0.42, 0.3]; // dot at (0.5, 0.5)
+  assert.equal(indexInSight([box], crosshair, [[0.4, 0.25, 0.2, 0.3]]), 0, 'dot inside the torso');
+  assert.equal(indexInSight([box], crosshair, [[0.4, 0.25, 0.2, 0.2]]), -1, 'dot below the torso: nothing to hit');
+  // A second body whose bottom edge ends 2% of its height above the dot is within the 3% band.
+  assert.equal(indexInSight([box, [0.2, 0.0, 0.4, 0.49]], crosshair, [[0.4, 0.25, 0.2, 0.3], [0.3, 0.05, 0.2, 0.4]]), -1);
 });

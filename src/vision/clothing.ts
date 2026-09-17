@@ -1,4 +1,5 @@
 import type { BodyResult } from '@vladmandic/human';
+import { REGION_CONTRADICTION_CAP } from './calibration';
 import type { BodyProps, OutfitSides, OutfitSig } from '../types';
 import { roundTo } from '../util/num';
 
@@ -233,23 +234,59 @@ export function averageOutfits(samples: OutfitSig[]): OutfitSig {
 /** How much each region counts. The top is largest and most visible; hair is small but rarely shared. */
 const REGION_WEIGHT: Record<keyof OutfitSig, number> = { top: 0.45, thighs: 0.25, shins: 0.1, hair: 0.2 };
 
-/** Weighted similarity over the regions both signatures have. */
-function outfitSimilarity(a: OutfitSig, b: OutfitSig): number {
+export interface OutfitMatch {
+  /** Weighted similarity over the regions both signatures have. */
+  sim: number;
+  /** Share of the outfit weight those regions carry (1 = every region compared). */
+  coverage: number;
+  /** Whether the trousers were among the compared regions. */
+  thighs: boolean;
+}
+
+/**
+ * A region this dissimilar is a different garment, whatever the rest of the outfit says: the same
+ * clothes measured 0.86 to 0.97 whole-outfit similarity from 2 to 8 m, and a same-hue garment of
+ * another shade scores about 0.35. Hair and shins are small and lighting-sensitive, so only a
+ * near-total mismatch of those counts.
+ */
+const REGION_CONTRADICTION: Record<keyof OutfitSig, number> = { top: 0.4, thighs: 0.4, shins: 0.2, hair: 0.2 };
+
+/**
+ * Weighted similarity over the regions both signatures have, and how much of the outfit that is. A
+ * clearly different top or trousers caps the whole match below the evidence floor: the same shirt on
+ * different legs is not the same outfit, and a weighted average must not let the shirt outvote them.
+ */
+function outfitMatch(a: OutfitSig, b: OutfitSig): OutfitMatch {
   let num = 0;
   let den = 0;
+  let contradiction = false;
   for (const k of Object.keys(REGION_WEIGHT) as (keyof OutfitSig)[]) {
     const x = a[k];
     const y = b[k];
     if (!x || !y) continue;
-    num += REGION_WEIGHT[k] * sigSimilarity(x, y);
+    const s = sigSimilarity(x, y);
+    if (s < REGION_CONTRADICTION[k]) contradiction = true;
+    num += REGION_WEIGHT[k] * s;
     den += REGION_WEIGHT[k];
   }
-  return den === 0 ? 0 : num / den;
+  const sim = den === 0 ? 0 : num / den;
+  return { sim: contradiction ? Math.min(sim, REGION_CONTRADICTION_CAP) : sim, coverage: den, thighs: Boolean(a.thighs && b.thighs) };
+}
+
+function outfitSimilarity(a: OutfitSig, b: OutfitSig): number {
+  return outfitMatch(a, b).sim;
+}
+
+/** Best match of a live outfit against a player's front or back, with the coverage of that side. */
+export function profileOutfitMatch(sig: OutfitSig, outfit: OutfitSides): OutfitMatch {
+  const f = outfitMatch(sig, outfit.front);
+  const b = outfitMatch(sig, outfit.back);
+  return f.sim >= b.sim ? f : b;
 }
 
 /** Best match of a live outfit against a player's front or back. */
 export function profileOutfitSim(sig: OutfitSig, outfit: OutfitSides): number {
-  return Math.max(outfitSimilarity(sig, outfit.front), outfitSimilarity(sig, outfit.back));
+  return profileOutfitMatch(sig, outfit).sim;
 }
 
 /** Highest similarity between any of two players' front/back outfits. */
@@ -317,12 +354,17 @@ export function propsSimilarity(a: BodyProps, b: BodyProps): number {
   return n === 0 ? 0 : sum / n;
 }
 
+/** Width of the frame copy used for clothing pixels. Sampling itself is a fixed grid per region, so
+ * this only sets how many distinct pixels a distant torso can offer: at 192 a player 8 m away was a
+ * 6 by 10 px patch and the outfit read as noise; at 384 it has four times the pixels. */
+export const SAMPLE_WIDTH = 384;
+
 /** Grabs a small copy of the video frame for pixel sampling. */
 export class FrameSampler {
   private canvas = document.createElement('canvas');
   private ctx = this.canvas.getContext('2d', { willReadFrequently: true })!;
 
-  grab(source: HTMLVideoElement | HTMLCanvasElement, width = 192): ImageData | null {
+  grab(source: HTMLVideoElement | HTMLCanvasElement, width = SAMPLE_WIDTH): ImageData | null {
     const sourceWidth = 'videoWidth' in source ? source.videoWidth : source.width;
     const sourceHeight = 'videoHeight' in source ? source.videoHeight : source.height;
     if (!sourceWidth || !sourceHeight || !Number.isFinite(width) || width < 2) return null;

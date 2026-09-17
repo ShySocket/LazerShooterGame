@@ -1,8 +1,9 @@
 import type { BodyProps, OutfitSig, Profile } from '../types';
+import { BELIEF_MAX_STEPS, BELIEF_REF_PERIOD_MS, CLOTHING_EVIDENCE, EVIDENCE_WEIGHTS, IDENTITY_TTL_MS, LIVE_FACE_SAMPLE_SPACING_MS, MEAN_ALPHA, MEAN_RESET_SIM, STRANGER_BASELINE } from './calibration';
 import { BODY_MODEL, UNKNOWN_ID } from '../types';
-import { profileOutfitSim, propsSimilarity } from './clothing';
+import { profileOutfitMatch, propsSimilarity } from './clothing';
 import { resetIdentity, type Track } from './tracker';
-import { unitSimilarity } from './embedding';
+import { centredSimilarity } from './embedding';
 
 export interface Candidate {
   id: string;
@@ -44,16 +45,30 @@ export function faceEvidence(
   return ev;
 }
 
-/** Outfit similarity per candidate mapped to 0..1 evidence, plus the stranger baseline. */
-export function clothingEvidence(sig: OutfitSig, cands: Candidate[]): Record<string, number> {
+/**
+ * Outfit similarity per candidate mapped to 0..1 evidence, plus the stranger baseline. Similarity is
+ * measured over the clothing regions both sides have, so it is scaled by how much of the outfit that
+ * covers: a matching shirt alone (coverage 0.45) cannot on its own reach the hit threshold, because
+ * the regions that would tell a stranger in the same shirt apart were never compared.
+ */
+export function clothingEvidence(sig: OutfitSig, cands: Candidate[], established?: Record<string, number>): Record<string, number> {
   const ev: Record<string, number> = {};
   let top = 0;
   for (const c of cands) {
-    const raw = c.profile.outfit ? profileOutfitSim(sig, c.profile.outfit) : 0;
-    ev[c.id] = clamp01((raw - 0.45) / 0.35);
-    top = Math.max(top, ev[c.id]);
+    const m = c.profile.outfit ? profileOutfitMatch(sig, c.profile.outfit) : { sim: 0, coverage: 0, thighs: false };
+    const raw = clamp01((m.sim - CLOTHING_EVIDENCE.floor) / CLOTHING_EVIDENCE.span);
+    // Acquiring an identity from clothing needs the trousers compared as well as the top: a shirt
+    // plus hair can be shared with a stranger, and whatever was not seen cannot tell them apart.
+    // Partial coverage does not erode an identity already established while the visible regions
+    // keep matching.
+    const factor = Math.min(m.thighs ? 1 : CLOTHING_EVIDENCE.noThighsCap, CLOTHING_EVIDENCE.coverageFloor + (1 - CLOTHING_EVIDENCE.coverageFloor) * m.coverage);
+    const scaled = raw * factor;
+    ev[c.id] = Math.max(scaled, Math.min(established?.[c.id] ?? 0, raw));
+    top = Math.max(top, scaled);
   }
-  ev[UNKNOWN_ID] = clamp01(0.9 - top);
+  // The stranger vote is what a partial match must beat by the hit margin: a shirt plus a
+  // mismatching hairline reaches about 0.55 and stays within the margin of this baseline.
+  ev[UNKNOWN_ID] = clamp01(STRANGER_BASELINE - top);
   return ev;
 }
 
@@ -72,13 +87,14 @@ export interface Signals {
   body: Record<string, number> | null;
 }
 
-const W = { face: 0.6, cloth: 0.3, body: 0.1 };
+const W = EVIDENCE_WEIGHTS;
 
 /** Weighted mix of whatever signals were available this frame. Without a face the total is capped. */
 export function combineEvidence(sig: Signals): Record<string, number> | null {
   // Body proportions are shared by many people. They may break an outfit tie, never identify alone.
   if (!sig.face && !sig.cloth) return null;
-  const present = (Object.keys(W) as (keyof Signals)[]).filter((k) => sig[k]);
+  // A signal with nothing to say (no stored reference for anybody) is absent, not a zero vote.
+  const present = (Object.keys(W) as (keyof Signals)[]).filter((k) => sig[k] && Object.keys(sig[k]!).length > 0);
   if (present.length === 0) return null;
   const ids = new Set<string>();
   for (const k of present) Object.keys(sig[k]!).forEach((id) => ids.add(id));
@@ -101,33 +117,39 @@ export function combineEvidence(sig: Signals): Record<string, number> | null {
   return out;
 }
 
-/** How fast the running face mean follows new frames once it has a few samples. */
-const MEAN_ALPHA = 0.3;
-/** A new frame this dissimilar to the mean means the track switched person; start the mean over. */
-const MEAN_RESET_SIM = 0.2;
-
 /**
  * Fold one unit embedding into the track's running mean and return the mean. Matching against the
  * mean instead of each frame turns many noisy frames into one clean one.
  */
-export function updateFaceMean(track: Track, emb: number[]): number[] {
+export function updateFaceMean(track: Track, emb: number[], now?: number): number[] {
   const m = track.faceMean;
-  if (!m || m.length !== emb.length || unitSimilarity(m, emb) < MEAN_RESET_SIM) {
+  // Frames closer together than the spacing are the same moment seen twice: they refine the mean
+  // but do not count as another independent sample for the live-enrolment gates.
+  const independent = now === undefined || !(now - track.lastFaceSampleAt < LIVE_FACE_SAMPLE_SPACING_MS);
+  if (!m || m.length !== emb.length || centredSimilarity(m, emb) < MEAN_RESET_SIM) {
     if (m) resetIdentity(track);
     track.faceMean = emb.slice();
     track.faceSamples = 1;
+    track.lastFaceSampleAt = now ?? 0;
     return track.faceMean;
   }
+  // A fresh array every update: centredSimilarity caches per array identity, so mutating the mean in
+  // place would keep serving the similarity of an old mean.
   const a = Math.max(MEAN_ALPHA, 1 / (track.faceSamples + 1));
+  const next = new Array<number>(m.length);
   let n = 0;
   for (let i = 0; i < m.length; i++) {
-    m[i] = (1 - a) * m[i] + a * emb[i];
-    n += m[i] * m[i];
+    next[i] = (1 - a) * m[i] + a * emb[i];
+    n += next[i] * next[i];
   }
   const inv = n > 0 ? 1 / Math.sqrt(n) : 0;
-  for (let i = 0; i < m.length; i++) m[i] *= inv;
-  track.faceSamples++;
-  return m;
+  for (let i = 0; i < m.length; i++) next[i] *= inv;
+  track.faceMean = next;
+  if (independent) {
+    track.faceSamples++;
+    track.lastFaceSampleAt = now ?? 0;
+  }
+  return next;
 }
 
 /**
@@ -150,13 +172,34 @@ export function assignIdentities(tracks: Track[], exclusive: Set<string>): void 
   }
 }
 
+/** The per-reference-period step `alpha`, rescaled to an elapsed `dtMs`, capped at BELIEF_MAX_STEPS periods. */
+export function elapsedAlpha(alpha: number, dtMs: number): number {
+  const a = clamp01(alpha);
+  if (a >= 1) return 1;
+  const steps = Math.min(BELIEF_MAX_STEPS, Math.max(0, dtMs) / BELIEF_REF_PERIOD_MS);
+  return 1 - Math.pow(1 - a, steps);
+}
+
+/**
+ * Blend one frame of evidence into the belief. `alpha` is the step for one reference frame period;
+ * the actual step follows the time since the last evidence, so the belief moves at the same
+ * wall-clock rate on a 100 ms phone and a 400 ms phone, and a burst of near-duplicate frames is not
+ * a burst of independent proof. The first evidence on a track takes the full step.
+ */
 export function updateBelief(track: Track, ev: Record<string, number>, alpha = 0.35, now = performance.now()): void {
+  const a = elapsedAlpha(alpha, track.lastEvidenceAt > 0 && now > track.lastEvidenceAt ? now - track.lastEvidenceAt : BELIEF_REF_PERIOD_MS);
+  // Fresh evidence confirms a suspended identity only when it agrees with it; evidence for somebody
+  // else keeps the track unconfirmed until the belief itself has followed the evidence.
+  const believed = Object.entries(track.belief).sort((x, y) => y[1] - x[1])[0]?.[0];
+  const seen = Object.entries(ev).sort((x, y) => y[1] - x[1])[0]?.[0];
+  const agrees = believed === undefined || seen === believed;
   for (const id of new Set([...Object.keys(track.belief), ...Object.keys(ev)])) {
     const v = Number.isFinite(ev[id]) ? clamp01(ev[id]) : 0;
-    track.belief[id] = (1 - alpha) * (track.belief[id] ?? 0) + alpha * v;
+    track.belief[id] = (1 - a) * (track.belief[id] ?? 0) + a * v;
   }
   track.lastEvidenceAt = now;
   track.claimed = null;
+  if (agrees) track.unconfirmed = false;
 }
 
 export interface Resolution {
@@ -184,11 +227,13 @@ export function bestBelief(track: Track, eligible: Set<string>): Resolution | nu
   return t && !track.identityConflict && eligible.has(t.id) ? t : null;
 }
 
-export const IDENTITY_TTL_MS = 1500;
+export { IDENTITY_TTL_MS };
 
 /** A hit only registers when the top candidate is a live opponent, confident, and clearly ahead of everyone else. */
 export function resolveHit(track: Track, eligible: Set<string>, threshold: number, margin: number, now = performance.now()): Resolution | null {
   if (!Number.isFinite(track.lastEvidenceAt) || now < track.lastEvidenceAt || now - track.lastEvidenceAt > IDENTITY_TTL_MS) return null;
+  // After a frame that could not tell whose face was whose, the identity waits for fresh evidence.
+  if (track.unconfirmed) return null;
   const b = bestBelief(track, eligible);
   if (!b || !Number.isFinite(b.score) || !Number.isFinite(b.margin) || b.score < threshold || b.margin < margin || b.margin <= 0) return null;
   return b;

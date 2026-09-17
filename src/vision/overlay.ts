@@ -53,6 +53,15 @@ export function drawOverlay(canvas: HTMLCanvasElement, frame: OverlayFrame, mirr
     ctx.strokeStyle = color;
     ctx.strokeRect(x, y, w, h);
     ctx.setLineDash([]);
+    // Dotted inner box: the head and torso the pose model actually observed, the only part of this
+    // person a shot can land on. Arms, legs and the corners of the outer box never take a hit.
+    if (track) {
+      const [hx, hy, hw, hh] = toDisplay(track.hit, frame.vidW, frame.vidH, t);
+      ctx.setLineDash([2, 4]);
+      ctx.strokeStyle = color;
+      ctx.strokeRect(hx, hy, hw, hh);
+      ctx.setLineDash([]);
+    }
     if (d.face) {
       const [fx, fy, fw, fh] = toDisplay(toNBox(d.face.boxRaw), frame.vidW, frame.vidH, t);
       ctx.strokeStyle = '#ffffff';

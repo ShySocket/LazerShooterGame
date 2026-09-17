@@ -2,8 +2,8 @@ import { BODY_MODEL, UNKNOWN_ID, type BodyProps, type OutfitSig, type RoomSettin
 import { faceOwner, type Detection, type Track } from '../vision/tracker';
 import type { FaceObservation, FrameOps, FrameOutcome, OutfitObservation } from '../vision/pipeline';
 import type { Candidate } from '../vision/scoring';
-import { FACE_MODEL, unitSimilarity } from '../vision/embedding';
-import { profileOutfitSim, propsSimilarity } from '../vision/clothing';
+import { centredSimilarity, FACE_MODEL } from '../vision/embedding';
+import { profileOutfitMatch, propsSimilarity } from '../vision/clothing';
 import type { NBox } from '../vision/geometry';
 import { IdMap, round, roundBox, roundKey, SAMPLE_VERSION, type EvidenceSummary, type FrameSummary, type Pid, type ShotSample, type TrackSummary } from './sample';
 
@@ -205,9 +205,10 @@ export class ShotRecorder {
         const match: Record<Pid, { sim: number; cov: number; thighs: boolean }> = {};
         const body: Record<Pid, number> = {};
         for (const c of candidates) {
-          // This build compares whole outfits without a coverage measure: cov 1 and thighs true keep
-          // the sample shape shared with builds that record them.
-          if (outfit.sig && c.profile.outfit) match[r.ids.pid(c.id)] = { sim: round(profileOutfitSim(outfit.sig, c.profile.outfit)), cov: 1, thighs: true };
+          if (outfit.sig && c.profile.outfit) {
+            const m = profileOutfitMatch(outfit.sig, c.profile.outfit);
+            match[r.ids.pid(c.id)] = { sim: round(m.sim), cov: round(m.coverage), thighs: m.thighs };
+          }
           if (outfit.props && c.profile.body && c.profile.bodyModel === BODY_MODEL) body[r.ids.pid(c.id)] = round(propsSimilarity(outfit.props, c.profile.body));
         }
         ev.outfit = { match, ...(Object.keys(body).length ? { body } : {}) };
@@ -243,7 +244,7 @@ export class ShotRecorder {
     const out: Record<Pid, number> = {};
     for (const c of candidates) {
       let best = -1;
-      for (const f of c.profile.face ?? []) if (f.length === emb.length) best = Math.max(best, unitSimilarity(f, emb));
+      for (const f of c.profile.face ?? []) if (f.length === emb.length) best = Math.max(best, centredSimilarity(f, emb));
       out[this.round!.ids.pid(c.id)] = round(best);
     }
     return out;

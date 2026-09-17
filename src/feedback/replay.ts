@@ -1,4 +1,5 @@
 import { UNKNOWN_PID, type Pid, type ShotLabel, type ShotSample, type TrackSummary } from './sample';
+import { CLOTHING_AUDIT_MS, CLOTHING_BELIEF_ALPHA, CLOTHING_EVIDENCE, EVIDENCE_WEIGHTS, FACE_BELIEF_ALPHA, FACE_CALIB, FACE_FRESH_MS, IDENTITY_TTL_MS, STRANGER_BASELINE } from '../vision/calibration';
 
 /**
  * Offline replay of labelled shot samples. A sample carries the raw similarities every track
@@ -30,25 +31,28 @@ export interface ReplayParams {
   clothingAuditMs: number;
 }
 
-/** The values in src/vision as of this build (FACE_CALIB, scoring weights, pipeline gates); keep in step when those change. */
+/**
+ * The game's own values, read from src/vision/calibration.ts so a replay defaults to the calibration
+ * this build decides with. The replay mirrors the evidence fusion, not the tracker or the
+ * elapsed-time smoothing, so its verdicts approximate the game's rather than reproduce them.
+ */
 export const DEFAULT_PARAMS: ReplayParams = {
-  faceReject: 0.26,
-  faceAccept: 0.5,
-  wFace: 0.6,
-  wCloth: 0.3,
-  wBody: 0.1,
-  clothFloor: 0.45,
-  clothSpan: 0.35,
-  strangerBase: 0.9,
-  faceAlpha: 0.45,
-  clothAlpha: 0.35,
+  faceReject: FACE_CALIB.reject,
+  faceAccept: FACE_CALIB.accept,
+  wFace: EVIDENCE_WEIGHTS.face,
+  wCloth: EVIDENCE_WEIGHTS.cloth,
+  wBody: EVIDENCE_WEIGHTS.body,
+  clothFloor: CLOTHING_EVIDENCE.floor,
+  clothSpan: CLOTHING_EVIDENCE.span,
+  strangerBase: STRANGER_BASELINE,
+  faceAlpha: FACE_BELIEF_ALPHA,
+  clothAlpha: CLOTHING_BELIEF_ALPHA,
   noFaceCap: 0.85,
-  identityTtlMs: 1500,
+  identityTtlMs: IDENTITY_TTL_MS,
   hitThreshold: null,
   hitMargin: null,
-  faceFreshMs: 1500,
-  // This build never audits clothing while the face is fresh; it skips it.
-  clothingAuditMs: Infinity,
+  faceFreshMs: FACE_FRESH_MS,
+  clothingAuditMs: CLOTHING_AUDIT_MS,
 };
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));

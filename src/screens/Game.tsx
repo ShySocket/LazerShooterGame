@@ -8,13 +8,16 @@ import { useHumanStatus } from '../hooks/useHumanStatus';
 import { useWakeLock } from '../hooks/useWakeLock';
 import { useTorch } from '../hooks/useTorch';
 import { buildDetections, type Track } from '../vision/tracker';
-import { crosshairRect, indexInSight, toNBox, type NBox } from '../vision/geometry';
-import { bodyProportions, FrameSampler, outfitSignature } from '../vision/clothing';
+import { crosshairRect, indexInSight, type NBox } from '../vision/geometry';
+import { FrameSampler } from '../vision/clothing';
 import { topBelief, type Candidate } from '../vision/scoring';
-import { compactEmbedding, faceQuality, faceYawDeg, isCurrentFaceScan, isValidEmbedding, MAX_YAW_DEG, MIN_FACE_PX, unitEmbedding } from '../vision/human';
-import { faceRegion, headRegion, ZoomPass } from '../vision/zoom';
-import { VisionPipeline, type FaceObservation, type LockState, type ShotSettlement } from '../vision/pipeline';
+import { compactEmbedding, isCurrentFaceScan } from '../vision/human';
+import { ZoomPass } from '../vision/zoom';
+import { VisionPipeline, type LockState, type ShotSettlement } from '../vision/pipeline';
+import { makeFrameOps } from '../vision/frameOps';
+import { visionProfile } from '../vision/frameClock';
 import { shotLog } from '../debug/shotLog';
+import { Recorder } from '../debug/recorder';
 import { rangeTest } from '../debug/rangeTest';
 import { drawOverlay } from '../vision/overlay';
 import { haptic, sfx, unlockAudio, vibrate } from '../audio/sfx';
@@ -57,6 +60,11 @@ export function Game({ room, me, pid, onLeave }: Props) {
   const torch = useTorch(videoRef);
 
   const [debug, setDebug] = useState(false);
+  // ?record captures every frame's detections, crops and outfits plus every tap as numbers (never
+  // pixels) for offline replay through the same pipeline: npm run replay <folder>.
+  const replayRecorder = useRef<Recorder | null>(null);
+  const [recordedFrames, setRecordedFrames] = useState(0);
+  const recording = useMemo(() => new URL(location.href).searchParams.has('record'), []);
   const debugRef = useRef(debug);
   debugRef.current = debug;
   const [rangeMode, setRangeMode] = useState(false);
@@ -118,6 +126,20 @@ export function Game({ room, me, pid, onLeave }: Props) {
     };
   }, [room.status, spectating, camReady]);
 
+  // Watchdog independent of the vision loop: if frames stop completing (a frozen camera, repeated
+  // inference errors, a paused tab), the green LOCK must not stay on screen from the last good frame.
+  useEffect(() => {
+    const iv = window.setInterval(() => {
+      const L = pipeline.current.getLatest();
+      const limit = Math.max(1000, pipeline.current.staleMs() * 2);
+      if (L && performance.now() - L.t > limit && lockKey.current) {
+        lockKey.current = '';
+        setLock({ text: 'NO FRESH FRAMES', kind: 'warn' });
+      }
+    }, 300);
+    return () => window.clearInterval(iv);
+  }, []);
+
   // Everyone enrolled with a compatible profile, including eliminated players and the shooter themself.
   // The shooter's own profile is a decoy: a mirror or a look-alike resolves to "me" and never counts.
   const candidates: Candidate[] = useMemo(
@@ -170,6 +192,11 @@ export function Game({ room, me, pid, onLeave }: Props) {
     }, 150);
     return () => window.clearInterval(iv);
   }, [room.status, room.startAt, room.code, isHost]);
+
+  // Each round's profile stands on its own; the bench resets its own at start.
+  useEffect(() => {
+    if (room.status === 'playing') visionProfile.reset();
+  }, [room.status]);
 
   const prevRoomStatus = useRef(room.status);
   useEffect(() => {
@@ -260,6 +287,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
     shotLog.add({
       t: Date.now(),
       outcome,
+      liveFaces: pipeline.current.liveFaceCounts(),
       beliefs: track
         ? Object.entries(track.claimed ?? track.belief)
             .sort((a, b) => b[1] - a[1])
@@ -357,28 +385,19 @@ export function Game({ room, me, pid, onLeave }: Props) {
 
     const dets = buildDetections(res.body, res.face);
     const ch = crosshairRect(res.width, res.height, wrap.clientWidth, wrap.clientHeight);
-    const aspect = res.width / res.height;
-    let img: ImageData | null | undefined;
+    const { ops: baseOps, done } = makeFrameOps({ frame: frame.frame, width: res.width, height: res.height, human, zoom: zoom.current, sampler: sampler.current, isCurrent: frame.isCurrent });
     if (playing && !rangeMode) keeper.current.keep(frame.frame, now);
-    const ops = recorder.current.wrapOps({
-      // The pixel readback is paid once per frame, and only when some track still needs clothing evidence.
-      sampleOutfit: (d) => {
-        if (!d.body) return null;
-        if (img === undefined) img = sampler.current.grab(frame.frame);
-        if (!img) return null;
-        return { sig: outfitSignature(img, d.body), props: bodyProportions(d.body) };
-      },
-      cropFaces: async (_region, d): Promise<FaceObservation[]> => {
-        const region: NBox = d.face ? faceRegion(toNBox(d.face.boxRaw), aspect) : d.body ? headRegion(d.body, d.box, aspect) : d.box;
-        const faces = await zoom.current.run(human, frame.frame, region);
-        return faces
-          .map((zf) => ({ zf, px: Math.min(zf.box[2] * res.width, zf.box[3] * res.height) }))
-          .filter(({ zf, px }) => isValidEmbedding(zf.face.embedding) && zf.face.score >= 0.7 && faceYawDeg(zf.face) <= MAX_YAW_DEG && px >= MIN_FACE_PX)
-          .map(({ zf, px }) => ({ box: zf.box, embedding: unitEmbedding(zf.face.embedding!), quality: faceQuality(px) }));
-      },
-      isCurrent: frame.isCurrent,
-    }, dets);
-    const outcome = await pipeline.current.processFrame(dets, now, res.width, res.height, ch, ops);
+    // The shot-feedback recorder sees every observation; the optional ?record recorder wraps it in turn.
+    const ops = recorder.current.wrapOps(baseOps, dets);
+    if (recording && !replayRecorder.current) {
+      replayRecorder.current = new Recorder({ width: res.width, height: res.height, candidates, selfId: pid, hitThreshold: settings.hitThreshold, hitMargin: settings.hitMargin, notes: `room ${room.code}, ${navigator.userAgent}` });
+      if (import.meta.env.DEV) (window as unknown as { __lzRecorder?: Recorder }).__lzRecorder = replayRecorder.current;
+    }
+    const outcome = await pipeline.current.processFrame(dets, now, res.width, res.height, ch, replayRecorder.current ? replayRecorder.current.frame(now, ch, dets, ops) : ops);
+    // A frame the pipeline abandoned (camera changed, round reset) never happened as far as a replay is concerned.
+    if (!outcome) replayRecorder.current?.discardLast();
+    if (replayRecorder.current && replayRecorder.current.frameCount % 20 === 0) setRecordedFrames(replayRecorder.current.frameCount);
+    done();
     if (!outcome) return;
     recorder.current.frameDone(outcome, dets, now, candidates);
     if (outcome.settled) {
@@ -419,6 +438,8 @@ export function Game({ room, me, pid, onLeave }: Props) {
     const wrap = wrapRef.current;
     const usable = Boolean(L && wrap && !document.hidden && L.width === videoRef.current?.videoWidth && L.height === videoRef.current?.videoHeight);
     const ch = L && wrap ? crosshairRect(L.width, L.height, wrap.clientWidth, wrap.clientHeight) : ([0, 0, 0, 0] as NBox);
+    // In range mode the shooter has named their target, so the tap is labelled for the validation set.
+    replayRecorder.current?.fire(performance.now(), ch, context.practice ? context.expectedId : undefined, eligible);
     const result = pipeline.current.fire(context, ch, usable);
     settledBy.current = 'tap';
     if (result.kind !== 'busy' && !context.practice && L && recorder.current.active()) {
@@ -476,6 +497,21 @@ export function Game({ room, me, pid, onLeave }: Props) {
     }
   };
 
+  /** Hands the recording to the browser as a JSON download; the player attaches it to a bug report or a replay folder. */
+  const saveRecording = () => {
+    const rec = replayRecorder.current?.recording();
+    if (!rec) return;
+    const blob = new Blob([JSON.stringify(rec)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `lazer-recording-${room.code}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    // Attached to the document for the click: some mobile browsers ignore a detached anchor's download.
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  };
+
   const alive = alivePlayers(room);
   const hearts = Array.from({ length: settings.lives }, (_, i) => i < me.lives);
   const rangeSummary = useMemo(() => rangeTest.summary(), [rangeTick]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -512,6 +548,11 @@ export function Game({ room, me, pid, onLeave }: Props) {
           <button className="hud-btn" onClick={() => setDebug((d) => !d)}>
             {debug ? `${fps} fps` : 'debug'}
           </button>
+          {recording && (
+            <button className="hud-btn" onClick={saveRecording}>
+              save rec {recordedFrames}{replayRecorder.current?.full ? ' (full)' : ''}
+            </button>
+          )}
         </div>
       </div>
 

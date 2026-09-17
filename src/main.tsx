@@ -1,4 +1,5 @@
 import { StrictMode } from 'react';
+import { visionProfile } from './vision/frameClock';
 import { createRoot } from 'react-dom/client';
 import { initPwa } from './pwa';
 import { installDiagnostics } from './diag';
@@ -11,10 +12,11 @@ import { ReviewDemo } from './feedback/Demo';
 import { feedbackStore } from './feedback/store';
 import { backend } from './net';
 
-// Development only: lets measurement scripts in the browser console reuse the app's vision helpers,
-// and window.__lz reaches the shot-feedback store and backend (local mode keeps uploads in memory).
+// Development only: lets measurement scripts in the browser console reuse the app's vision helpers
+// and the frame profile, and window.__lz reaches the shot-feedback store and backend (local mode
+// keeps uploads in memory).
 if (import.meta.env.DEV) {
-  (window as unknown as { __lzVision?: unknown }).__lzVision = { bodyProportions, FrameSampler, outfitSignature, profileOutfitSim, buildDetections };
+  (window as unknown as { __lzVision?: unknown }).__lzVision = { bodyProportions, FrameSampler, outfitSignature, profileOutfitSim, buildDetections, profile: () => visionProfile.summary(), profileLine: () => visionProfile.line() };
   (window as unknown as { __lz?: unknown }).__lz = { feedbackStore, backend };
 }
 import './styles.css';

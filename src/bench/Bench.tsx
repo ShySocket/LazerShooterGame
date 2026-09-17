@@ -1,18 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { visionProfile } from '../vision/frameClock';
 import type { Human, Result } from '@vladmandic/human';
 import { BODY_MODEL, UNKNOWN_ID, type OutfitSig, type Profile } from '../types';
 import { useVisionLoop, type VisionFrame } from '../hooks/useVisionLoop';
 import { useHumanStatus } from '../hooks/useHumanStatus';
-import { buildDetections, containsPoint, type Detection } from '../vision/tracker';
+import { buildDetections, containsPoint } from '../vision/tracker';
 import { toNBox, type NBox } from '../vision/geometry';
 import { bodyProportions, FrameSampler, outfitSignature } from '../vision/clothing';
-import { compactEmbedding, configurePass, FACE_MODEL, faceQuality, faceYawDeg, getHuman, isValidEmbedding, MAX_YAW_DEG, MIN_FACE_PX, unitEmbedding } from '../vision/human';
-import { faceRegion, headRegion, ZoomPass } from '../vision/zoom';
-import { VisionPipeline, type FaceObservation, type LockState } from '../vision/pipeline';
+import { compactEmbedding, configurePass, FACE_MODEL, faceYawDeg, getHuman, isValidEmbedding, MAX_YAW_DEG } from '../vision/human';
+import { faceRegion, ZoomPass } from '../vision/zoom';
+import { VisionPipeline, type LockState } from '../vision/pipeline';
+import { makeFrameOps } from '../vision/frameOps';
 import { drawOverlay } from '../vision/overlay';
 import { topBelief } from '../vision/scoring';
 import { DEFAULT_SETTINGS } from '../types';
-import { CAM_H, CAM_W, DEFAULT_MOTION, STILL_MOTION, toCamera, windowAt, type Motion, type Window } from './virtualCamera';
+import { CAM_H, CAM_W, DEFAULT_MOTION, RANGE_LEVELS, rangeMetres, rangeMotion, STILL_MOTION, toCamera, windowAt, type Motion, type Window } from './virtualCamera';
 
 /**
  * Tracking bench: open the app with ?bench. Scans a photo the way the lobby scans players, then
@@ -51,6 +53,8 @@ interface FrameTrace {
   lock: string;
   top: string;
   face: boolean;
+  /** Boxes of every detection this frame, rounded, with their track ids: x,y,w,h. */
+  boxes: string;
 }
 
 export interface BenchStats {
@@ -61,14 +65,24 @@ export interface BenchStats {
   lockFrames: number;
   wrongLockFrames: number;
   targetVisibleFrames: number;
+  /** Frames in which the target's body was detected at all, and in which a full-frame face box was attached to it. */
+  bodyFrames: number;
+  faceFrames: number;
+  /** Frames in which a face embedding reached the target's track (via === 'face' with a fresh face). */
+  faceEvidenceFrames: number;
+  /** Sum and count of the top belief score on the target's track, for the mean. */
+  beliefSum: number;
+  beliefN: number;
   trackIds: number[];
   shots: Shot[];
 }
 
 const FIRE_EVERY_MS = 1300;
+/** Seconds spent at each level of the range sweep. */
+const RANGE_LEVEL_S = 14;
 
 function emptyStats(): BenchStats {
-  return { trace: [], frames: 0, periodMs: NaN, lockFrames: 0, wrongLockFrames: 0, targetVisibleFrames: 0, trackIds: [], shots: [] };
+  return { trace: [], frames: 0, periodMs: NaN, lockFrames: 0, wrongLockFrames: 0, targetVisibleFrames: 0, bodyFrames: 0, faceFrames: 0, faceEvidenceFrames: 0, beliefSum: 0, beliefN: 0, trackIds: [], shots: [] };
 }
 
 function summarize(s: BenchStats) {
@@ -77,6 +91,10 @@ function summarize(s: BenchStats) {
     frames: s.frames,
     periodMs: Math.round(s.periodMs),
     lockPct: s.targetVisibleFrames ? Math.round((100 * s.lockFrames) / s.targetVisibleFrames) : 0,
+    bodyPct: s.frames ? Math.round((100 * s.bodyFrames) / s.frames) : 0,
+    facePct: s.frames ? Math.round((100 * s.faceFrames) / s.frames) : 0,
+    faceEvidencePct: s.frames ? Math.round((100 * s.faceEvidenceFrames) / s.frames) : 0,
+    meanBelief: s.beliefN ? Math.round((100 * s.beliefSum) / s.beliefN) : 0,
     wrongLockFrames: s.wrongLockFrames,
     tracks: s.trackIds.length,
     shots: s.shots.length,
@@ -97,6 +115,9 @@ export function Bench() {
   const [targetId, setTargetId] = useState('');
   const [running, setRunning] = useState(false);
   const [moving, setMoving] = useState(true);
+  const [rangeRows, setRangeRows] = useState<{ level: number; metres: number; personPx: number; stats: ReturnType<typeof summarize> }[]>([]);
+  const motionRef = useRef<Motion>(DEFAULT_MOTION);
+  const rangeLevel = useRef(-1);
   const [msg, setMsg] = useState('Load a photo with several people, then scan it.');
   const [lock, setLock] = useState<string>('');
   const [tick, setTick] = useState(0);
@@ -115,6 +136,9 @@ export function Bench() {
   targetRef.current = targetId;
   const peopleRef = useRef(people);
   peopleRef.current = people;
+  // Latest closures for the console hooks below, which are registered once.
+  const scanRef = useRef<() => Promise<void>>(async () => undefined);
+  const loadRef = useRef<(src: string, name: string) => Promise<void>>(async () => undefined);
 
   const candidates = useMemo(() => people.map((p) => ({ id: p.id, profile: p.profile })), [people]);
   useEffect(() => {
@@ -129,11 +153,29 @@ export function Bench() {
   const labels = useMemo<Record<string, string>>(() => ({ ...Object.fromEntries(people.map((p) => [p.id, p.name])), [UNKNOWN_ID]: 'STRANGER' }), [people]);
 
   // Console access for automated checks: window.__bench.stats().
+  const rangeRowsRef = useRef(rangeRows);
+  rangeRowsRef.current = rangeRows;
   useEffect(() => {
-    (window as unknown as { __bench: unknown }).__bench = { stats: () => summarize(stats.current), raw: () => stats.current, people: () => peopleRef.current };
+    (window as unknown as { __bench: unknown }).__bench = {
+      stats: () => summarize(stats.current),
+      raw: () => stats.current,
+      people: () => peopleRef.current,
+      range: () => rangeRowsRef.current,
+      /** Console tuning: load any image URL and scan it the way the lobby would. */
+      load: (src: string, name = src) => loadRef.current(src, name),
+      scan: () => scanRef.current(),
+      /** Console tuning: hold the still camera at range level z and start fresh stats. keepLearned keeps the round's live face samples. */
+      setLevel: (z: number, keepLearned = false) => {
+        motionRef.current = rangeMotion(z);
+        rangeLevel.current = 0;
+        stats.current = emptyStats();
+        if (!keepLearned) pipeline.current.invalidate();
+      },
+      liveFaces: () => pipeline.current.liveFaceCounts(),
+    };
   }, []);
 
-  // ?bench&auto[=still] runs the sample-person check hands-free, for devices that cannot be tapped remotely.
+  // ?bench&auto[=still|drift|range] runs the sample-person check hands-free, for devices that cannot be tapped remotely.
   const auto = useMemo(() => new URL(location.href).searchParams.get('auto'), []);
   const autoStage = useRef<'idle' | 'loaded' | 'scanned' | 'running'>('idle');
   useEffect(() => {
@@ -147,10 +189,12 @@ export function Bench() {
       void scan();
     } else if (autoStage.current === 'scanned' && people.length > 0 && targetId) {
       autoStage.current = 'running';
-      start();
+      if (auto === 'range') startRange();
+      else start();
     }
   }); // eslint-disable-line react-hooks/exhaustive-deps
 
+  loadRef.current = (src, name) => loadImage(src, name);
   const loadImage = (src: string, name: string) =>
     new Promise<void>((resolve, reject) => {
       const img = new Image();
@@ -179,6 +223,7 @@ export function Bench() {
    * Enrol everybody in the photo the way the lobby scan does: square face crops plus the outfit. A
    * face the full-frame detector missed is looked for in a magnified crop of the body, like the game does.
    */
+  scanRef.current = () => scan();
   const scan = async () => {
     if (!photo || !ready) return;
     setMsg('Scanning photo…');
@@ -253,18 +298,24 @@ export function Bench() {
     v.srcObject = stream;
     v.muted = true;
     void v.play().catch(() => undefined);
-    const motion: Motion = moving ? DEFAULT_MOTION : STILL_MOTION;
+    if (rangeLevel.current < 0) motionRef.current = moving ? DEFAULT_MOTION : STILL_MOTION;
     const t0 = performance.now();
-    let raf = 0;
     const draw = () => {
-      const win = windowAt(photo.width, photo.height, (performance.now() - t0) / 1000, motion);
+      const win = windowAt(photo.width, photo.height, (performance.now() - t0) / 1000, motionRef.current);
       windowRef.current = win;
-      ctx.drawImage(photo, win.x, win.y, win.w, win.h, 0, 0, CAM_W, CAM_H);
-      raf = requestAnimationFrame(draw);
+      // A plain wall behind the photo when the window is larger than it (range sweep).
+      ctx.fillStyle = '#6f6a63';
+      ctx.fillRect(0, 0, CAM_W, CAM_H);
+      const sx = CAM_W / win.w;
+      const sy = CAM_H / win.h;
+      ctx.drawImage(photo, (0 - win.x) * sx, (0 - win.y) * sy, photo.width * sx, photo.height * sy);
     };
     draw();
+    // A timer, not requestAnimationFrame: an occluded (but visible) page stops animating and the
+    // captured stream would freeze, which looks like a dead camera to the vision loop.
+    const timer = window.setInterval(draw, 33);
     return () => {
-      cancelAnimationFrame(raf);
+      window.clearInterval(timer);
       stream.getTracks().forEach((t) => t.stop());
       v.srcObject = null;
     };
@@ -292,24 +343,9 @@ export function Bench() {
     const crosshair = aim(win);
     if (!win || !crosshair) return;
     const dets = buildDetections(res.body, res.face);
-    const aspect = res.width / res.height;
-    let img: ImageData | null | undefined;
-    const outcome = await pipeline.current.processFrame(dets, frame.capturedAt, res.width, res.height, crosshair, {
-      sampleOutfit: (d: Detection) => {
-        if (!d.body) return null;
-        if (img === undefined) img = sampler.current.grab(frame.frame);
-        return img ? { sig: outfitSignature(img, d.body), props: bodyProportions(d.body) } : null;
-      },
-      cropFaces: async (_region, d): Promise<FaceObservation[]> => {
-        const region: NBox = d.face ? faceRegion(toNBox(d.face.boxRaw), aspect) : d.body ? headRegion(d.body, d.box, aspect) : d.box;
-        const faces = await zoom.current.run(human, frame.frame, region);
-        return faces
-          .map((zf) => ({ zf, px: Math.min(zf.box[2] * res.width, zf.box[3] * res.height) }))
-          .filter(({ zf, px }) => isValidEmbedding(zf.face.embedding) && zf.face.score >= 0.7 && faceYawDeg(zf.face) <= MAX_YAW_DEG && px >= MIN_FACE_PX)
-          .map(({ zf, px }) => ({ box: zf.box, embedding: unitEmbedding(zf.face.embedding!), quality: faceQuality(px) }));
-      },
-      isCurrent: frame.isCurrent,
-    });
+    const { ops, done } = makeFrameOps({ frame: frame.frame, width: res.width, height: res.height, human, zoom: zoom.current, sampler: sampler.current, isCurrent: frame.isCurrent });
+    const outcome = await pipeline.current.processFrame(dets, frame.capturedAt, res.width, res.height, crosshair, ops);
+    done();
     if (!outcome) return;
     const s = stats.current;
     s.frames++;
@@ -322,6 +358,25 @@ export function Bench() {
     if (idx >= 0 && !s.trackIds.includes(outcome.tracks[idx].id)) s.trackIds.push(outcome.tracks[idx].id);
     const l: LockState | null = outcome.lock;
     const tb = outcome.inSight ? topBelief(outcome.inSight) : null;
+    // Detection availability for the target: any body overlapping their true box, and a face on it.
+    const targetPerson = peopleRef.current.find((p) => p.id === targetRef.current);
+    if (targetPerson) {
+      const tb0 = toCamera(targetPerson.body, win);
+      const tcx = tb0[0] + tb0[2] / 2;
+      const tcy = tb0[1] + tb0[3] * 0.4;
+      const own = dets.findIndex((d) => containsPoint(d.box, tcx, tcy));
+      if (own >= 0) {
+        s.bodyFrames++;
+        if (dets[own].face) s.faceFrames++;
+        const t = outcome.tracks[own];
+        if (t.via === 'face' && frame.capturedAt - t.lastFaceAt < 1) s.faceEvidenceFrames++;
+        const top = topBelief(t);
+        if (top && top.id === targetRef.current) {
+          s.beliefSum += top.score;
+          s.beliefN++;
+        }
+      }
+    }
     s.trace.push({
       t: Math.round(frame.capturedAt),
       dets: dets.length,
@@ -330,6 +385,7 @@ export function Bench() {
       lock: l ? (l.kind === 'lock' ? 'LOCK ' + l.id : l.kind === 'maybe' ? `${l.id}? ${Math.round(l.score * 100)}` : l.kind) : '',
       top: tb ? `${tb.id} ${Math.round(tb.score * 100)}/${Math.round(tb.margin * 100)} ${tb.via}` : '',
       face: Boolean(idx >= 0 && dets[idx].face),
+      boxes: dets.map((d, i) => `#${outcome.tracks[i].id}[${d.box.map((v) => v.toFixed(2)).join(',')}]${d.associationAmbiguous ? 'A' : ''}`).join(' '),
     });
     if (s.trace.length > 400) s.trace.shift();
     if (l?.kind === 'lock') {
@@ -396,14 +452,51 @@ export function Bench() {
   useVisionLoop(videoRef, running && ready && Boolean(photo), onFrame);
 
   const start = () => {
+    visionProfile.reset();
     stats.current = emptyStats();
     pipeline.current.invalidate();
+    rangeLevel.current = -1;
     setRunning(true);
   };
   const stop = () => {
     setRunning(false);
     window.clearTimeout(pendingTimer.current);
+    window.clearTimeout(rangeTimer.current);
+    rangeLevel.current = -1;
     pipeline.current.invalidate();
+  };
+
+  /** Range sweep: the still camera at each RANGE_LEVELS zoom in turn, with separate stats per level. */
+  const rangeTimer = useRef<number | undefined>(undefined);
+  const startRange = () => {
+    setRangeRows([]);
+    stats.current = emptyStats();
+    pipeline.current.invalidate();
+    rangeLevel.current = 0;
+    motionRef.current = rangeMotion(RANGE_LEVELS[0]);
+    setRunning(true);
+    const next = () => {
+      const z = RANGE_LEVELS[rangeLevel.current];
+      const target = peopleRef.current.find((p) => p.id === targetRef.current);
+      const personPx = photo && target ? Math.round((target.body[3] / (photo.height * z)) * CAM_H) : 0;
+      // Summarise now: a state updater runs lazily, after the stats below have been reset.
+      const row = { level: z, metres: rangeMetres(z), personPx, stats: summarize(stats.current) };
+      setRangeRows((rows) => [...rows, row]);
+      rangeLevel.current++;
+      if (rangeLevel.current >= RANGE_LEVELS.length) {
+        setRunning(false);
+        rangeLevel.current = -1;
+        pipeline.current.invalidate();
+        setMsg('Range sweep finished.');
+        return;
+      }
+      stats.current = emptyStats();
+      pipeline.current.invalidate();
+      window.clearTimeout(pendingTimer.current);
+      motionRef.current = rangeMotion(RANGE_LEVELS[rangeLevel.current]);
+      rangeTimer.current = window.setTimeout(next, RANGE_LEVEL_S * 1000);
+    };
+    rangeTimer.current = window.setTimeout(next, RANGE_LEVEL_S * 1000);
   };
 
   const sum = summarize(stats.current);
@@ -458,9 +551,14 @@ export function Bench() {
               Stop
             </button>
           ) : (
-            <button className="btn primary" disabled={!targetId || !ready} onClick={start}>
-              Start
-            </button>
+            <>
+              <button className="btn primary" disabled={!targetId || !ready} onClick={start}>
+                Start
+              </button>
+              <button className="btn" disabled={!targetId || !ready} onClick={startRange}>
+                Range sweep
+              </button>
+            </>
           )}
         </div>
       )}
@@ -468,6 +566,47 @@ export function Bench() {
         <p className="tag bench-line" style={{ fontSize: 15, color: 'var(--text)' }}>
           {running ? 'RUN' : 'IDLE'} · {sum.frames} frames · {Number.isFinite(sum.periodMs) ? sum.periodMs : '-'} ms · lock {sum.lockPct}% · tracks {sum.tracks} · shots {sum.shots}: hit {sum.correct} wrong {sum.wrong} unclear {sum.unclear} miss {sum.miss} off {sum.offTarget} stale {sum.stale}
         </p>
+      )}
+      {photoName && (
+        <p className="tag bench-line" style={{ fontSize: 13 }}>
+          {visionProfile.line()}
+        </p>
+      )}
+      {rangeRows.length > 0 && (
+        <table className="bench-stats" style={{ width: '100%', fontSize: 13 }}>
+          <thead>
+            <tr>
+              <th>~m</th>
+              <th>px</th>
+              <th>period</th>
+              <th>body%</th>
+              <th>face%</th>
+              <th>emb%</th>
+              <th>belief</th>
+              <th>lock%</th>
+              <th>hit/unc/miss/off</th>
+              <th>tracks</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rangeRows.map((r) => (
+              <tr key={r.level}>
+                <td>{r.metres}</td>
+                <td>{r.personPx}</td>
+                <td>{Number.isFinite(r.stats.periodMs) ? r.stats.periodMs : '-'}</td>
+                <td>{r.stats.bodyPct}</td>
+                <td>{r.stats.facePct}</td>
+                <td>{r.stats.faceEvidencePct}</td>
+                <td>{r.stats.meanBelief}</td>
+                <td>{r.stats.lockPct}</td>
+                <td>
+                  {r.stats.correct}/{r.stats.unclear}/{r.stats.miss}/{r.stats.offTarget}
+                </td>
+                <td>{r.stats.tracks}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
       <div className="cam-wrap bench-cam" ref={wrapRef} style={{ position: 'relative', width: '100%', maxWidth: 360, aspectRatio: '9 / 16', margin: '0 auto', background: '#000' }}>
         <canvas ref={camRef} style={{ display: 'none' }} />
@@ -508,7 +647,7 @@ export function Bench() {
         </table>
       )}
       <p className="tag">
-        Shots fire automatically every {FIRE_EVERY_MS / 1000}s at the chosen person. "tracks" is how many track ids the person under the dot went through; 1 means the tracker never lost them.
+        Shots fire automatically every {FIRE_EVERY_MS / 1000}s at the chosen person. <b>Range sweep</b> holds the still camera at each of {RANGE_LEVELS.length} distances for {RANGE_LEVEL_S}s (metres are estimates from the person's height in pixels). "tracks" is how many track ids the person under the dot went through; 1 means the tracker never lost them.
       </p>
     </div>
   );

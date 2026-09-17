@@ -117,7 +117,10 @@ test('a recorded instant hit names nobody and carries the raw similarities behin
   assert.equal(sample.frames.length, 7);
   const bob = ids.pid('bob');
   const faceFrames = sample.frames.filter((f) => f.tracks[0].face);
-  assert.ok(faceFrames.length >= 6, 'face similarities recorded per frame');
+  // The crosshair target is cropped every frame until its identity resolves, then refreshed every
+  // FACE_REFRESH_MS (calibration.ts): the sample carries face similarities for exactly the frames the
+  // game had a crop for, which is fewer than every frame once Bob is confident.
+  assert.ok(faceFrames.length >= 3, `face similarities recorded on cropped frames (${faceFrames.length})`);
   assert.ok(faceFrames[0].tracks[0].face!.sims[bob] > 0.9, 'Bob\'s own face reads as Bob');
   assert.ok(faceFrames[0].tracks[0].face!.sims[ids.pid('alice')] < 0.5);
   assert.ok(sample.frames[6].tracks[0].belief[bob] > 0.9);
