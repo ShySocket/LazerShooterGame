@@ -140,6 +140,7 @@ Vite prints a `https://192.168.x.x:5173` address. Open it on each phone on the s
 4. Host taps **Start game**. After a 5-second countdown, hunt.
 5. Hold the phone up, put a player in the crosshair, and tap **FIRE**. The crosshair turns green with the target's name when the phone is confident.
 6. A hit costs a life. After being hit you are shielded for a few seconds. Zero lives means you spectate.
+7. The round ends when one player is left standing (or when every other survivor's phone has dropped off for a while). If the host's phone drops for ten seconds, the earliest-joined connected player becomes host and can start the next round. Up to twelve players get distinct colours.
 
 ## Tips for reliable hits
 

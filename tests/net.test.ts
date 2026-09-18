@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { Database } from 'firebase/database';
 import { FirebaseBackend } from '../src/net/firebase';
-import { applyHit, evaluateHit, newPlayer, pickColor, randomCode } from '../src/net/backend';
+import { applyHit, claimHostPatch, decideRoundEnd, endRoundPatch, evaluateHit, newPlayer, pickColor, pickNextHost, randomCode } from '../src/net/backend';
 import { DEFAULT_SETTINGS, PLAYER_COLORS, type Player, type Room } from '../src/types';
 import { FakeDb } from './net/fakeDb';
 
@@ -55,6 +55,66 @@ test('room codes use four letters without I and O, and colours stay distinct for
     used[`p${i}`] = seed(`p${i}`, { color: c });
   }
   assert.ok(PLAYER_COLORS.includes(pickColor(used)), 'past the palette a colour is still picked');
+  assert.ok(PLAYER_COLORS.length >= 12, 'twelve players get twelve colours');
+  assert.equal(new Set(PLAYER_COLORS).size, PLAYER_COLORS.length);
+});
+
+test('decideRoundEnd: outright when one player is left alive, by forfeit when the others have dropped off, never with fewer than two contenders', () => {
+  assert.deepEqual(decideRoundEnd(map(seed('a'), seed('b'))), { decided: false, winnerId: null, forfeit: false });
+  assert.deepEqual(decideRoundEnd(map(seed('a'), seed('b', { status: 'out' }))), { decided: true, winnerId: 'a', forfeit: false });
+  assert.deepEqual(decideRoundEnd(map(seed('a', { status: 'out' }), seed('b', { status: 'out' }))), { decided: true, winnerId: null, forfeit: false });
+  assert.deepEqual(decideRoundEnd(map(seed('a'), seed('b', { connected: false }), seed('c', { connected: false }))), { decided: true, winnerId: 'a', forfeit: true });
+  assert.deepEqual(decideRoundEnd(map(seed('a'), seed('b', { enrolled: false, status: 'out' }))), { decided: false, winnerId: null, forfeit: false });
+  assert.deepEqual(decideRoundEnd(null), { decided: false, winnerId: null, forfeit: false });
+  const meta = { status: 'playing' as const };
+  assert.equal(endRoundPatch(meta, map(seed('a'), seed('b')), 7), null);
+  assert.deepEqual(endRoundPatch(meta, map(seed('a'), seed('b')), 7, true), { status: 'ended', endedAt: 7, winnerId: null });
+  assert.deepEqual(endRoundPatch(meta, map(seed('a'), seed('b', { status: 'out' })), 7), { status: 'ended', endedAt: 7, winnerId: 'a' });
+  assert.equal(endRoundPatch({ status: 'ended' }, map(seed('a'), seed('b', { status: 'out' })), 7, true), null);
+});
+
+test('pickNextHost prefers the earliest-joined connected enrolled player; claimHostPatch leaves a connected host alone', () => {
+  const players = map(seed('h', { connected: false, joinedAt: 1 }), seed('late', { joinedAt: 30 }), seed('early', { joinedAt: 10 }), seed('guest', { joinedAt: 5, enrolled: false }));
+  assert.equal(pickNextHost(players), 'early');
+  assert.equal(pickNextHost(map(seed('x', { connected: false }))), null);
+  assert.equal(claimHostPatch({ hostId: 'h' }, players), 'early');
+  assert.equal(claimHostPatch({ hostId: 'early' }, players), null, 'the host is connected');
+  assert.equal(claimHostPatch({ hostId: 'h' }, map(seed('h', { connected: false }))), null, 'nobody to take over');
+});
+
+test('the round end is written once: several phones ending the same round agree on one winner', async () => {
+  const { backend, code, current } = await makeRoom(1, 'lobby');
+  await backend.startRound(code, { ...DEFAULT_SETTINGS, lives: 1, invulnMs: 0 }, backend.now());
+  await backend.updateMeta(code, { status: 'playing' });
+  assert.equal(await backend.endRound(code), 'not-decided');
+  assert.equal(current().status, 'playing');
+  assert.equal(await backend.registerHit(code, 'p0', 'p1', 0.9, 'face'), 'eliminated');
+  const results = await Promise.all([backend.endRound(code), backend.endRound(code), backend.endRound(code)]);
+  assert.deepEqual(results.sort(), ['already', 'already', 'ended']);
+  assert.equal(current().status, 'ended');
+  assert.equal(current().winnerId, 'p0');
+  assert.ok((current().endedAt ?? 0) > 0);
+  assert.equal(await backend.endRound(code, true), 'already', 'a forced end after the fact changes nothing');
+});
+
+test('the host can force an end; the winner is only named when exactly one player is alive', async () => {
+  const { backend, code, current } = await makeRoom(2);
+  assert.equal(await backend.endRound(code, true), 'ended');
+  assert.equal(current().winnerId ?? null, null);
+});
+
+test('host migration: after the host drops, the earliest-joined connected player becomes host, decided once for every phone that asks', async () => {
+  const { backend, code, current } = await makeRoom(3, 'lobby');
+  assert.equal(await backend.claimHost(code), null, 'a connected host keeps the room');
+  await backend.leaveRoom(code, 'p0');
+  assert.equal(current().players.p0.connected, false);
+  const results = await Promise.all([backend.claimHost(code), backend.claimHost(code), backend.claimHost(code)]);
+  assert.deepEqual(results.sort(), [null, null, 'p1']);
+  assert.equal(current().hostId, 'p1');
+  // The old host coming back does not take the room away from the new one.
+  assert.equal(await backend.joinRoom(code, { id: 'p0', name: 'Host' }), 'ok');
+  assert.equal(await backend.claimHost(code), null);
+  assert.equal(current().hostId, 'p1');
 });
 
 /** A room in the fake database with a host and `n` more players, every one enrolled. */

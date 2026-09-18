@@ -13,6 +13,8 @@ import {
 } from 'firebase/database';
 import type { Player, Profile, Room, RoomMeta, RoomSettings } from '../types';
 import {
+  claimHostPatch,
+  endRoundPatch,
   evaluateHit,
   newPlayer,
   newRoomMeta,
@@ -20,6 +22,7 @@ import {
   randomCode,
   ROUND_META_RESET,
   roundResetFields,
+  type EndResult,
   type HitOutcome,
   type JoinResult,
   type PlayerSeed,
@@ -98,20 +101,15 @@ export class FirebaseBackend implements RoomBackend {
     const now = this.now();
     // One transaction over the players map so two simultaneous joiners cannot pick the same colour,
     // and so a newcomer is turned away while a round is in progress (returning players may rejoin).
-    let result: JoinResult = 'ok';
-    await this.sdk.runTransaction(this.sdk.ref(this.db, this.path(code, 'players')), (players: Record<string, Player> | null) => {
+    const res = await this.sdk.runTransaction(this.sdk.ref(this.db, this.path(code, 'players')), (players: Record<string, Player> | null) => {
       const map = players ?? {};
-      if (map[player.id]) {
-        result = 'ok';
-        return { ...map, [player.id]: { ...map[player.id], connected: true, name: player.name } };
-      }
-      if (meta.status !== 'lobby') {
-        result = 'in-progress';
-        return; // abort
-      }
-      result = 'ok';
+      if (map[player.id]) return { ...map, [player.id]: { ...map[player.id], connected: true, name: player.name } };
+      if (meta.status !== 'lobby') return; // abort: newcomers wait for the lobby
       return { ...map, [player.id]: newPlayer(player, pickColor(map), meta.settings.lives, now) };
     });
+    // The outcome is read from the committed snapshot, never from a closure the transaction may re-run.
+    const after = (res.snapshot.val() as Record<string, Player> | null) ?? {};
+    const result: JoinResult = after[player.id] ? 'ok' : 'in-progress';
     if (result === 'ok') this.attachPresence(code, player.id);
     return result;
   }
@@ -191,38 +189,53 @@ export class FirebaseBackend implements RoomBackend {
     await this.sdk.update(this.sdk.ref(this.db, this.path(code, 'meta')), stripUndefined(patch));
   }
 
-  private async playerIds(code: string): Promise<string[]> {
-    const snap = await this.sdk.get(this.sdk.ref(this.db, this.path(code, 'players')));
-    return Object.keys((snap.val() as Record<string, Player> | null) ?? {});
+  private resetPlayers(players: Record<string, Player> | null | undefined, lives: number): Record<string, Player> {
+    const out: Record<string, Player> = {};
+    for (const [id, p] of Object.entries(players ?? {})) out[id] = { ...p, ...roundResetFields(lives) };
+    return out;
   }
 
-  private resetPatch(ids: string[], lives: number): Record<string, unknown> {
-    const patch: Record<string, unknown> = { events: null };
-    for (const id of ids) {
-      for (const [k, v] of Object.entries(roundResetFields(lives))) patch[`players/${id}/${k}`] = v;
-    }
-    return patch;
-  }
-
+  /** One transaction over the whole room, so a player joining mid-write cannot keep stale lives. */
   async startRound(code: string, settings: RoomSettings, startAt: number): Promise<void> {
-    const ids = await this.playerIds(code);
-    await this.sdk.update(this.sdk.ref(this.db, this.path(code)), {
-      ...this.resetPatch(ids, settings.lives),
-      'meta/settings': settings,
-      'meta/status': 'countdown',
-      'meta/startAt': startAt,
-      'meta/endedAt': null,
-      'meta/winnerId': null,
+    await this.sdk.runTransaction(this.sdk.ref(this.db, this.path(code)), (room: RoomNode | null) => {
+      if (!room?.meta) return; // abort
+      const { events: _events, ...rest } = room;
+      return {
+        ...rest,
+        players: this.resetPlayers(room.players, settings.lives),
+        meta: { ...room.meta, settings, status: 'countdown', startAt, endedAt: null, winnerId: null },
+      };
     });
   }
 
   async resetForNewRound(code: string): Promise<void> {
-    const meta = this.metaCache.get(code) ?? ((await this.sdk.get(this.sdk.ref(this.db, this.path(code, 'meta')))).val() as RoomMeta | null);
-    if (!meta) return;
-    const ids = await this.playerIds(code);
-    const patch = this.resetPatch(ids, meta.settings.lives);
-    for (const [k, v] of Object.entries(ROUND_META_RESET)) patch[`meta/${k}`] = v;
-    await this.sdk.update(this.sdk.ref(this.db, this.path(code)), patch);
+    await this.sdk.runTransaction(this.sdk.ref(this.db, this.path(code)), (room: RoomNode | null) => {
+      if (!room?.meta) return; // abort
+      const { events: _events, ...rest } = room;
+      return { ...rest, players: this.resetPlayers(room.players, room.meta.settings.lives), meta: { ...room.meta, ...ROUND_META_RESET } };
+    });
+  }
+
+  async endRound(code: string, force = false): Promise<EndResult> {
+    const now = this.now();
+    let result: EndResult = 'already';
+    const res = await this.sdk.runTransaction(this.sdk.ref(this.db, this.path(code)), (room: RoomNode | null) => {
+      const patch = endRoundPatch(room?.meta, room?.players, now, force);
+      result = !room?.meta || room.meta.status !== 'playing' ? 'already' : patch ? 'ended' : 'not-decided';
+      if (!patch || !room?.meta) return; // abort
+      return { ...room, meta: { ...room.meta, ...patch } };
+    });
+    return res.committed ? 'ended' : result;
+  }
+
+  async claimHost(code: string): Promise<string | null> {
+    let next: string | null = null;
+    const res = await this.sdk.runTransaction(this.sdk.ref(this.db, this.path(code)), (room: RoomNode | null) => {
+      next = claimHostPatch(room?.meta, room?.players);
+      if (!next || !room?.meta) return; // abort
+      return { ...room, meta: { ...room.meta, hostId: next } };
+    });
+    return res.committed ? next : null;
   }
 
   async registerHit(code: string, shooter: string, target: string, score: number, via: string): Promise<HitOutcome> {
@@ -257,6 +270,14 @@ export class FirebaseBackend implements RoomBackend {
     // sample twice; the refused retry is dropped by the queue after a few attempts.
     await this.sdk.set(this.sdk.ref(this.db, `${base}/samples/${sample.shot.id}`), jsonClean(sample));
   }
+}
+
+/** The shape of rooms/{code} as one node. */
+interface RoomNode {
+  meta?: RoomMeta;
+  players?: Record<string, Player>;
+  profiles?: Record<string, Profile>;
+  events?: unknown;
 }
 
 /** The database refuses undefined and non-finite numbers; a JSON round trip turns them into nulls. */

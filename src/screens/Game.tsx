@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Human, Result } from '@vladmandic/human';
 import { backend, MIN_PLAYERS } from '../net';
+import { decideRoundEnd } from '../net/backend';
 import { alivePlayers, enrolledPlayers, livesLabel, UNKNOWN_ID, type Player, type Room } from '../types';
 import { useCamera } from '../hooks/useCamera';
 import { useVisionLoop, type VisionFrame } from '../hooks/useVisionLoop';
@@ -243,27 +244,20 @@ export function Game({ room, me, pid, onLeave }: Props) {
 
   // Round end. Decided outright when at most one player is alive. A survivor whose phone has dropped
   // off forfeits after a grace period, so a dead phone cannot hold the round open forever; presence
-  // coming back cancels the timer because the effect re-runs on every room change.
+  // coming back cancels the timer because the effect re-runs on every room change. The write itself
+  // is backend.endRound: one transaction that re-checks the players map, so however many phones
+  // reach this point they end the round once, with one winner.
   useEffect(() => {
     if (room.status !== 'playing') return;
-    const contenders = enrolledPlayers(room);
-    if (contenders.length < 2) return;
-    const alive = contenders.filter((p) => p.status === 'alive');
-    const present = alive.filter((p) => p.connected);
-    const decided = alive.length <= 1 || present.length <= 1;
-    if (!decided) return;
-    const winnerId = (present[0] ?? alive[0])?.id ?? null;
-    const grace = alive.length <= 1 ? (isHost ? 0 : 4000) : isHost ? 10000 : 14000;
-    const tm = window.setTimeout(
-      () => void backend.updateMeta(room.code, { status: 'ended', endedAt: backend.now(), winnerId }).catch(() => undefined),
-      grace,
-    );
+    const end = decideRoundEnd(room.players);
+    if (!end.decided) return;
+    const grace = !end.forfeit ? (isHost ? 0 : 4000) : isHost ? 10000 : 14000;
+    const tm = window.setTimeout(() => void backend.endRound(room.code).catch(() => undefined), grace);
     return () => window.clearTimeout(tm);
   }, [room, isHost]);
 
   const endRound = () => {
-    const alive = alivePlayers(room);
-    void backend.updateMeta(room.code, { status: 'ended', endedAt: backend.now(), winnerId: alive.length === 1 ? alive[0].id : null });
+    void backend.endRound(room.code, true).catch(() => undefined);
   };
 
   /** The verdict reaches the feedback recorder; a failed shot keeps its photo for the review card. */

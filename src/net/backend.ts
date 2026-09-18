@@ -3,6 +3,9 @@ import { DEFAULT_SETTINGS, PLAYER_COLORS } from '../types';
 import type { ProfilesSnapshot, ShotSample } from '../feedback/sample';
 
 export type HitOutcome = 'hit' | 'eliminated' | 'invulnerable' | 'dead' | 'invalid';
+export type EndResult = 'ended' | 'already' | 'not-decided';
+/** How long a host's phone may be disconnected before another player takes over. */
+export const HOST_GRACE_MS = 10000;
 export type JoinResult = 'ok' | 'missing' | 'in-progress';
 export type PlayerSeed = Pick<Player, 'id' | 'name'>;
 
@@ -21,6 +24,18 @@ export interface RoomBackend {
   startRound(code: string, settings: RoomSettings, startAt: number): Promise<void>;
   resetForNewRound(code: string): Promise<void>;
   registerHit(code: string, shooter: string, target: string, score: number, via: string): Promise<HitOutcome>;
+  /**
+   * Ends the round in one atomic step: only while it is still playing, with the winner read from the
+   * players map in the same step, so twelve phones racing to end the same round agree on one result.
+   * `force` is the host's manual end (winner only when exactly one player is alive).
+   */
+  endRound(code: string, force?: boolean): Promise<EndResult>;
+  /**
+   * Host migration: when the host's phone has dropped, the earliest-joined connected player becomes
+   * host, decided inside one transaction so every phone that notices picks the same person. Returns
+   * the new host id, or null when the host is still connected or nobody can take over.
+   */
+  claimHost(code: string): Promise<string | null>;
   /**
    * Uploads one labelled shot sample (never a photo) under its round. The round's profiles are
    * written once, by whichever phone gets there first; later writes of them are refused and ignored.
@@ -114,4 +129,57 @@ export function evaluateHit(
   const next: Record<string, Player> = { ...players, [target]: r.next };
   if (next[shooter]) next[shooter] = { ...next[shooter], tags: (next[shooter].tags ?? 0) + 1 };
   return { outcome: r.outcome, players: next };
+}
+
+export interface RoundEnd {
+  decided: boolean;
+  winnerId: string | null;
+  /** Decided because every other survivor's phone has dropped off, not because they were shot. */
+  forfeit: boolean;
+}
+
+/**
+ * A round is decided outright when at most one enrolled player is alive, and by forfeit when at most
+ * one of the survivors is still connected. Fewer than two contenders never decide anything (a lobby
+ * test round with a lone player ends by hand).
+ */
+export function decideRoundEnd(players: Record<string, Player> | null | undefined): RoundEnd {
+  const contenders = Object.values(players ?? {}).filter((p) => p.enrolled);
+  if (contenders.length < 2) return { decided: false, winnerId: null, forfeit: false };
+  const alive = contenders.filter((p) => p.status === 'alive');
+  if (alive.length <= 1) return { decided: true, winnerId: alive[0]?.id ?? null, forfeit: false };
+  const present = alive.filter((p) => p.connected);
+  if (present.length <= 1) return { decided: true, winnerId: present[0]?.id ?? null, forfeit: true };
+  return { decided: false, winnerId: null, forfeit: false };
+}
+
+/** The meta fields that end a playing round, or null when nothing should change. Pure; runs inside a transaction. */
+export function endRoundPatch(
+  meta: Pick<RoomMeta, 'status'> | null | undefined,
+  players: Record<string, Player> | null | undefined,
+  now: number,
+  force = false,
+): Pick<RoomMeta, 'status' | 'endedAt' | 'winnerId'> | null {
+  if (!meta || meta.status !== 'playing') return null;
+  const end = decideRoundEnd(players);
+  if (end.decided) return { status: 'ended', endedAt: now, winnerId: end.winnerId };
+  if (!force) return null;
+  const alive = Object.values(players ?? {}).filter((p) => p.enrolled && p.status === 'alive');
+  return { status: 'ended', endedAt: now, winnerId: alive.length === 1 ? alive[0].id : null };
+}
+
+/** The earliest-joined connected player, enrolled ones first; null when nobody is connected. */
+export function pickNextHost(players: Record<string, Player> | null | undefined): string | null {
+  const connected = Object.values(players ?? {}).filter((p) => p.connected);
+  if (!connected.length) return null;
+  connected.sort((a, b) => Number(b.enrolled) - Number(a.enrolled) || a.joinedAt - b.joinedAt || a.id.localeCompare(b.id));
+  return connected[0].id;
+}
+
+/** The new host id when the current host is gone and someone else is connected, else null. Pure; runs inside a transaction. */
+export function claimHostPatch(meta: Pick<RoomMeta, 'hostId'> | null | undefined, players: Record<string, Player> | null | undefined): string | null {
+  if (!meta) return null;
+  if (players?.[meta.hostId]?.connected) return null;
+  const next = pickNextHost(players);
+  return next && next !== meta.hostId ? next : null;
 }
