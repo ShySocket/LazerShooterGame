@@ -53,7 +53,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
   const spectating = me.status === 'out';
   const playing = room.status === 'playing';
 
-  const { ready: humanReady, status } = useHumanStatus();
+  const { ready: humanReady, status, failed: humanFailed, retry: retryModels } = useHumanStatus();
   const { videoRef, ready: camReady, error: camError, retry: retryCamera } = useCamera('environment', !spectating);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -98,13 +98,18 @@ export function Game({ room, me, pid, onLeave }: Props) {
 
   useEffect(() => {
     const invalidate = () => {
-      pipeline.current.invalidate();
+      const dropped = pipeline.current.invalidate();
       window.clearTimeout(pendingTimer.current);
       lockKey.current = '';
       setLock(null);
-      // A burst in flight will never settle now; its record and photo go with it.
+      // A burst in flight will never settle now; its record and photo go with it. The tap still gets
+      // its verdict: the player sees SHOT LOST instead of a silent nothing.
       recorder.current.abandonOpenShots();
       photos.current.clear();
+      if (dropped && !dropped.practice) {
+        logShot('shot lost', null, { resolveMs: 0 }, dropped.shotId);
+        show('SHOT LOST', 'warn');
+      }
     };
     invalidate();
     // The crosshair rectangle depends on the viewport, so a real size change (rotation, split view)
@@ -471,6 +476,9 @@ export function Game({ room, me, pid, onLeave }: Props) {
         // The shot log records the frame age next to the allowance, which is the number to compare with staleMs().
         if (result.kind === 'stale') logShot('stale frame', null, { resolveMs: result.frameAgeMs, allowanceMs: result.allowanceMs }, shotId);
         else logShot('no camera', null, { resolveMs: 0 }, shotId);
+        // Nothing was fired at anybody: the cooldown is not spent on a refused tap.
+        coolRef.current = now;
+        setCooling(false);
         return show(result.kind === 'stale' ? 'CAMERA TOO SLOW' : 'NO CAMERA LOCK', 'warn');
       }
       case 'miss':
@@ -555,8 +563,8 @@ export function Game({ room, me, pid, onLeave }: Props) {
       {!spectating && (!camReady || !humanReady) && (
         <div className="status-pill">
           {camError ?? (camReady ? status : 'Starting camera')}
-          {camError && (
-            <button className="hud-btn" style={{ marginLeft: 8 }} onClick={retryCamera}>
+          {(camError || humanFailed) && (
+            <button className="hud-btn" style={{ marginLeft: 8 }} onClick={camError ? retryCamera : retryModels}>
               retry
             </button>
           )}

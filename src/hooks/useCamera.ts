@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 export type Facing = 'user' | 'environment';
 
+/** How long a track may stay muted after the page becomes visible before the camera is re-requested. */
+export const RESUME_GRACE_MS = 1500;
+
 const describe = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** Turn the browser's camera errors into something a player can act on. */
@@ -167,14 +170,35 @@ export function useCamera(facing: Facing, enabled = true) {
       if (elRef.current) await attach(elRef.current);
     })();
 
+    // Coming back from the background, a phone call, or the lock screen: browsers may end or keep
+    // muting the track instead of resuming it. Give the track a moment to unmute on its own, then
+    // re-request the camera rather than waiting for the player to find the Retry button.
+    let resumeTimer = 0;
+    const onResume = () => {
+      if (document.visibilityState !== 'visible') return;
+      window.clearTimeout(resumeTimer);
+      resumeTimer = window.setTimeout(() => {
+        if (cancelled) return;
+        // Only a stream that existed and died is re-requested: with no stream yet the first request
+        // (or its permission prompt) is still in flight, and pageshow fires on the initial load too.
+        const track = streamRef.current?.getVideoTracks()[0];
+        if (track && (track.readyState === 'ended' || track.muted)) retry();
+      }, RESUME_GRACE_MS);
+    };
+    document.addEventListener('visibilitychange', onResume);
+    window.addEventListener('pageshow', onResume);
+
     return () => {
       cancelled = true;
+      window.clearTimeout(resumeTimer);
+      document.removeEventListener('visibilitychange', onResume);
+      window.removeEventListener('pageshow', onResume);
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
       attachRef.current = () => undefined;
       setReady(false);
     };
-  }, [facing, enabled, attempt]);
+  }, [facing, enabled, attempt, retry]);
 
   return { videoRef, ready, error, retry };
 }
