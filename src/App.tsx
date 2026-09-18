@@ -12,6 +12,7 @@ import { Profile } from './screens/Profile';
 import { loadHuman } from './vision/human';
 import { applyPendingUpdate, onUpdatePending, updatePending } from './pwa';
 import { recordIncident, wasReloaded } from './diag';
+import { isE2E } from './e2e/hook';
 
 function guestPid(): string {
   let v = localStorage.getItem('lz:pid');
@@ -73,7 +74,7 @@ export default function App() {
   }, [swPending, code, showProfile]);
   // Models are ~24 MB; start fetching while the player is still typing a name.
   useEffect(() => {
-    void loadHuman().catch(() => undefined);
+    if (!isE2E()) void loadHuman().catch(() => undefined);
   }, []);
 
   useEffect(() => {

@@ -195,10 +195,24 @@ export class FirebaseBackend implements RoomBackend {
     return out;
   }
 
+  /**
+   * One transaction over the whole rooms/{code} node. A client that has never read the whole room
+   * (screens subscribe to its children) is handed null on the first attempt; returning that value
+   * unchanged, never undefined (which would abort), makes the server reject the write and re-run
+   * `fn` on the real room. No local optimistic apply, so the UI never sees a half-built room.
+   */
+  private roomTransaction(code: string, fn: (room: RoomNode) => RoomNode | undefined) {
+    return this.sdk.runTransaction(
+      this.sdk.ref(this.db, this.path(code)),
+      (room: RoomNode | null) => (room?.meta ? fn(room) : (room ?? null)),
+      { applyLocally: false },
+    );
+  }
+
   /** One transaction over the whole room, so a player joining mid-write cannot keep stale lives. */
   async startRound(code: string, settings: RoomSettings, startAt: number): Promise<void> {
-    await this.sdk.runTransaction(this.sdk.ref(this.db, this.path(code)), (room: RoomNode | null) => {
-      if (!room?.meta) return; // abort
+    await this.roomTransaction(code, (room) => {
+      if (!room.meta) return; // abort
       const { events: _events, ...rest } = room;
       return {
         ...rest,
@@ -209,8 +223,8 @@ export class FirebaseBackend implements RoomBackend {
   }
 
   async resetForNewRound(code: string): Promise<void> {
-    await this.sdk.runTransaction(this.sdk.ref(this.db, this.path(code)), (room: RoomNode | null) => {
-      if (!room?.meta) return; // abort
+    await this.roomTransaction(code, (room) => {
+      if (!room.meta) return; // abort
       const { events: _events, ...rest } = room;
       return { ...rest, players: this.resetPlayers(room.players, room.meta.settings.lives), meta: { ...room.meta, ...ROUND_META_RESET } };
     });
@@ -219,10 +233,10 @@ export class FirebaseBackend implements RoomBackend {
   async endRound(code: string, force = false): Promise<EndResult> {
     const now = this.now();
     let result: EndResult = 'already';
-    const res = await this.sdk.runTransaction(this.sdk.ref(this.db, this.path(code)), (room: RoomNode | null) => {
-      const patch = endRoundPatch(room?.meta, room?.players, now, force);
-      result = !room?.meta || room.meta.status !== 'playing' ? 'already' : patch ? 'ended' : 'not-decided';
-      if (!patch || !room?.meta) return; // abort
+    const res = await this.roomTransaction(code, (room) => {
+      const patch = endRoundPatch(room.meta, room.players, now, force);
+      result = !room.meta || room.meta.status !== 'playing' ? 'already' : patch ? 'ended' : 'not-decided';
+      if (!patch || !room.meta) return; // abort
       return { ...room, meta: { ...room.meta, ...patch } };
     });
     return res.committed ? 'ended' : result;
@@ -230,9 +244,9 @@ export class FirebaseBackend implements RoomBackend {
 
   async claimHost(code: string): Promise<string | null> {
     let next: string | null = null;
-    const res = await this.sdk.runTransaction(this.sdk.ref(this.db, this.path(code)), (room: RoomNode | null) => {
-      next = claimHostPatch(room?.meta, room?.players);
-      if (!next || !room?.meta) return; // abort
+    const res = await this.roomTransaction(code, (room) => {
+      next = claimHostPatch(room.meta, room.players);
+      if (!next || !room.meta) return; // abort
       return { ...room, meta: { ...room.meta, hostId: next } };
     });
     return res.committed ? next : null;

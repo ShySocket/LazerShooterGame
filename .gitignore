@@ -7,3 +7,5 @@ dev-dist
 public/_sample.jpg
 .gstack
 .rubric/
+test-results/
+playwright-report/

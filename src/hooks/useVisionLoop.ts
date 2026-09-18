@@ -2,6 +2,7 @@ import { useEffect, useRef, type RefObject } from 'react';
 import type { Human, Result } from '@vladmandic/human';
 import { configurePass, loadHuman, withHumanSession } from '../vision/human';
 import { visionProfile, waitForVideoFrame } from '../vision/frameClock';
+import { isE2E } from '../e2e/hook';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** A presented-frame timestamp older than this against the copy is not the copied frame's. */
@@ -24,7 +25,7 @@ export function useVisionLoop(
   const cb = useRef(onFrame);
   cb.current = onFrame;
   useEffect(() => {
-    if (!active) return;
+    if (!active || isE2E()) return;
     let running = true;
     const frame = document.createElement('canvas');
     const ctx = frame.getContext('2d');

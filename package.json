@@ -15,7 +15,8 @@
     "replay:rec": "node --import ./tests/register.mjs tests/replay/run.ts",
     "preview": "vite preview --host",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
-    "rubric": "node scripts/rubric.mjs"
+    "rubric": "node scripts/rubric.mjs",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@vladmandic/human": "^3.3.6",
@@ -24,6 +25,7 @@
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-basic-ssl": "^2.3.0",
