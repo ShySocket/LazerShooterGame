@@ -101,12 +101,21 @@ export class FirebaseBackend implements RoomBackend {
     const now = this.now();
     // One transaction over the players map so two simultaneous joiners cannot pick the same colour,
     // and so a newcomer is turned away while a round is in progress (returning players may rejoin).
-    const res = await this.sdk.runTransaction(this.sdk.ref(this.db, this.path(code, 'players')), (players: Record<string, Player> | null) => {
-      const map = players ?? {};
-      if (map[player.id]) return { ...map, [player.id]: { ...map[player.id], connected: true, name: player.name } };
-      if (meta.status !== 'lobby') return; // abort: newcomers wait for the lobby
-      return { ...map, [player.id]: newPlayer(player, pickColor(map), meta.settings.lives, now) };
-    });
+    const res = await this.sdk.runTransaction(
+      this.sdk.ref(this.db, this.path(code, 'players')),
+      (players: Record<string, Player> | null) => {
+        // A fresh page has no local copy of the players map and is handed null first. Writing the
+        // player in optimistically makes the server reject the write (the room has players) and
+        // re-run this function on the real map; aborting here instead would turn a returning
+        // player away from a round in progress.
+        if (players === null) return { [player.id]: newPlayer(player, pickColor(undefined), meta.settings.lives, now) };
+        const map = players;
+        if (map[player.id]) return { ...map, [player.id]: { ...map[player.id], connected: true, name: player.name } };
+        if (meta.status !== 'lobby') return; // abort: newcomers wait for the lobby
+        return { ...map, [player.id]: newPlayer(player, pickColor(map), meta.settings.lives, now) };
+      },
+      { applyLocally: false },
+    );
     // The outcome is read from the committed snapshot, never from a closure the transaction may re-run.
     const after = (res.snapshot.val() as Record<string, Player> | null) ?? {};
     const result: JoinResult = after[player.id] ? 'ok' : 'in-progress';
@@ -259,11 +268,18 @@ export class FirebaseBackend implements RoomBackend {
     const now = this.now();
     const invulnMs = meta.settings.invulnMs;
     const state = { outcome: 'invalid' as HitOutcome };
-    const res = await this.sdk.runTransaction(this.sdk.ref(this.db, this.path(code, 'players')), (players: Record<string, Player> | null) => {
-      const r = evaluateHit(players, shooter, target, now, invulnMs);
-      state.outcome = r.outcome;
-      return r.players; // undefined aborts the transaction
-    });
+    const res = await this.sdk.runTransaction(
+      this.sdk.ref(this.db, this.path(code, 'players')),
+      (players: Record<string, Player> | null) => {
+        // No local copy of the players map yet (a phone that has not subscribed): hand the null back
+        // so the server rejects the write and re-runs this on the real map, instead of aborting.
+        if (players === null) return null;
+        const r = evaluateHit(players, shooter, target, now, invulnMs);
+        state.outcome = r.outcome;
+        return r.players; // undefined aborts the transaction
+      },
+      { applyLocally: false },
+    );
     const outcome = state.outcome;
     if (res.committed && (outcome === 'hit' || outcome === 'eliminated')) {
       void this.sdk.push(this.sdk.ref(this.db, this.path(code, 'events')), { shooter, target, t: now, score, via });

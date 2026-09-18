@@ -25,7 +25,8 @@ export function useVisionLoop(
   const cb = useRef(onFrame);
   cb.current = onFrame;
   useEffect(() => {
-    if (!active || isE2E()) return;
+    if (!active) return;
+    if (isE2E()) return syntheticLoop(video, cb);
     let running = true;
     const frame = document.createElement('canvas');
     const ctx = frame.getContext('2d');
@@ -97,4 +98,37 @@ export function useVisionLoop(
       running = false;
     };
   }, [active, video]);
+}
+
+/**
+ * The browser test harness (?e2e, dev builds only) has a fake camera with nobody in it, so instead
+ * of the models an empty detector result is handed to the frame handler every 50 ms while the page
+ * is visible. Taps then go through the real fire path (fresh empty geometry is a MISS, a hidden page
+ * or a reset pipeline is NO CAMERA LOCK) without loading 24 MB of models per simulated phone.
+ */
+function syntheticLoop(video: RefObject<HTMLVideoElement | null>, cb: { current: Parameters<typeof useVisionLoop>[2] }): () => void {
+  let running = true;
+  const frame = document.createElement('canvas');
+  const tick = async () => {
+    while (running) {
+      const v = video.current;
+      if (v && v.videoWidth && !document.hidden) {
+        frame.width = v.videoWidth;
+        frame.height = v.videoHeight;
+        const capturedAt = performance.now();
+        const res = { body: [], face: [], hand: [], gesture: [], object: [], width: v.videoWidth, height: v.videoHeight, timestamp: Date.now(), performance: {}, persons: [], canvas: null } as unknown as Result;
+        const context: VisionFrame = { frame, capturedAt, isCurrent: () => running && video.current === v };
+        try {
+          await cb.current(res, null as unknown as Human, context);
+        } catch (e) {
+          console.warn('synthetic frame failed', e);
+        }
+      }
+      await sleep(50);
+    }
+  };
+  void tick();
+  return () => {
+    running = false;
+  };
 }

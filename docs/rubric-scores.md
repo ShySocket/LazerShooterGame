@@ -9,3 +9,4 @@ One line per `npm run rubric` run that was worth keeping (versions are the merge
 | 2026-09-18 00:21 | f1da625 | 2026-09-14.8 | 3 | 42.9 | 20/46 | 12/24 | 0/7 | task 3: multiplayer fixes |
 | 2026-09-18 00:26 | da048c8 | 2026-09-14.8 | 3 | 44.5 | 21/46 | 12/24 | 0/7 | task 4: robustness fixes |
 | 2026-09-18 00:39 | 432bbc3 | 2026-09-14.8 | 3 | 49.0 | 24/46 | 12/24 | 0/7 | task 5a: e2e harness, 3 tests |
+| 2026-09-18 01:11 | 8f8533f | 2026-09-14.8 | 3 | 69.8 | 37/46 | 13/24 | 0/7 | task 5b: all 16 e2e scenarios |

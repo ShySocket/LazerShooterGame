@@ -257,7 +257,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
     const end = decideRoundEnd(room.players);
     if (!end.decided) return;
     const grace = !end.forfeit ? (isHost ? 0 : 4000) : isHost ? 10000 : 14000;
-    const tm = window.setTimeout(() => void backend.endRound(room.code).catch(() => undefined), grace);
+    const tm = window.setTimeout(() => void backend.endRound(room.code).catch((e: unknown) => console.warn('endRound failed', e)), grace);
     return () => window.clearTimeout(tm);
   }, [room, isHost]);
 

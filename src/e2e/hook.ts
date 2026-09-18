@@ -1,6 +1,7 @@
 import type { RoomBackend } from '../net/backend';
 import type { Profile, Room } from '../types';
 import { FACE_EMBEDDING_SIZE, FACE_MODEL, FACE_SAMPLES } from '../vision/embedding';
+import { shotLog } from '../debug/shotLog';
 
 /**
  * Browser end-to-end tests (tests/e2e, `npm run e2e`) open the game with `?e2e` on a dev build. The
@@ -50,6 +51,10 @@ export interface E2EHook {
   enroll: (seed: number, twin?: number) => Promise<void>;
   hit: (shooter: string, target: string) => Promise<string>;
   deleteRoom: (code: string) => Promise<void>;
+  /** Outcomes of every FIRE press on this phone this round, oldest first. */
+  shots: () => string[];
+  /** What the backend says when asked to end the round now (diagnostics for the winner test). */
+  endRound: () => Promise<string>;
 }
 
 export function installE2E(backend: RoomBackend): void {
@@ -83,6 +88,12 @@ export function installE2E(backend: RoomBackend): void {
       const c = code();
       if (!c) throw new Error('not in a room');
       return backend.registerHit(c, shooter, target, 0.9, 'e2e');
+    },
+    shots: () => shotLog.all().map((s) => s.outcome),
+    endRound: async () => {
+      const c = code();
+      if (!c) throw new Error('not in a room');
+      return backend.endRound(c);
     },
     deleteRoom: async (c) => {
       if (backend.mode !== 'firebase') return;

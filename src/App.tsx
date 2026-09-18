@@ -122,13 +122,13 @@ export default function App() {
   const enter = (c: string, name: string) => {
     writeLastRoom({ code: c, name, t: Date.now() });
     setCode(c);
-    history.replaceState(null, '', `${location.pathname}?room=${c}`);
+    history.replaceState(null, '', `${location.pathname}?room=${c}${isE2E() ? '&e2e' : ''}`);
   };
   const leave = () => {
     if (code) void backend.leaveRoom(code, pid).catch(() => undefined);
     writeLastRoom(null);
     setCode(null);
-    history.replaceState(null, '', location.pathname);
+    history.replaceState(null, '', `${location.pathname}${isE2E() ? '?e2e' : ''}`);
   };
 
   // After a reload, go straight back into the room this phone was in instead of landing on Home.

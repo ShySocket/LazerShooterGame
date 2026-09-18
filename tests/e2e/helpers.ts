@@ -20,6 +20,8 @@ declare global {
       enroll: (seed: number, twin?: number) => Promise<void>;
       hit: (shooter: string, target: string) => Promise<string>;
       deleteRoom: (code: string) => Promise<void>;
+      shots: () => string[];
+      endRound: () => Promise<string>;
     };
   }
 }
@@ -109,3 +111,16 @@ export async function closeAll(phones: Phone[]): Promise<void> {
 }
 
 export const heartsOn = (phone: Phone) => phone.page.locator('.hearts .on');
+
+/** A FIRE press as the game receives it (React listens for pointerdown). */
+export async function tapFire(phone: Phone): Promise<void> {
+  await phone.page.locator('button.fire').dispatchEvent('pointerdown');
+}
+
+export const banner = (phone: Phone) => phone.page.locator('.banner');
+
+export async function shots(phone: Phone): Promise<string[]> {
+  return phone.page.evaluate(() => window.__lzE2E.shots());
+}
+
+export const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
