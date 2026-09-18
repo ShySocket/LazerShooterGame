@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { backend } from './net';
+import { HOST_GRACE_MS } from './net/backend';
 import { authAvailable, loadUser, onAccount, saveUserName, type Account } from './net/auth';
 import type { DeepProfile, Room } from './types';
 import { Home } from './screens/Home';
@@ -11,6 +12,7 @@ import { Profile } from './screens/Profile';
 import { loadHuman } from './vision/human';
 import { applyPendingUpdate, onUpdatePending, updatePending } from './pwa';
 import { recordIncident, wasReloaded } from './diag';
+import { isE2E } from './e2e/hook';
 
 function guestPid(): string {
   let v = localStorage.getItem('lz:pid');
@@ -72,7 +74,7 @@ export default function App() {
   }, [swPending, code, showProfile]);
   // Models are ~24 MB; start fetching while the player is still typing a name.
   useEffect(() => {
-    void loadHuman().catch(() => undefined);
+    if (!isE2E()) void loadHuman().catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -107,16 +109,26 @@ export default function App() {
     return backend.subscribe(code, setRoom);
   }, [code]);
 
+  // Host migration: when the host's phone has been gone for the grace period, whoever notices asks
+  // the backend to hand the room to the earliest-joined connected player (one transaction, so every
+  // phone that asks gets the same answer).
+  const hostDown = room ? room.players[room.hostId]?.connected === false : false;
+  useEffect(() => {
+    if (!hostDown || !code) return;
+    const tm = window.setTimeout(() => void backend.claimHost(code).catch(() => undefined), HOST_GRACE_MS);
+    return () => window.clearTimeout(tm);
+  }, [hostDown, code]);
+
   const enter = (c: string, name: string) => {
     writeLastRoom({ code: c, name, t: Date.now() });
     setCode(c);
-    history.replaceState(null, '', `${location.pathname}?room=${c}`);
+    history.replaceState(null, '', `${location.pathname}?room=${c}${isE2E() ? '&e2e' : ''}`);
   };
   const leave = () => {
     if (code) void backend.leaveRoom(code, pid).catch(() => undefined);
     writeLastRoom(null);
     setCode(null);
-    history.replaceState(null, '', location.pathname);
+    history.replaceState(null, '', `${location.pathname}${isE2E() ? '?e2e' : ''}`);
   };
 
   // After a reload, go straight back into the room this phone was in instead of landing on Home.

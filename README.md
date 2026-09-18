@@ -77,7 +77,7 @@ Account data lives at `users/{uid}` and holds the name plus the deep scan: face 
 npm test
 ```
 
-Typechecks and runs the vision unit tests (tracking, scoring, clothing, shot timing) plus a simulated laser-tag round with Node's built-in test runner. Needs Node 22.15 or newer. The Pages workflow runs them before every deploy.
+Typechecks and runs the vision unit tests (tracking, scoring, clothing, shot timing) plus a simulated laser-tag round with Node's built-in test runner. Needs Node 22.15 or newer. The CI workflow runs them, with the strict simulation sweep, on every pull request.
 
 The simulation (`tests/sim/`) plays whole rounds through the real shooting pipeline (`src/vision/pipeline.ts`) against a synthetic detector with distance-dependent dropouts, jitter, and face/outfit similarity levels chosen to match the phone models. Scenarios cover a close duel, back shots, 8 m, an approaching target, crossing players, look-alike and identical tops, a stranger, a mirror, a 400 ms-per-frame phone, a flaky pose model, and dim light. To see the table instead of pass/fail:
 
@@ -127,9 +127,9 @@ Vite prints a `https://192.168.x.x:5173` address. Open it on each phone on the s
 
 ### 4. Deploy for free
 
-**Vercel**: import the GitHub repo at https://vercel.com/new and deploy. Vercel detects Vite automatically and no environment variables are needed.
+The game is served from **Vercel**: https://lazer-shooter-game.vercel.app deploys every push to `main` automatically (Vercel detects Vite; no environment variables are needed). Share that link, or the room link the lobby offers, and players open it in their phone's browser.
 
-**GitHub Pages**: in the repo go to **Settings > Pages** and set Source to **GitHub Actions**. Every push to `main` deploys via `.github/workflows/pages.yml`.
+To host your own copy, import the GitHub repo at https://vercel.com/new and deploy. GitHub Actions runs the merge gate (`.github/workflows/ci.yml`: tests, typecheck, build, and the strict simulation sweep) on every pull request and push to `main`.
 
 ## Playing
 
@@ -140,6 +140,7 @@ Vite prints a `https://192.168.x.x:5173` address. Open it on each phone on the s
 4. Host taps **Start game**. After a 5-second countdown, hunt.
 5. Hold the phone up, put a player in the crosshair, and tap **FIRE**. The crosshair turns green with the target's name when the phone is confident.
 6. A hit costs a life. After being hit you are shielded for a few seconds. Zero lives means you spectate.
+7. The round ends when one player is left standing (or when every other survivor's phone has dropped off for a while). If the host's phone drops for ten seconds, the earliest-joined connected player becomes host and can start the next round. Up to twelve players get distinct colours.
 
 ## Tips for reliable hits
 

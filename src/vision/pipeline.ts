@@ -143,8 +143,13 @@ export class VisionPipeline<C = unknown> {
     this.config = config;
   }
 
-  /** Forget frames, tracks, and pending shots: the camera, viewport, or round changed. */
-  invalidate(): void {
+  /**
+   * Forget frames, tracks, and pending shots: the camera, viewport, or round changed. A burst that
+   * was still open can never settle now, so its context is handed back for the caller to report
+   * (every tap owes the player a verdict, even "the shot was lost").
+   */
+  invalidate(): C | null {
+    const dropped = this.pending?.context ?? null;
     this.epoch++;
     this.tracker.reset();
     this.period.reset();
@@ -154,6 +159,7 @@ export class VisionPipeline<C = unknown> {
     this.liveFaces.clear();
     this.learned = [];
     this.augmented = null;
+    return dropped;
   }
 
   /** Every live-enrolment event this round: which player, when, how close to their enrolled scan. */

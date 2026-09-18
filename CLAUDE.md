@@ -15,6 +15,8 @@ npm test                       # tsc (tests config) + node --test tests/*.test.t
 npm run typecheck              # tsc for app and tests
 npm run sim -- --seeds 100     # 100-seed simulation table for every scenario
 npm run build                  # tsc + vite build
+npm run rubric                 # score against docs/tracking-rubric.md (sim + tests + build + recorded evidence), logs to docs/rubric-scores.md
+npm run e2e                    # Playwright: 16 multiplayer/robustness scenarios on the installed Chrome against live Firebase (~80 s), writes .rubric/e2e.json
 ```
 
 Other useful commands:
@@ -59,11 +61,11 @@ JS
 
 **Device bench** (`src/bench/`, open the app with `?bench`): runs a photo through the real models and pipeline with a virtual drifting camera, and a range sweep across zoom levels. Use it to see a real phone's frame period and where face gives out to outfit.
 
-**Deploy**: GitHub Pages via `.github/workflows/pages.yml` on every push to `main` (runs `npm test` first). Never push to `main` directly from an agent session; open a PR.
+**Deploy**: Vercel builds every push to `main` and serves https://lazer-shooter-game.vercel.app (the shareable link). `.github/workflows/ci.yml` is the merge gate on pull requests (tests, typecheck, build, `sim:full`); `npm run e2e` (Chrome + live Firebase) runs on a developer machine before a PR. Never push to `main` directly from an agent session; open a PR and merge it when CI is green.
 
 ## Current work
 
-`TRACKING_IMPROVEMENT_PLAN.md` holds the 2026-09-13 review, the 2026-09-14 investigation with its probes, and the locked implementation order with a note on each item as it landed. All twelve items are done on this branch: the two wrong-hit mechanisms are pinned by RNG-free tests in `tests/pipeline.test.ts` (the seed numbers in `tests/sim.test.ts` are a sweep, not a reproduction); the tracker has states, a lost-track window, height gates, a face-presence cue and a crossing rule; belief smoothing is elapsed-time based; the simulation has torso landmarks, the measured stranger tail, a pan scenario, and maybeNP/latency columns; every tunable lives in `calibration.ts`; the loop has a frame clock and profile with need-based crops; and rounds can be recorded (`?record`) and replayed (`npm run replay:rec`, `scripts/validate.mjs`). What remains needs phones: the validation set in `docs/validation.md`.
+`TRACKING_IMPROVEMENT_PLAN.md` holds the 2026-09-13 review, the 2026-09-14 investigation with its probes, and the locked implementation order with a note on each item as it landed. All twelve items are done on this branch: the two wrong-hit mechanisms are pinned by RNG-free tests in `tests/pipeline.test.ts` (the seed numbers in `tests/sim.test.ts` are a sweep, not a reproduction); the tracker has states, a lost-track window, height gates, a face-presence cue and a crossing rule; belief smoothing is elapsed-time based; the simulation has torso landmarks, the measured stranger tail, a pan scenario, and maybeNP/latency columns; every tunable lives in `calibration.ts`; the loop has a frame clock and profile with need-based crops; and rounds can be recorded (`?record`) and replayed (`npm run replay:rec`, `scripts/validate.mjs`). What remains needs phones: the validation set in `docs/validation.md`. `docs/tracking-rubric.md` is the checklist of what a demo-ready round must pass (Must / Should / Nice per area, with the sim bounds and the real-phone targets).
 
 ## LESSONS
 

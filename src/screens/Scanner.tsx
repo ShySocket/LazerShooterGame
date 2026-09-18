@@ -80,7 +80,7 @@ type BodyMode = 'helper' | 'prop';
 
 /** Camera-driven capture of face angles, outfit colours, and body ratios. Which parts run is up to the caller. */
 export function Scanner({ face, body, outfit, header, savingText, referenceFace, onDone, onCancel }: Props) {
-  const { ready: humanReady, status } = useHumanStatus();
+  const { ready: humanReady, status, failed: humanFailed, retry: retryModels } = useHumanStatus();
   const first: Stage = face ? 'face' : 'bodyMode';
   const [stage, setStageState] = useState<Stage>(first);
   const stageRef = useRef<Stage>(first);
@@ -405,11 +405,11 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
         {stage !== 'bodyMode' && (!camReady || !humanReady) && (
           <p className="hint">
             {camError ?? (camReady ? status : 'Starting camera')}
-            {camError && (
+            {(camError || humanFailed) && (
               <>
                 {' '}
-                <button className="btn" onClick={retryCamera}>
-                  Retry camera
+                <button className="btn" onClick={camError ? retryCamera : retryModels}>
+                  {camError ? 'Retry camera' : 'Retry'}
                 </button>
               </>
             )}

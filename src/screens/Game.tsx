@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Human, Result } from '@vladmandic/human';
 import { backend, MIN_PLAYERS } from '../net';
+import { decideRoundEnd } from '../net/backend';
 import { alivePlayers, enrolledPlayers, livesLabel, UNKNOWN_ID, type Player, type Room } from '../types';
 import { useCamera } from '../hooks/useCamera';
 import { useVisionLoop, type VisionFrame } from '../hooks/useVisionLoop';
@@ -52,7 +53,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
   const spectating = me.status === 'out';
   const playing = room.status === 'playing';
 
-  const { ready: humanReady, status } = useHumanStatus();
+  const { ready: humanReady, status, failed: humanFailed, retry: retryModels } = useHumanStatus();
   const { videoRef, ready: camReady, error: camError, retry: retryCamera } = useCamera('environment', !spectating);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -97,13 +98,18 @@ export function Game({ room, me, pid, onLeave }: Props) {
 
   useEffect(() => {
     const invalidate = () => {
-      pipeline.current.invalidate();
+      const dropped = pipeline.current.invalidate();
       window.clearTimeout(pendingTimer.current);
       lockKey.current = '';
       setLock(null);
-      // A burst in flight will never settle now; its record and photo go with it.
+      // A burst in flight will never settle now; its record and photo go with it. The tap still gets
+      // its verdict: the player sees SHOT LOST instead of a silent nothing.
       recorder.current.abandonOpenShots();
       photos.current.clear();
+      if (dropped && !dropped.practice) {
+        logShot('shot lost', null, { resolveMs: 0 }, dropped.shotId);
+        show('SHOT LOST', 'warn');
+      }
     };
     invalidate();
     // The crosshair rectangle depends on the viewport, so a real size change (rotation, split view)
@@ -243,27 +249,20 @@ export function Game({ room, me, pid, onLeave }: Props) {
 
   // Round end. Decided outright when at most one player is alive. A survivor whose phone has dropped
   // off forfeits after a grace period, so a dead phone cannot hold the round open forever; presence
-  // coming back cancels the timer because the effect re-runs on every room change.
+  // coming back cancels the timer because the effect re-runs on every room change. The write itself
+  // is backend.endRound: one transaction that re-checks the players map, so however many phones
+  // reach this point they end the round once, with one winner.
   useEffect(() => {
     if (room.status !== 'playing') return;
-    const contenders = enrolledPlayers(room);
-    if (contenders.length < 2) return;
-    const alive = contenders.filter((p) => p.status === 'alive');
-    const present = alive.filter((p) => p.connected);
-    const decided = alive.length <= 1 || present.length <= 1;
-    if (!decided) return;
-    const winnerId = (present[0] ?? alive[0])?.id ?? null;
-    const grace = alive.length <= 1 ? (isHost ? 0 : 4000) : isHost ? 10000 : 14000;
-    const tm = window.setTimeout(
-      () => void backend.updateMeta(room.code, { status: 'ended', endedAt: backend.now(), winnerId }).catch(() => undefined),
-      grace,
-    );
+    const end = decideRoundEnd(room.players);
+    if (!end.decided) return;
+    const grace = !end.forfeit ? (isHost ? 0 : 4000) : isHost ? 10000 : 14000;
+    const tm = window.setTimeout(() => void backend.endRound(room.code).catch((e: unknown) => console.warn('endRound failed', e)), grace);
     return () => window.clearTimeout(tm);
   }, [room, isHost]);
 
   const endRound = () => {
-    const alive = alivePlayers(room);
-    void backend.updateMeta(room.code, { status: 'ended', endedAt: backend.now(), winnerId: alive.length === 1 ? alive[0].id : null });
+    void backend.endRound(room.code, true).catch(() => undefined);
   };
 
   /** The verdict reaches the feedback recorder; a failed shot keeps its photo for the review card. */
@@ -477,6 +476,9 @@ export function Game({ room, me, pid, onLeave }: Props) {
         // The shot log records the frame age next to the allowance, which is the number to compare with staleMs().
         if (result.kind === 'stale') logShot('stale frame', null, { resolveMs: result.frameAgeMs, allowanceMs: result.allowanceMs }, shotId);
         else logShot('no camera', null, { resolveMs: 0 }, shotId);
+        // Nothing was fired at anybody: the cooldown is not spent on a refused tap.
+        coolRef.current = now;
+        setCooling(false);
         return show(result.kind === 'stale' ? 'CAMERA TOO SLOW' : 'NO CAMERA LOCK', 'warn');
       }
       case 'miss':
@@ -561,8 +563,8 @@ export function Game({ room, me, pid, onLeave }: Props) {
       {!spectating && (!camReady || !humanReady) && (
         <div className="status-pill">
           {camError ?? (camReady ? status : 'Starting camera')}
-          {camError && (
-            <button className="hud-btn" style={{ marginLeft: 8 }} onClick={retryCamera}>
+          {(camError || humanFailed) && (
+            <button className="hud-btn" style={{ marginLeft: 8 }} onClick={camError ? retryCamera : retryModels}>
               retry
             </button>
           )}

@@ -187,6 +187,24 @@ test('(e) a tap while the target walks into the dot opens a burst on them from t
   assert.equal(out.settled?.elapsedMs, 240);
 });
 
+test('every fire gets a verdict: a burst abandoned by invalidate() hands back its context so the game can say SHOT LOST', async () => {
+  const h = harness();
+  await h.establishBob(7);
+  h.clock.now = h.t - PERIOD + 200;
+  // A stale-ish tap on Bob opens a burst (geometry older than GEOMETRY_FRESH_MS).
+  h.clock.now = h.t + 300;
+  const r = h.pipeline.fire({ tap: 77 }, CROSSHAIR);
+  assert.equal(r.kind, 'pending');
+  assert.ok(h.pipeline.hasPending());
+  const dropped = h.pipeline.invalidate();
+  assert.deepEqual(dropped, { tap: 77 }, 'the abandoned burst returns the tap it belonged to');
+  assert.equal(h.pipeline.hasPending(), false);
+  assert.equal(h.pipeline.invalidate(), null, 'nothing to report the second time');
+  assert.equal(h.pipeline.expirePending(r.kind === 'pending' ? r.token : {}), null, 'the timer finds no burst to settle');
+  // The next tap is not refused as busy.
+  assert.notEqual(h.pipeline.fire({ tap: 78 }, CROSSHAIR).kind, 'busy');
+});
+
 test('(f) a stationary target is not nominated by prediction: nobody under the dot is a miss', async () => {
   const h = harness();
   await h.establishBob(6);

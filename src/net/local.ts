@@ -1,5 +1,7 @@
 import type { Player, Profile, Room, RoomMeta, RoomSettings } from '../types';
 import {
+  claimHostPatch,
+  endRoundPatch,
   evaluateHit,
   newPlayer,
   newRoomMeta,
@@ -7,6 +9,7 @@ import {
   randomCode,
   ROUND_META_RESET,
   roundResetFields,
+  type EndResult,
   type HitOutcome,
   type JoinResult,
   type PlayerSeed,
@@ -120,6 +123,25 @@ export class LocalBackend implements RoomBackend {
       this.emit(code);
     }
     return r.outcome;
+  }
+
+  async endRound(code: string, force = false): Promise<EndResult> {
+    const room = this.rooms.get(code);
+    if (!room || room.status !== 'playing') return 'already';
+    const patch = endRoundPatch(room, room.players, this.now(), force);
+    if (!patch) return 'not-decided';
+    Object.assign(room, patch);
+    this.emit(code);
+    return 'ended';
+  }
+
+  async claimHost(code: string): Promise<string | null> {
+    const room = this.rooms.get(code);
+    const next = claimHostPatch(room, room?.players);
+    if (!room || !next) return null;
+    room.hostId = next;
+    this.emit(code);
+    return next;
   }
 
   /** Labelled samples stay in memory; a dev build exposes them on window.__lz.feedback. */
