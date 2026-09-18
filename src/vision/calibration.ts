@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-09-14.8';
+export const CALIBRATION_VERSION = '2026-09-18.1';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /**
@@ -33,6 +33,31 @@ export const MIN_FACE_PX = 34;
 export const FULL_QUALITY_FACE_PX = 56;
 /** Faces turned further than this from the camera are skipped. */
 export const MAX_YAW_DEG = 45;
+
+// ---- Enrolment scan (scan.ts, Scanner.tsx) -------------------------------------------------------
+/**
+ * The eight-angle face scan. Bands are absolute yaw in degrees, wide on purpose: the mesh-derived
+ * angle underestimates a real turn and a player cannot hold a 17-degree band. Left and right only
+ * have to be opposite signs (the mirrored preview and the model's sign convention cancel), latched
+ * on the first turned sample; the same for chin up and down. A sample counts as the same person when
+ * it is at least `samePerson` similar (centred cosine) to ANY accepted sample, so a turned head
+ * chains through the adjacent angle rather than being compared to the frontal frame alone.
+ * Enrolment keeps samples up to `enrolYawMax`; matching in a round still uses MAX_YAW_DEG.
+ */
+export const SCAN_CALIB = {
+  straightYaw: [0, 15] as [number, number],
+  slightYaw: [12, 40] as [number, number],
+  furtherYaw: [25, 60] as [number, number],
+  tiltPitch: [8, 40] as [number, number],
+  holdFrames: 2,
+  samePerson: SAME_PERSON_MIN,
+  minFacePx: 48,
+  enrolYawMax: 60,
+  /** Pause after an accepted sample before the next one may be taken. */
+  settleMs: 400,
+  /** How long the front body stage waits for far face samples once the outfit is complete. */
+  farFacePatienceMs: 6000,
+};
 
 // ---- Evidence fusion (scoring.ts) ---------------------------------------------------------------
 /** Relative weight of each signal when it is present. */
