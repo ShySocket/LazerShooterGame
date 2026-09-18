@@ -1,0 +1,188 @@
+# Tracking and demo-readiness rubric
+
+What "good enough" means for the demo: a free-for-all round with many players (target: 8 to 12 phones in one room), where every phone tracks the people it sees, decides shots correctly, and nobody hits a bug. Tracking here means both halves: following a person across frames, and deciding whether a FIRE press on them is a hit.
+
+How to use this file:
+
+- Every line is a checkbox. Tick it only with the evidence named next to it (a sim table, a `validate.mjs` run, or a real round with the shot log).
+- **Must** items gate the demo. One failing Must means the demo is not ready, whatever the rest says.
+- **Should** items are what makes the game feel good. Aim to pass all of them, but a miss is a known limitation to tell players about, not a blocker.
+- **Nice** items are polish. Skip them until every Must and Should is green.
+- Numbers come from three sources: what the automated gates already enforce (`tests/sim.test.ts`, `npm run sim:full`), what `docs/validation.md` says to measure on phones, and the targets proposed here for a real venue. Where a real-phone target is lower than the sim bound, that is deliberate: the sim's detector is a model of the real one.
+- Order of decision when two items conflict: wrong hits first (must be zero), then wrong locks, then missed hits, then latency. Never buy a hit rate by loosening what counts as "under the dot" (see the LESSONS in `CLAUDE.md`).
+
+Tiers of outcome, so you know what to aim for overall:
+
+| Tier | Meaning |
+| --- | --- |
+| **Demo-ready** | All Must items green on the sim gate and on at least one real recorded session with the phones people will actually use. |
+| **Good** | Demo-ready plus all Should items in section 2 to 5 (tracking, identity, shots). Players rarely see UNCLEAR TARGET when the aim was clearly on someone. |
+| **Great** | Good plus the Should items in sections 6 and 7 and most Nice items. A stranger can watch a round and not tell it apart from real laser tag. |
+
+---
+
+## 1. Safety of the decision (never wrong)
+
+These are the outcomes the game must never produce. They are the reason UNCLEAR TARGET exists.
+
+Automated evidence: `npm run sim:full` (100 seeds, `--strict`, exit 1 on any wrong hit or wrong-lock frame) and `npm test`.
+Real-phone evidence: `node scripts/validate.mjs recordings/<date>` exits 0, with denominators printed.
+
+- [ ] **Must**: Zero wrong hits across all sim scenarios over 100 seeds (`npm run sim:full` passes).
+- [ ] **Must**: Zero wrong-lock frames in crossing, pan-crossing, crossing-backs, occlusion, identical-tops, stranger, mirror, same-shirt-stranger, lookalike-faces (sim, 100 seeds).
+- [ ] **Must**: Zero wrong hits over every labelled real-phone recording (`validate.mjs` exit 0). Record the denominator: at least 200 labelled taps in total across scenarios before calling this passed.
+- [ ] **Must**: A stranger (non-player) in frame is never hit and never wears a player's name, even hedged (`maybeOnNonPlayer` = 0 in sim; in a real round, the HUD says NOT A PLAYER or STRANGER, never a name, for at least 60 s of aiming at a non-player at 2 to 6 m).
+- [ ] **Must**: A stranger wearing the same top as a player is never hit (sim `same-shirt-stranger`; real: borrow a matching top and do 20 range-test taps, all must be NOT A PLAYER or UNCLEAR TARGET).
+- [ ] **Must**: Aiming at a mirror or at yourself resolves to THAT IS YOU, never to another player (sim `mirror`; real: 20 taps at a mirror at 1.5 to 3 m).
+- [ ] **Must**: Two players with identical tops, seen from behind, get UNCLEAR TARGET rather than a guess (sim `identical-tops` wrong = 0 and wrongLockFrames = 0; the lobby refuses to start when two outfits are too alike, so in a real round this only happens when a player changes clothes after enrolling).
+- [ ] **Must**: A player walking in front of the target does not become the target (sim `occlusion` wrong = 0; regression seeds 39 and 60 stay green).
+- [ ] **Must**: No hit from obsolete geometry: a target who steps out of the dot before FIRE is not hit (real: 20 "walk-out before FIRE" taps, all MISS or UNCLEAR TARGET; sim: instant hits only from geometry under `GEOMETRY_FRESH_MS` = 250 ms).
+- [ ] **Must**: After the app is backgrounded, rotated, or the camera is switched mid-round, the first FIRE afterwards never lands on a stale frame (HUD shows NO FRESH FRAMES or CAMERA TOO SLOW until new frames arrive).
+- [ ] **Should**: Ambiguous verdicts (dot within the jitter band of a nearer person's edge) stay at zero where people stand apart and under the per-scenario ceilings in `tests/sim.test.ts` (occlusion 20 %, range-8m 12 %, crossings 8 %). A rising count is where a wrong hit would hide.
+- [ ] **Should**: The eliminated-player race is closed: a shot fired just before the last elimination cannot land after the round is decided (`evaluateHit` refuses hits once at most one enrolled player is alive; verify by having two players fire at each other within the same second at 1 life each; exactly one is eliminated).
+
+## 2. Following a person (track continuity)
+
+A track is the pipeline's memory of one body. Losing it costs the lock; swapping it is a wrong hit in waiting.
+
+Automated evidence: `npm run sim -- --seeds 100`, columns `tracks` (track ids the target went through; 1 is perfect), `firstLockMs`, `lock`.
+Real-phone evidence: bench (`?bench`) `tracks` and `lock on target`; recordings replayed with `npm run replay:rec`.
+
+- [ ] **Must**: A stationary player at 1.5 to 4.5 m keeps one track id for a full 60 s of aiming (bench `tracks` = 1; sim `duel-close` trackChurn <= 2).
+- [ ] **Must**: A player who turns their back and faces the shooter again keeps the same identity throughout (sim `turn-around` trackChurn <= 2, hit rate >= 85 %).
+- [ ] **Must**: A pose model that drops a quarter of its frames does not lose the target (sim `flaky-pose` trackChurn <= 4, hit rate >= 80 %).
+- [ ] **Must**: Two players crossing each other, facing the camera or facing away, never swap identities (sim `crossing`, `crossing-backs`: wrongLockFrames = 0). While they overlap (IoU above `CROSSING_IOU` = 0.25) the HUD shows LOCKING or UNCLEAR TARGET, not a green name.
+- [ ] **Should**: First lock on a face-on player at 3 m within 1.5 s of them entering the frame (sim `duel-close` firstLockMs < 1500; real: time from "steps into view" to green name, 10 trials, median under 1.5 s, worst under 3 s).
+- [ ] **Should**: A crossing during a camera pan keeps the target on the same track more than half the time (sim `pan-crossing` hit rate >= 35 % is the gate; 55 % was the measured value on 2026-09-14; aim to keep or raise that, never trade it for a wrong lock).
+- [ ] **Should**: A track skipped by the detector for under 450 ms (`TRACK_GAP_MS`) continues without a new id; one lost for up to 1.5 s (`LOST_TRACK_MS`) is reclaimed unconfirmed and needs fresh evidence before it can lock again. Verify in a real round by having the target step behind a pillar for one second: the name returns within 2 s of them reappearing and no hit lands while they are hidden.
+- [ ] **Should**: A body that reappears at a very different height (someone else stepping into the old box) does not inherit the identity (`HEIGHT_MATCH_MIN` 0.6 / `HEIGHT_CONFIRM_MIN` 0.75). Real check: player A ducks out, player B of a different height steps in; B never shows A's name.
+- [ ] **Nice**: Lock rate on a stationary target in the bench above 90 % of frames while the person is under the dot, at 3 m in good light on the slowest phone in the group.
+
+## 3. Knowing who it is (identity)
+
+Face carries the identity up close and face-on; outfit carries it at range and from behind; body ratios only break ties.
+
+- [ ] **Must**: Face-on at 1.5 to 3 m in normal indoor light, the right name locks (sim `duel-close` hit rate >= 90 %; real: range test, 20 taps per distance, correct >= 85 %).
+- [ ] **Must**: From behind, the outfit carries the hit without guessing between players (sim `back-shot` hit rate >= 75 %, wrong = 0; real: 20 back-view taps at 3 m, correct >= 65 %, wrong = 0).
+- [ ] **Must**: At 8 m the outfit still carries most shots (sim `range-8m` hit rate >= 60 %; real: 20 taps at 8 m, correct >= 45 %, wrong = 0, everything else UNCLEAR TARGET, not a wrong name).
+- [ ] **Must**: The lobby refuses to start when two players' outfits or face scans are too alike, and names the pair, so an identity clash is fixed by changing a top before the round, not by a wrong hit during it.
+- [ ] **Must**: Same-hue tops of a different shade are still told apart from behind (sim `lookalike-tops` wrong = 0, hit rate >= 50 %).
+- [ ] **Must**: Two players whose faces read alike to the model are never confused (sim `lookalike-faces` wrong = 0, wrongLockFrames = 0). In a real group, if the lobby warns two faces conflict, the round must still be safe because hits between them lean on outfits: verify with 20 taps each way, wrong = 0.
+- [ ] **Should**: An approaching target locks before they are close (sim `approach` hit rate >= 85 %; real: walking in from 8 m, the name appears by 5 m).
+- [ ] **Should**: Dim light lowers confidence, not correctness (sim `dim-light` hit rate >= 80 %, wrong = 0; real: the same 3 m range test with half the venue lights off, wrong = 0 and correct >= 60 %).
+- [ ] **Should**: Backlight (a window behind the target) yields UNCLEAR TARGET rather than a wrong name (real: 20 taps, wrong = 0).
+- [ ] **Should**: A partial body (legs cut off at close range from behind) gives UNCLEAR TARGET rather than a shirt-only guess (`CLOTHING_EVIDENCE.noThighsCap` = 0.55 keeps a shirt alone below a hit). Real: 10 close back-view taps with legs out of frame, wrong = 0.
+- [ ] **Should**: Live face enrolment during a round only adds strong, unambiguous samples (`LIVE_FACE_MIN` 0.9, runner-up under 0.3). Real check: after 5 minutes of play, the shot log shows no live sample attached to the wrong player (compare `via` and the top-two similarities).
+- [ ] **Nice**: The debug overlay names and confidence on every visible body agree with who is actually there for 30 s of panning across the whole group.
+
+## 4. Deciding the shot (FIRE to verdict)
+
+- [ ] **Must**: An instant hit only decides from geometry under 250 ms old; older frames open a burst that must re-see the same person under the dot in a frame captured after the tap (`shot.ts`; pinned by `tests/pipeline.test.ts`).
+- [ ] **Must**: A phone that needs 400 ms per frame still fires and hits rather than refusing everything as stale (sim `slow-phone` stale = 0, hit rate >= 85 %; sim `hiccups` stale <= 1). Real: on the slowest phone in the group, fewer than 1 in 20 face-on taps at 3 m say CAMERA TOO SLOW.
+- [ ] **Must**: Every FIRE press produces exactly one visible verdict within 1 s on a fast phone and within the burst allowance (up to 900 ms plus frame period) on a slow one: HIT name, name ELIMINATED, MISS, UNCLEAR TARGET, THAT IS YOU, NOT A PLAYER, CAMERA TOO SLOW, NO CAMERA LOCK, or NO FRESH FRAMES. No silent taps.
+- [ ] **Must**: A hit costs exactly one life on the target's phone, once, even when two shooters hit the same target within the shield window (`invulnMs`, default 3 s): the second gets MISS or the target's shield status, the target loses one life, not two.
+- [ ] **Must**: Cooldown (default 1 s) is enforced on the shooter's phone; mashing FIRE never fires twice in one cooldown.
+- [ ] **Should**: The green crosshair with the name appears before the tap in at least 80 % of the taps that end as hits (the lock predicts the verdict; players learn to wait for green).
+- [ ] **Should**: MISS and UNCLEAR TARGET are distinguishable to players: MISS when nobody is under the dot, UNCLEAR TARGET when someone is but identity is not settled. In a 10-minute round, UNCLEAR TARGET on a clearly aimed, face-on, 3 m shot happens fewer than 1 time in 10.
+- [ ] **Should**: The shot log on the results screen explains every refused shot with the top beliefs, frame age, and stale allowance, and lists the calibration version.
+- [ ] **Nice**: Median FIRE-to-verdict under 400 ms on the fastest phone in the group (measure from the shot log timestamps).
+
+## 5. Distance and pose table (what to hand players as expectations)
+
+Fill this from the real range test (`debug` on, `range`, pick the target and distance, 20 taps per cell). The numbers are targets for a Demo-ready pass; "wrong" must be 0 in every cell.
+
+| Distance | Face-on correct | Back view correct | Notes |
+| --- | --- | --- | --- |
+| 1.5 m | >= 90 % | >= 70 % (legs must be in frame) | face carries |
+| 3 m | >= 85 % | >= 65 % | face and outfit |
+| 4.5 m | >= 75 % | >= 60 % | face fading, outfit carries |
+| 6 m | >= 60 % | >= 50 % | outfit only |
+| 8 m | >= 45 % | >= 40 % | outfit only; UNCLEAR is the expected failure |
+
+- [ ] **Must**: Every cell has wrong = 0.
+- [ ] **Should**: Every cell meets its target on the phones players actually use, in the demo venue's light.
+- [ ] **Nice**: Same table under dim light within 15 points of the good-light numbers.
+
+## 6. Many players, free-for-all (multiplayer at scale)
+
+The demo is everyone against everyone: 3 lives, no respawn, last standing wins. No teams, so nothing in this section is about team colours or friendly fire.
+
+- [ ] **Must**: 8 players enrol and start one round from one room code without anyone stuck; measure with a stopwatch, target under 3 minutes from "Create a room" to countdown for 8 guests (enrolment is the long pole: 8 head angles plus front and back body scans per player).
+- [ ] **Must**: The lobby shows every joined player with their enrolment state and blocks Start until all are enrolled, no outfit or face conflicts remain, and no stale (disconnected) player is left in the list.
+- [ ] **Must**: A hit registered on phone A appears on the target's phone B (lives drop, shield starts, sound plays) within 1 s on venue Wi-Fi or 4G, for every pairing, in a 12-player round. Test: each player is hit once by a named shooter; all 12 confirm lives dropped.
+- [ ] **Must**: Concurrent hits on different targets in the same second all land (atomic write per hit in `registerHit`); test with 4 pairs firing on a count of three, all 4 targets lose one life.
+- [ ] **Must**: Elimination and the winner are consistent on every phone: when the last opponent is eliminated, all phones move to Results within 2 s and name the same winner.
+- [ ] **Must**: An eliminated player's phone says YOU ARE OUT, cannot fire, and cannot be hit again (`applyHit` returns `dead`); they can spectate or go back to the lobby without disturbing the round.
+- [ ] **Must**: Shield after a hit (default 3 s) is respected across phones: a second shooter hitting a shielded target in that window sees MISS, not a hit, and the target does not lose a second life.
+- [ ] **Must**: A player who loses connection mid-round and reopens the link rejoins the same room as the same player with the same lives (`joinRoom` returns `ok` for a returning player during a round, `in-progress` for a new one).
+- [ ] **Must**: A new player cannot join a round in progress; they see a clear message and can join the next round from the lobby.
+- [ ] **Must**: The host leaving the lobby or the round does not strand the room: another phone can still play the round out and the results screen still appears for everyone.
+- [ ] **Must**: A second round from the same lobby (host taps Back to lobby, then Start) resets lives, status, tags, and the shot feedback card for every player, with no leftover hits from the first round.
+- [ ] **Should**: With 12 players in one room, each phone's frame period does not grow with player count (identity candidates are evaluated per track, not per player-frame), measured by comparing the bench `period` with 2 and 12 enrolled profiles.
+- [ ] **Should**: Six or more bodies in one camera frame (a cluster of players) do not stall the vision loop: frame period stays under 2x the single-body period on the slowest phone, and the crosshair target is still cropped every frame while unconfirmed.
+- [ ] **Should**: The lobby's outfit-conflict warning scales: with 12 players, the check runs in under 1 s on a midrange Android and names every conflicting pair, not just the first.
+- [ ] **Should**: Room codes avoid ambiguous letters (I, O are excluded from the alphabet) and a mistyped code gives "room not found" rather than creating a new room.
+- [ ] **Should**: Tags (hits landed) per player and the final standing are shown on Results for all players, sorted, so a 12-player round has a leaderboard, not just a winner (implemented in `src/screens/Results.tsx`; verify it agrees on every phone).
+- [ ] **Nice**: A late player can enrol during the lobby while others are already enrolled without resetting anyone else.
+- [ ] **Nice**: A round timer or a "last 2 standing" call-out for big rounds, so a 12-player game does not drag when two cautious players remain.
+
+## 7. Using the app without bugs (robustness)
+
+- [ ] **Must**: Enrolment completes on iOS Safari and Android Chrome without a dead end: camera permission prompt, 8 head angles, front and back body scans, the front scan's "learn your face from a distance" step, and the outfit check all succeed on both. Test each phone model in the group once.
+- [ ] **Must**: The camera permission being denied, or no rear camera, gives a clear message with a retry, never a blank screen.
+- [ ] **Must**: The app survives backgrounding (call, notification, lock screen) and returns to the same screen with the camera restarted; the vision loop resumes within 3 s and shows NO FRESH FRAMES until it does.
+- [ ] **Must**: Rotating the phone or switching cameras mid-round does not crash, freeze the crosshair, or produce a hit from the pre-rotation frame.
+- [ ] **Must**: Ten minutes of continuous play on the warmest phone in the group: no crash, frame period grows by less than 50 % (thermal throttling is expected; a stall is not), and the wake lock keeps the screen on.
+- [ ] **Must**: Loss of network for 30 s mid-round: local play continues (aiming, locking, verdicts), hits queue or fail visibly, and the room resyncs when the network returns with no duplicated hits.
+- [ ] **Must**: No unhandled errors in the browser console across a full round (enrol, lobby, game, results, back to lobby) on the two most common phones. Check with remote inspector or `?debug`.
+- [ ] **Must**: The self-signed HTTPS dev certificate is accepted once per phone and does not need re-accepting during the demo, or the demo runs from the deployed GitHub Pages URL with a real certificate (preferred for a demo).
+- [ ] **Must**: Model download and warm-up on first open finish within 30 s on venue Wi-Fi, with a visible progress state; the PWA runtime-caches `/models/*` (`vite.config.ts`) so second opens are instant. Verify offline reopen on one phone.
+- [ ] **Should**: Sounds and haptics fire on hit, on being hit, on elimination, and on win, and are audible in a noisy room; iOS needs one user gesture before audio, so the first FIRE (or a "tap to start" on the countdown) unlocks it.
+- [ ] **Should**: The shot feedback card after a round works end to end: shows a failed shot's frame with the crosshair, uploads the numeric sample on Yes/No, uploads nothing on Skip or "I can't tell", and the photo is deleted from IndexedDB afterwards. Failed uploads retry on the next lobby or results screen.
+- [ ] **Should**: Battery: a 20-minute round costs under 25 % on a midrange phone with the torch off.
+- [ ] **Should**: Debug overlay and range mode can be turned on and off mid-round without breaking the game, and range mode shots deal no damage.
+- [ ] **Nice**: Install-to-home-screen works on both platforms and the installed app behaves identically to the browser tab.
+
+## 8. Demo-day protocol (run this before the first guest picks up a phone)
+
+Venue and people:
+
+- [ ] Even, bright light with no large window behind where players stand; walls that do not match anyone's top.
+- [ ] Every player wears a bright, solid top, distinct from the others; keep two spare tops of unused colours for conflicts.
+- [ ] 3 to 8 m of clear floor; a pillar or corner is fine and makes for good occlusion tests.
+
+Phones:
+
+- [ ] Every phone opened the deployed URL once on the venue Wi-Fi, accepted the camera permission, and the models are cached (second open is instant).
+- [ ] Every phone is above 50 % battery, brightness up, Do Not Disturb on, auto-lock off or the wake lock verified.
+- [ ] The slowest phone's bench (`?bench`, Sample person, then Range sweep) has been run in the venue: note `period` and where the face gives out; that is the honest range for the room.
+
+Smoke round (host plus two players, 3 minutes):
+
+- [ ] Enrol, start, each player hits each other player once face-on at 3 m and once from behind at 3 m; every hit lands on the target's phone within 1 s.
+- [ ] One player stands next to a non-player: aiming at the non-player gives NOT A PLAYER.
+- [ ] One player walks in front of another while the host aims at the one behind: no hit lands during the crossing.
+- [ ] Eliminate one player; they see YOU ARE OUT and the round ends with the right winner on all three phones.
+- [ ] Back to lobby, second round starts clean.
+
+Recording:
+
+- [ ] Open the host's phone with `?record` and record the smoke round; save the JSON under `recordings/<date>/` named per `docs/validation.md`; run `node scripts/validate.mjs recordings/<date>` afterwards and file the totals in `TRACKING_IMPROVEMENT_PLAN.md` next to the calibration version.
+
+Go / no-go:
+
+- [ ] Every Must in sections 1, 4, 6 and 7 was green in the smoke round. If any Must in section 1 fails, do not run the demo with real scores; run it as a range-test demo instead (range mode deals no damage).
+
+## 9. Automated gates to keep green on every tracking change
+
+- [ ] `npm test` (unit tests, pipeline pins, 3-seed sim round, replay fixture)
+- [ ] `npm run typecheck`
+- [ ] `npm run sim -- --seeds 100` (read the table; hit rates near their floors are a warning)
+- [ ] `npm run sim:full` (exit 0)
+- [ ] `npm run build`
+- [ ] `node scripts/validate.mjs recordings/<latest>` (exit 0, once real recordings exist)
+- [ ] `CALIBRATION_VERSION` bumped and README thresholds updated whenever a constant in `src/vision/calibration.ts` changes.
+
+## 10. What is already covered and what still needs phones
+
+Covered by automation today (2026-09-17): every sim item in sections 1 to 4, the tap-time rule, the hit resolution race, and the replay fixture. Not yet measured, and only phones can settle it: the real-phone columns in sections 1, 3, 5 and 8, everything in section 6 at 8 or more players, and section 7 on iOS Safari and Android Chrome. The validation set in `docs/validation.md` is the first job; this rubric says what a passing set looks like.
