@@ -1,0 +1,27 @@
+name: CI
+
+# The shared link is the Vercel deployment of main (Vercel builds every push itself). This workflow
+# is the merge gate: unit tests, typecheck, production build and the strict 100-seed simulation
+# sweep (zero wrong hits, zero wrong locks). The browser E2E suite (npm run e2e) needs Chrome and the
+# live Firebase database and runs on a developer machine before a PR is opened.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm run sim:full

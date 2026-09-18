@@ -16,6 +16,7 @@ npm run typecheck              # tsc for app and tests
 npm run sim -- --seeds 100     # 100-seed simulation table for every scenario
 npm run build                  # tsc + vite build
 npm run rubric                 # score against docs/tracking-rubric.md (sim + tests + build + recorded evidence), logs to docs/rubric-scores.md
+npm run e2e                    # Playwright: 16 multiplayer/robustness scenarios on the installed Chrome against live Firebase (~80 s), writes .rubric/e2e.json
 ```
 
 Other useful commands:
@@ -60,7 +61,7 @@ JS
 
 **Device bench** (`src/bench/`, open the app with `?bench`): runs a photo through the real models and pipeline with a virtual drifting camera, and a range sweep across zoom levels. Use it to see a real phone's frame period and where face gives out to outfit.
 
-**Deploy**: GitHub Pages via `.github/workflows/pages.yml` on every push to `main` (runs `npm test` first). Never push to `main` directly from an agent session; open a PR.
+**Deploy**: Vercel builds every push to `main` and serves https://lazer-shooter-game.vercel.app (the shareable link). `.github/workflows/ci.yml` is the merge gate on pull requests (tests, typecheck, build, `sim:full`); `npm run e2e` (Chrome + live Firebase) runs on a developer machine before a PR. Never push to `main` directly from an agent session; open a PR and merge it when CI is green.
 
 ## Current work
 
