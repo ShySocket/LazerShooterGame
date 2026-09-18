@@ -5,7 +5,7 @@ import { useCamera, type Facing } from '../hooks/useCamera';
 import { useVisionLoop, type VisionFrame } from '../hooks/useVisionLoop';
 import { useHumanStatus } from '../hooks/useHumanStatus';
 import { compactEmbedding, FACE_SAMPLES, faceYawDeg, MAX_YAW_DEG, MIN_FACE_PX, isValidEmbedding } from '../vision/human';
-import { faceBigEnough, hintFor, holdStep, initialScanState, judgePose, promptFor, samePerson, SCAN_CALIB, type Judgement, type ScanState } from '../vision/scan';
+import { bodySampleDecision, faceBigEnough, farFacesDone, hintFor, holdStep, initialScanState, judgePose, promptFor, samePerson, SCAN_CALIB, type Judgement, type ScanState } from '../vision/scan';
 import { averageOutfits, averageProps, bodyProportions, FrameSampler, outfitRegions, outfitSignature } from '../vision/clothing';
 import { drawOverlay } from '../vision/overlay';
 import { iou, toNBox, type NBox } from '../vision/geometry';
@@ -22,12 +22,11 @@ const BODY_SAMPLES = 12;
 /**
  * Face samples taken from metres away during the front body scan. These match a round far better
  * than the close selfie set, so the front stage keeps recording until it has MIN_FAR_FACES of them
- * (or gives up after FAR_FACE_PATIENCE_MS in poor light), not just until the outfit is sampled.
+ * (or gives up SCAN_CALIB.farFacePatienceMs after the outfit completed, in poor light), not just until the outfit is sampled.
  */
 const FAR_FACE_SAMPLES = 12;
-const MIN_FAR_FACES = 6;
+const MIN_FAR_FACES = SCAN_CALIB.minFarFaces;
 const FAR_FACE_INTERVAL_MS = 250;
-const FAR_FACE_PATIENCE_MS = 9000;
 const PROP_COUNTDOWN = 5;
 const BODY_SAMPLE_INTERVAL_MS = 150;
 
@@ -86,6 +85,8 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
   const stageProps = useRef<BodyProps[]>([]);
   const lastBody = useRef<NBox | null>(null);
   const lastBodySample = useRef(0);
+  /** When the outfit samples of the current body stage were complete; the far-face wait counts from here. */
+  const outfitDoneAt = useRef(0);
   const generation = useRef(0);
   const mounted = useRef(true);
   const front = useRef<OutfitSig | null>(null);
@@ -142,6 +143,7 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
     stageProps.current = [];
     lastBody.current = null;
     lastBodySample.current = 0;
+    outfitDoneAt.current = 0;
     front.current = null;
     setFaceIdx(0);
     setProgress(0);
@@ -255,6 +257,7 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
         stageProps.current = [];
         lastBody.current = null;
         lastBodySample.current = 0;
+        outfitDoneAt.current = 0;
         setProgress(0);
       };
       if (res.body.length > 1 || res.face.length > 1) {
@@ -280,7 +283,7 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
       }
       const regions = b ? outfitRegions(b, 0.4, res.width / res.height) : null;
       if (!b || !regions?.top) {
-        if (lastBodySample.current && now - lastBodySample.current > 1500) clearSamples();
+        if (lastBodySample.current && now - lastBodySample.current > SCAN_CALIB.bodyGapMs) clearSamples();
         setHint('Shoulders and hips must both be visible. Step back so the whole body fits.');
         return;
       }
@@ -291,18 +294,26 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
       }
       if (now - stageStart.current < 800 || now - lastBodySample.current < BODY_SAMPLE_INTERVAL_MS) return;
       const box = toNBox(b.boxRaw);
-      if (lastBody.current && (iou(lastBody.current, box) < 0.25 || now - lastBodySample.current > 1500)) clearSamples();
-      const img = sampler.current.grab(context.frame);
+      // A step or a phone shift skips the frame and keeps the samples; only a real gap starts over.
+      const decision = outfits.current.length < BODY_SAMPLES ? bodySampleDecision(lastBody.current, box, now, lastBodySample.current, iou) : 'skip';
+      if (decision === 'restart') clearSamples();
+      if (decision === 'skip' && outfits.current.length < BODY_SAMPLES) {
+        lastBody.current = box;
+        return setHint('Hold still.');
+      }
+      const img = decision === 'skip' ? null : sampler.current.grab(context.frame);
       const sig = img ? outfitSignature(img, b, 0.4) : null;
-      if (!sig) return;
-      outfits.current.push(sig);
-      lastBody.current = box;
-      lastBodySample.current = now;
-      const bp = bodyProportions(b, 0.4);
-      if (bp) stageProps.current.push(bp);
-      setProgress(Math.min(1, outfits.current.length / BODY_SAMPLES));
-      setHint(wholeBody ? '' : 'Feet are out of frame. Still scanning, but legs will not count.');
-      const farDone = s !== 'bodyFront' || farFaces.current.length >= MIN_FAR_FACES || now - stageStart.current > FAR_FACE_PATIENCE_MS;
+      if (sig) {
+        outfits.current.push(sig);
+        lastBody.current = box;
+        lastBodySample.current = now;
+        const bp = bodyProportions(b, 0.4);
+        if (bp) stageProps.current.push(bp);
+        setProgress(Math.min(1, outfits.current.length / BODY_SAMPLES));
+        setHint(wholeBody ? '' : 'Feet are out of frame. Still scanning, but legs will not count.');
+      }
+      if (outfits.current.length >= BODY_SAMPLES && !outfitDoneAt.current) outfitDoneAt.current = now;
+      const farDone = farFacesDone(s === 'bodyFront', farFaces.current.length, outfitDoneAt.current, now);
       if (outfits.current.length >= BODY_SAMPLES && !farDone) {
         // Outfit done; hold the pose a little longer so the far face set fills up.
         setHint(res.face.length === 1 ? `Look at the phone: ${farFaces.current.length} of ${MIN_FAR_FACES} far face samples.` : 'Look at the phone so it can learn your face from here.');
@@ -313,6 +324,9 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
         props.current.push(...stageProps.current);
         stageProps.current = [];
         outfits.current = [];
+        outfitDoneAt.current = 0;
+        lastBody.current = null;
+        lastBodySample.current = 0;
         setProgress(0);
         setRecording(false);
         sfx.tick();

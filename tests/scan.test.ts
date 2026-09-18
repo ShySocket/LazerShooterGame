@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { FACE_PROMPTS, faceBigEnough, hintFor, holdStep, initialScanState, judgePose, promptFor, samePerson, SCAN_CALIB, type ScanState } from '../src/vision/scan';
+import { bodySampleDecision, FACE_PROMPTS, faceBigEnough, farFacesDone, hintFor, holdStep, initialScanState, judgePose, promptFor, samePerson, SCAN_CALIB, type ScanState } from '../src/vision/scan';
+import { iou, type NBox } from '../src/vision/geometry';
 import { FACE_SAMPLES } from '../src/vision/embedding';
 
 const P = (i: number) => FACE_PROMPTS[i];
@@ -122,4 +123,24 @@ test('minimum face size for enrolment is 48 px, not 64', () => {
   assert.ok(faceBigEnough(50, 70));
   assert.ok(!faceBigEnough(40, 70));
   assert.ok(faceBigEnough(64, 64));
+});
+
+test('movement does not lose the outfit samples: a step skips the frame, only a real gap starts over', () => {
+  const here: NBox = [0.3, 0.1, 0.3, 0.8];
+  const stepped: NBox = [0.65, 0.1, 0.3, 0.8];
+  const nearby: NBox = [0.32, 0.1, 0.3, 0.8];
+  assert.equal(bodySampleDecision(null, here, 1000, 0, iou), 'take', 'the first sample');
+  assert.equal(bodySampleDecision(here, nearby, 1150, 1000, iou), 'take', 'a steady body samples');
+  assert.equal(bodySampleDecision(here, stepped, 1150, 1000, iou), 'skip', 'a step is skipped, not punished');
+  assert.equal(bodySampleDecision(here, here, 1000 + SCAN_CALIB.bodyGapMs + 1, 1000, iou), 'restart', 'a long gap without a usable body starts over');
+  assert.equal(bodySampleDecision(here, stepped, 1000 + SCAN_CALIB.bodyGapMs + 1, 1000, iou), 'restart');
+});
+
+test('far faces are waited for after the outfit completes, six seconds at most', () => {
+  assert.equal(farFacesDone(false, 0, 0, 5000), true, 'the back stage never waits');
+  assert.equal(farFacesDone(true, 6, 0, 5000), true, 'enough far faces');
+  assert.equal(farFacesDone(true, 2, 0, 20000), false, 'the outfit is not complete yet: keep going');
+  assert.equal(farFacesDone(true, 2, 10000, 10000 + SCAN_CALIB.farFacePatienceMs - 1), false, 'still waiting');
+  assert.equal(farFacesDone(true, 2, 10000, 10000 + SCAN_CALIB.farFacePatienceMs + 1), true, 'patience is up');
+  assert.equal(SCAN_CALIB.farFacePatienceMs, 6000);
 });

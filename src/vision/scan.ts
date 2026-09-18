@@ -1,5 +1,6 @@
 import { SCAN_CALIB } from './calibration';
 import { faceSimilarity } from './embedding';
+import type { NBox } from './geometry';
 
 export { SCAN_CALIB };
 
@@ -119,4 +120,31 @@ export function hintFor(prompt: FacePrompt, reason: PoseReason): string {
     case 'tilt-less':
       return 'Not quite that far. Ease back a little.';
   }
+}
+
+// ---- Body stages ---------------------------------------------------------------------------------
+
+export type BodySampleDecision = 'take' | 'skip' | 'restart';
+
+/**
+ * Whether this frame's body box may add an outfit sample. A box that moved a lot since the last
+ * sample (a step, the phone shifting) is skipped, not punished: the samples already taken stay and
+ * the next steady frame counts again. Only a real gap, longer than `gapMs` without a usable body,
+ * throws the samples away, because by then the person may have changed or left.
+ */
+export function bodySampleDecision(lastBox: NBox | null, box: NBox, now: number, lastSampleAt: number, boxOverlap: (a: NBox, b: NBox) => number, gapMs = SCAN_CALIB.bodyGapMs, minOverlap = SCAN_CALIB.bodyMinOverlap): BodySampleDecision {
+  if (!lastBox || !lastSampleAt) return 'take';
+  if (now - lastSampleAt > gapMs) return 'restart';
+  if (boxOverlap(lastBox, box) < minOverlap) return 'skip';
+  return 'take';
+}
+
+/**
+ * The front body stage keeps recording after the outfit is complete until it has `minFarFaces`
+ * face samples from that distance, or `patienceMs` have passed since the outfit completed.
+ */
+export function farFacesDone(frontStage: boolean, farFaces: number, outfitDoneAt: number, now: number, minFarFaces = SCAN_CALIB.minFarFaces, patienceMs = SCAN_CALIB.farFacePatienceMs): boolean {
+  if (!frontStage) return true;
+  if (farFaces >= minFarFaces) return true;
+  return outfitDoneAt > 0 && now - outfitDoneAt > patienceMs;
 }

@@ -59,6 +59,11 @@ export const SCAN_CALIB = {
   faceDetectWidth: 960,
   /** How long the front body stage waits for far face samples once the outfit is complete. */
   farFacePatienceMs: 6000,
+  minFarFaces: 6,
+  /** A body box overlapping the last sampled one less than this is a step: the frame is skipped, the samples kept. */
+  bodyMinOverlap: 0.25,
+  /** Longer than this without a usable body and the outfit samples start over. */
+  bodyGapMs: 1500,
 };
 
 // ---- Evidence fusion (scoring.ts) ---------------------------------------------------------------
