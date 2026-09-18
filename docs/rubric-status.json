@@ -110,5 +110,22 @@
   "R7.14": {
     "status": "untested",
     "note": "Add to home screen on iOS and Android; the installed app behaves like the tab."
+  },
+  "R8.01": {
+    "status": "untested",
+    "note": "Rescan on the iPhone and an Android: each of the 8 prompts advances within 3 s of holding the pose the readout confirms; note any prompt that needed more than one try."
+  },
+  "R8.06": {
+    "status": "untested",
+    "note": "Stopwatch on the slowest phone: face scan under 45 s, whole enrolment (face, front, back) under 2 min."
+  },
+  "R8.10": {
+    "status": "pass",
+    "date": "2026-09-18",
+    "note": "Scanner.tsx renders 'yaw N° · pitch M°' under the hint in the face stage (commit 0e171a2); the scan-smoke e2e reaches the face stage."
+  },
+  "R8.13": {
+    "status": "untested",
+    "note": "Write the yaw the readout shows at a comfortable slight turn and a further turn (both sides) and the pitch at chin up/down next to the bands in SCAN_CALIB (src/vision/calibration.ts)."
   }
 }

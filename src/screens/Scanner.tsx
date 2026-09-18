@@ -4,7 +4,8 @@ import type { BodyProps, OutfitSig } from '../types';
 import { useCamera, type Facing } from '../hooks/useCamera';
 import { useVisionLoop, type VisionFrame } from '../hooks/useVisionLoop';
 import { useHumanStatus } from '../hooks/useHumanStatus';
-import { compactEmbedding, FACE_SAMPLES, faceSimilarity, faceYawDeg, MAX_YAW_DEG, MIN_FACE_PX, SAME_PERSON_MIN, isValidEmbedding } from '../vision/human';
+import { compactEmbedding, FACE_SAMPLES, faceYawDeg, MAX_YAW_DEG, MIN_FACE_PX, isValidEmbedding } from '../vision/human';
+import { bodySampleDecision, faceBigEnough, farFacesDone, hintFor, holdStep, initialScanState, judgePose, promptFor, samePerson, SCAN_CALIB, type Judgement, type ScanState } from '../vision/scan';
 import { averageOutfits, averageProps, bodyProportions, FrameSampler, outfitRegions, outfitSignature } from '../vision/clothing';
 import { drawOverlay } from '../vision/overlay';
 import { iou, toNBox, type NBox } from '../vision/geometry';
@@ -13,40 +14,19 @@ import type { Detection } from '../vision/tracker';
 import { haptic, sfx } from '../audio/sfx';
 
 /**
- * One prompt per stored head angle; a stored scan is only reused when all FACE_SAMPLES are present.
- * Each step also says what the head must actually do, so standing still cannot complete the scan:
- * `yaw` is the required absolute yaw range in degrees and `side` which way relative to the first
- * turned sample (the model's sign convention and the mirrored preview cancel out by only requiring
- * left and right to have opposite signs); `pitch` is the required signed pitch range.
+ * The eight prompts, their head-angle bands, the hold and the same-person rule live in
+ * src/vision/scan.ts (pure, unit-tested). This component only feeds it measured angles and shows
+ * the hint it returns, plus a live yaw/pitch readout so a real phone tells us what the model sees.
  */
-interface FacePrompt {
-  text: string;
-  yaw?: [number, number];
-  side?: 'a' | 'b';
-  pitch?: [number, number];
-}
-const FACE_PROMPTS: FacePrompt[] = [
-  { text: 'Look straight at the camera', yaw: [0, 12] },
-  { text: 'Turn your head slightly to the left', yaw: [14, 34], side: 'a' },
-  { text: 'Turn your head slightly to the right', yaw: [14, 34], side: 'b' },
-  { text: 'Turn a little further left', yaw: [28, 45], side: 'a' },
-  { text: 'Turn a little further right', yaw: [28, 45], side: 'b' },
-  { text: 'Tilt your chin up', pitch: [8, 40] },
-  { text: 'Tilt your chin down', pitch: [-40, -8] },
-  { text: 'Smile, or make a face' },
-];
-/** Consecutive frames that must satisfy the prompt before a sample is taken: a short, deliberate hold. */
-const POSE_HOLD_FRAMES = 2;
 const BODY_SAMPLES = 12;
 /**
  * Face samples taken from metres away during the front body scan. These match a round far better
  * than the close selfie set, so the front stage keeps recording until it has MIN_FAR_FACES of them
- * (or gives up after FAR_FACE_PATIENCE_MS in poor light), not just until the outfit is sampled.
+ * (or gives up SCAN_CALIB.farFacePatienceMs after the outfit completed, in poor light), not just until the outfit is sampled.
  */
 const FAR_FACE_SAMPLES = 12;
-const MIN_FAR_FACES = 6;
+const MIN_FAR_FACES = SCAN_CALIB.minFarFaces;
 const FAR_FACE_INTERVAL_MS = 250;
-const FAR_FACE_PATIENCE_MS = 9000;
 const PROP_COUNTDOWN = 5;
 const BODY_SAMPLE_INTERVAL_MS = 150;
 
@@ -97,15 +77,16 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const faces = useRef<number[][]>([]);
   const farFaces = useRef<number[][]>([]);
-  /** Sign of the yaw on the first turned sample: the other side must have the opposite sign. */
-  const sideSign = useRef(0);
-  const holdFrames = useRef(0);
+  const scan = useRef<ScanState>(initialScanState());
+  const [angles, setAngles] = useState<{ yaw: number; pitch: number } | null>(null);
   const lastFarFace = useRef(0);
   const outfits = useRef<OutfitSig[]>([]);
   const props = useRef<BodyProps[]>([]);
   const stageProps = useRef<BodyProps[]>([]);
   const lastBody = useRef<NBox | null>(null);
   const lastBodySample = useRef(0);
+  /** When the outfit samples of the current body stage were complete; the far-face wait counts from here. */
+  const outfitDoneAt = useRef(0);
   const generation = useRef(0);
   const mounted = useRef(true);
   const front = useRef<OutfitSig | null>(null);
@@ -155,13 +136,14 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
     window.clearInterval(countdownTimer.current);
     faces.current = [];
     farFaces.current = [];
-    sideSign.current = 0;
-    holdFrames.current = 0;
+    scan.current = initialScanState();
+    setAngles(null);
     outfits.current = [];
     props.current = [];
     stageProps.current = [];
     lastBody.current = null;
     lastBodySample.current = 0;
+    outfitDoneAt.current = 0;
     front.current = null;
     setFaceIdx(0);
     setProgress(0);
@@ -223,12 +205,12 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
       drawOverlay(canvas, { dets, tracks: [], vidW: res.width, vidH: res.height }, facing === 'user');
     }
     if (s === 'face') {
-      if (now - stageStart.current < 1200) return;
+      if (now - stageStart.current < SCAN_CALIB.settleMs) return;
       if (res.face.length === 0) return setHint('No face found. Move closer and face the camera.');
       if (res.face.length > 1) return setHint('Only one face in frame please.');
       const detected = res.face[0];
       if (detected.score < 0.7) return setHint('Hold still');
-      if (Math.min(detected.boxRaw[2] * res.width, detected.boxRaw[3] * res.height) < 64) {
+      if (!faceBigEnough(detected.boxRaw[2] * res.width, detected.boxRaw[3] * res.height)) {
         return setHint('Move closer so your face is clear.');
       }
       // The embedding, and the head angle, come from a square crop, the same way the game reads faces (see
@@ -240,30 +222,27 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
         return setHint('Keep just your face in frame and hold still.');
       }
       const f = crops[0].face;
-      if (!isValidEmbedding(f.embedding) || f.score < 0.7 || faceYawDeg(f) > MAX_YAW_DEG) return setHint('Hold still and face the camera a little more.');
-      // The prompt must actually be performed: the head angle has to sit in the requested range, and
-      // stay there for a couple of frames, before the sample counts.
-      const prompt = FACE_PROMPTS[Math.min(faces.current.length, FACE_PROMPTS.length - 1)];
-      const yawSigned = (f.rotation?.angle?.yaw ?? 0) * 180 / Math.PI;
-      const pitchSigned = (f.rotation?.angle?.pitch ?? 0) * 180 / Math.PI;
-      const yawAbs = Math.abs(yawSigned);
-      let posed = true;
-      if (prompt.yaw && (yawAbs < prompt.yaw[0] || yawAbs > prompt.yaw[1])) posed = false;
-      if (posed && prompt.side) {
-        const sign = Math.sign(yawSigned);
-        if (sideSign.current === 0) sideSign.current = prompt.side === 'a' ? sign : -sign;
-        else if (sign !== (prompt.side === 'a' ? sideSign.current : -sideSign.current)) posed = false;
+      if (!isValidEmbedding(f.embedding) || f.score < 0.7 || !Number.isFinite(faceYawDeg(f))) return setHint('Hold still and face the camera a little more.');
+      const yawSigned = ((f.rotation?.angle?.yaw ?? 0) * 180) / Math.PI;
+      const pitchSigned = ((f.rotation?.angle?.pitch ?? 0) * 180) / Math.PI;
+      setAngles({ yaw: Math.round(yawSigned), pitch: Math.round(pitchSigned) });
+      // The prompt must actually be performed: the head angle has to sit in the requested band, and
+      // stay there for a couple of frames, before the sample counts. The judgement names the one
+      // thing to change; a turn past what enrolment keeps is "turn back", whatever the prompt.
+      const prompt = promptFor(faces.current.length);
+      let judgement: Judgement = judgePose(prompt, yawSigned, pitchSigned, scan.current);
+      if (judgement.ok && Math.abs(yawSigned) > SCAN_CALIB.enrolYawMax) judgement = { ok: false, reason: 'turn-less', latch: {} };
+      const held = holdStep(scan.current, judgement);
+      if (!held.ready) {
+        scan.current = held.state;
+        return setHint(hintFor(prompt, judgement.reason));
       }
-      if (prompt.pitch && (pitchSigned < prompt.pitch[0] || pitchSigned > prompt.pitch[1])) posed = false;
-      if (!posed) {
-        holdFrames.current = 0;
-        return setHint(prompt.side ? 'Turn your head the other way, then hold it there.' : prompt.pitch ? 'Tilt a little more and hold it.' : 'Hold that pose for a moment.');
+      // A different face than the earlier samples: keep the hold so the next good frame retries at once.
+      if (!samePerson(f.embedding, faces.current)) {
+        scan.current = { ...scan.current, hold: SCAN_CALIB.holdFrames - 1 };
+        return setHint('That does not look like the same person as the earlier frames.');
       }
-      if (++holdFrames.current < POSE_HOLD_FRAMES) return setHint('Hold it…');
-      holdFrames.current = 0;
-      if (faces.current.length > 0 && faceSimilarity(f.embedding, faces.current[0]) < SAME_PERSON_MIN) {
-        return setHint('That does not look like the same person as frame 1.');
-      }
+      scan.current = held.state;
       faces.current.push(compactEmbedding(f.embedding));
       sfx.tick();
       stageStart.current = performance.now();
@@ -278,6 +257,7 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
         stageProps.current = [];
         lastBody.current = null;
         lastBodySample.current = 0;
+        outfitDoneAt.current = 0;
         setProgress(0);
       };
       if (res.body.length > 1 || res.face.length > 1) {
@@ -295,15 +275,15 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
           const crops = await zoom.current.run(human, context.frame, faceRegion(fb, res.width / res.height));
           if (!isCurrent()) return;
           const f = crops.length === 1 ? crops[0].face : null;
-          const reference = referenceFace ?? faces.current[0];
-          if (f && isValidEmbedding(f.embedding) && f.score >= 0.7 && faceYawDeg(f) <= MAX_YAW_DEG && (!reference || faceSimilarity(f.embedding, reference) >= SAME_PERSON_MIN)) {
+          const known = referenceFace ? [referenceFace, ...faces.current] : faces.current;
+          if (f && isValidEmbedding(f.embedding) && f.score >= 0.7 && faceYawDeg(f) <= MAX_YAW_DEG && samePerson(f.embedding, known)) {
             farFaces.current.push(compactEmbedding(f.embedding));
           }
         }
       }
       const regions = b ? outfitRegions(b, 0.4, res.width / res.height) : null;
       if (!b || !regions?.top) {
-        if (lastBodySample.current && now - lastBodySample.current > 1500) clearSamples();
+        if (lastBodySample.current && now - lastBodySample.current > SCAN_CALIB.bodyGapMs) clearSamples();
         setHint('Shoulders and hips must both be visible. Step back so the whole body fits.');
         return;
       }
@@ -314,18 +294,26 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
       }
       if (now - stageStart.current < 800 || now - lastBodySample.current < BODY_SAMPLE_INTERVAL_MS) return;
       const box = toNBox(b.boxRaw);
-      if (lastBody.current && (iou(lastBody.current, box) < 0.25 || now - lastBodySample.current > 1500)) clearSamples();
-      const img = sampler.current.grab(context.frame);
+      // A step or a phone shift skips the frame and keeps the samples; only a real gap starts over.
+      const decision = outfits.current.length < BODY_SAMPLES ? bodySampleDecision(lastBody.current, box, now, lastBodySample.current, iou) : 'skip';
+      if (decision === 'restart') clearSamples();
+      if (decision === 'skip' && outfits.current.length < BODY_SAMPLES) {
+        lastBody.current = box;
+        return setHint('Hold still.');
+      }
+      const img = decision === 'skip' ? null : sampler.current.grab(context.frame);
       const sig = img ? outfitSignature(img, b, 0.4) : null;
-      if (!sig) return;
-      outfits.current.push(sig);
-      lastBody.current = box;
-      lastBodySample.current = now;
-      const bp = bodyProportions(b, 0.4);
-      if (bp) stageProps.current.push(bp);
-      setProgress(Math.min(1, outfits.current.length / BODY_SAMPLES));
-      setHint(wholeBody ? '' : 'Feet are out of frame. Still scanning, but legs will not count.');
-      const farDone = s !== 'bodyFront' || farFaces.current.length >= MIN_FAR_FACES || now - stageStart.current > FAR_FACE_PATIENCE_MS;
+      if (sig) {
+        outfits.current.push(sig);
+        lastBody.current = box;
+        lastBodySample.current = now;
+        const bp = bodyProportions(b, 0.4);
+        if (bp) stageProps.current.push(bp);
+        setProgress(Math.min(1, outfits.current.length / BODY_SAMPLES));
+        setHint(wholeBody ? '' : 'Feet are out of frame. Still scanning, but legs will not count.');
+      }
+      if (outfits.current.length >= BODY_SAMPLES && !outfitDoneAt.current) outfitDoneAt.current = now;
+      const farDone = farFacesDone(s === 'bodyFront', farFaces.current.length, outfitDoneAt.current, now);
       if (outfits.current.length >= BODY_SAMPLES && !farDone) {
         // Outfit done; hold the pose a little longer so the far face set fills up.
         setHint(res.face.length === 1 ? `Look at the phone: ${farFaces.current.length} of ${MIN_FAR_FACES} far face samples.` : 'Look at the phone so it can learn your face from here.');
@@ -336,6 +324,9 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
         props.current.push(...stageProps.current);
         stageProps.current = [];
         outfits.current = [];
+        outfitDoneAt.current = 0;
+        lastBody.current = null;
+        lastBodySample.current = 0;
         setProgress(0);
         setRecording(false);
         sfx.tick();
@@ -348,12 +339,18 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
     }
   };
 
-  useVisionLoop(videoRef, camReady && humanReady && stage !== 'saving' && stage !== 'error' && stage !== 'bodyMode', onFrame);
+  // The face stage needs face boxes only, from a copy no wider than SCAN_CALIB.faceDetectWidth: the
+  // body model and a 1080p copy would cost a phone most of each frame for nothing. The body stages
+  // keep the full frame and both models.
+  useVisionLoop(videoRef, camReady && humanReady && stage !== 'saving' && stage !== 'error' && stage !== 'bodyMode', onFrame, {
+    pass: stage === 'face' ? 'face' : 'frame',
+    maxWidth: stage === 'face' ? SCAN_CALIB.faceDetectWidth : undefined,
+  });
 
   const copy = ((): { heading: string; prompt: string } => {
     switch (stage) {
       case 'face':
-        return { heading: `Face ${faceIdx + 1} of ${FACE_SAMPLES}`, prompt: FACE_PROMPTS[Math.min(faceIdx, FACE_PROMPTS.length - 1)].text };
+        return { heading: `Face ${faceIdx + 1} of ${FACE_SAMPLES}`, prompt: promptFor(faceIdx).text };
       case 'bodyMode':
         return { heading: 'Body scan', prompt: 'The scan needs your whole body, head to feet. Who is holding the phone?' };
       case 'bodyFront':
@@ -402,6 +399,11 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
           </div>
         )}
         {hint && <p className="hint">{hint}</p>}
+        {stage === 'face' && angles && (
+          <p className="readout" aria-label="Measured head angle">
+            yaw {angles.yaw}° · pitch {angles.pitch}°
+          </p>
+        )}
         {stage !== 'bodyMode' && (!camReady || !humanReady) && (
           <p className="hint">
             {camError ?? (camReady ? status : 'Starting camera')}

@@ -1,6 +1,6 @@
 import { useEffect, useRef, type RefObject } from 'react';
 import type { Human, Result } from '@vladmandic/human';
-import { configurePass, loadHuman, withHumanSession } from '../vision/human';
+import { configurePass, loadHuman, withHumanSession, type HumanPass } from '../vision/human';
 import { visionProfile, waitForVideoFrame } from '../vision/frameClock';
 import { isE2E } from '../e2e/hook';
 
@@ -16,14 +16,29 @@ export interface VisionFrame {
   isCurrent: () => boolean;
 }
 
+export interface VisionLoopOptions {
+  /** Which full-frame pass to run: 'frame' (faces and bodies, the game) or 'face' (face boxes only, the enrolment face stage). */
+  pass?: Exclude<HumanPass, 'crop'>;
+  /**
+   * Detect on a copy no wider than this. The enrolment face stage uses it: a face at selfie distance
+   * is hundreds of pixels wide, so a 1080p copy only costs time. Sizes the handler sees (res.width,
+   * face boxes in pixels) are those of the copy. The game never sets it.
+   */
+  maxWidth?: number;
+}
+
 /** Runs one frame and all its follow-up crops exclusively against the shared Human instance. */
 export function useVisionLoop(
   video: RefObject<HTMLVideoElement | null>,
   active: boolean,
   onFrame: (res: Result, human: Human, context: VisionFrame) => void | Promise<void>,
+  options: VisionLoopOptions = {},
 ): void {
   const cb = useRef(onFrame);
   cb.current = onFrame;
+  // Read per frame, so a screen can change the pass between its stages without restarting the loop.
+  const opts = useRef(options);
+  opts.current = options;
   useEffect(() => {
     if (!active) return;
     if (isE2E()) return syntheticLoop(video, cb);
@@ -56,13 +71,17 @@ export function useVisionLoop(
             if (stream === lastStream && v.currentTime === lastTime) return;
             lastStream = stream;
             lastTime = v.currentTime;
-            if (frame.width !== v.videoWidth) frame.width = v.videoWidth;
-            if (frame.height !== v.videoHeight) frame.height = v.videoHeight;
+            const vidW = v.videoWidth;
+            const vidH = v.videoHeight;
+            const maxWidth = opts.current.maxWidth;
+            const scale = maxWidth && vidW > maxWidth ? maxWidth / vidW : 1;
+            const copyW = Math.round(vidW * scale);
+            const copyH = Math.round(vidH * scale);
+            if (frame.width !== copyW) frame.width = copyW;
+            if (frame.height !== copyH) frame.height = copyH;
             const copyStart = performance.now();
             ctx.drawImage(v, 0, 0, frame.width, frame.height);
             visionProfile.record('copy', performance.now() - copyStart);
-            const width = frame.width;
-            const height = frame.height;
             const streamIsLive = () => !stream || !('getVideoTracks' in stream) || stream.getVideoTracks().some((track) => track.readyState === 'live');
             // A capture time much older than the copy is a stale callback (the session was held by
             // another consumer, a paused tab resuming): the copy time is the honest stamp then.
@@ -71,10 +90,10 @@ export function useVisionLoop(
               frame,
               capturedAt,
               isCurrent: () => running && video.current === v && v.srcObject === stream && streamIsLive()
-                && v.videoWidth === width && v.videoHeight === height && v.readyState >= 2 && !v.paused && !v.ended,
+                && v.videoWidth === vidW && v.videoHeight === vidH && v.readyState >= 2 && !v.paused && !v.ended,
             };
             const handler = cb.current;
-            configurePass(human, 'frame');
+            configurePass(human, opts.current.pass ?? 'frame');
             const detectStart = performance.now();
             const res = await human.detect(frame);
             visionProfile.record('detect', performance.now() - detectStart);

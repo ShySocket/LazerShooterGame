@@ -38,6 +38,7 @@ input { font: inherit; }
 .sub { color: var(--muted); margin: 0; }
 .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
 .hint { color: var(--warn); margin: 0; font-size: 14px; }
+.readout { color: var(--muted); margin: 0; font-size: 12px; font-variant-numeric: tabular-nums; }
 .prompt { font-size: 18px; margin: 0; }
 h2, h3 { margin: 0; }
 
