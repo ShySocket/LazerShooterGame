@@ -1,0 +1,114 @@
+{
+  "_about": "Evidence for the rubric items that need a phone or a hand check (docs/tracking-rubric.md, `phone` and `manual` tags). npm run rubric reads this file. Set status to pass or fail, add the date and a note naming the recording or the measurement. docs/phone-session.md says what to record.",
+  "R1.03": {
+    "status": "untested",
+    "note": "Needs recordings/<date>/ with at least 200 labelled taps (range mode) and `node scripts/validate.mjs recordings/<date>` exiting 0; the scorer reads the folder itself, this entry is informational."
+  },
+  "R2.09": {
+    "status": "untested",
+    "note": "Bench (?bench, Sample person or a photo of a player, drift run) on the slowest phone at 3 m: lock on target above 90% of frames."
+  },
+  "R3.09": {
+    "status": "untested",
+    "note": "Recording backlight-3m__<phone>__1.json: target in front of a window, 20 range-mode taps, wrong 0."
+  },
+  "R3.10": {
+    "status": "untested",
+    "note": "Recording partial-back-1.5m__<phone>__1.json: 10 back-view taps with the legs out of frame, wrong 0."
+  },
+  "R3.11": {
+    "status": "untested",
+    "note": "After 5 minutes of play, the shot log's live samples all belong to the right player (compare via and the top-two similarities)."
+  },
+  "R3.12": {
+    "status": "untested",
+    "note": "Debug overlay on, pan across the whole group for 30 s: names and confidence agree with who is there."
+  },
+  "R4.06": {
+    "status": "untested",
+    "note": "From the shot log of a real round: share of hits whose LOCK label was already green at the tap, target 80%."
+  },
+  "R4.07": {
+    "status": "untested",
+    "note": "10-minute round: UNCLEAR TARGET on a clearly aimed face-on 3 m shot fewer than 1 in 10 (shot log)."
+  },
+  "R4.09": {
+    "status": "untested",
+    "note": "Shot log timestamps on the fastest phone: median tap-to-verdict under 400 ms."
+  },
+  "R5.01": {
+    "status": "untested",
+    "note": "Range test (debug, range, target and distance, 20 taps per cell) at 1.5/3/4.5/6/8 m face-on and back view: wrong 0 in every cell. Recordings stationary-<d>m__<phone>__<n>.json."
+  },
+  "R5.02": {
+    "status": "untested",
+    "note": "Same table: every cell meets the target in docs/tracking-rubric.md section 5 on the players' phones in the venue light."
+  },
+  "R5.03": {
+    "status": "untested",
+    "note": "Same table with half the lights off: within 15 points of the good-light numbers."
+  },
+  "R6.12": {
+    "status": "untested",
+    "note": "Bench period with 2 enrolled profiles vs 12 on the slowest phone; the period must not grow with player count."
+  },
+  "R6.13": {
+    "status": "untested",
+    "note": "Six or more players in one camera frame: frame period stays under 2x the single-body period (bench line or debug FPS)."
+  },
+  "R6.14": {
+    "status": "pass",
+    "date": "2026-09-17",
+    "note": "outfitConflict over all 66 pairs of 12 synthetic 51-bin outfits: 66 pairs in 0.64 ms in Node on the Mac; the lobby lists every conflicting pair (Lobby.tsx conflicts loop), verified by the e2e lobby-gating scenario naming the pair."
+  },
+  "R6.17": {
+    "status": "pass",
+    "date": "2026-09-17",
+    "note": "e2e lobby-gating: a player joined and enrolled after the host had enrolled; the host stayed enrolled and Start enabled once the newcomer's outfit was distinct."
+  },
+  "R6.18": {
+    "status": "untested",
+    "note": "Not built: a round timer or a last-two-standing call-out. Nice-to-have."
+  },
+  "R7.01": {
+    "status": "untested",
+    "note": "One phone of each kind (iOS Safari, Android Chrome): guest enrolment end to end (8 head angles, front and back body scans, far-face step, outfit check) without a dead end."
+  },
+  "R7.03": {
+    "status": "untested",
+    "note": "Mid-round: take a call, lock the screen, switch apps; back in the same screen with the camera restarted within 3 s and NO FRESH FRAMES until then; the first FIRE afterwards never lands on a stale frame."
+  },
+  "R7.04": {
+    "status": "untested",
+    "note": "Mid-round: rotate the phone; no crash, no frozen crosshair, no hit from the pre-rotation frame."
+  },
+  "R7.05": {
+    "status": "untested",
+    "note": "Ten minutes of play on the warmest phone: no crash, frame period (bench line / debug FPS) grows by less than 50%, screen stays on."
+  },
+  "R7.06": {
+    "status": "untested",
+    "note": "Airplane mode for 30 s mid-round: aiming and verdicts continue locally, hits queue or fail visibly, the room resyncs with no duplicated hits."
+  },
+  "R7.08": {
+    "status": "pass",
+    "date": "2026-09-17",
+    "note": "The demo runs from https://lazer-shooter-game.vercel.app with a real certificate (HTTP/2 200 over TLS on 2026-09-17), so no self-signed certificate is involved."
+  },
+  "R7.09": {
+    "status": "untested",
+    "note": "First open on venue Wi-Fi: models downloaded and warmed up within 30 s with the status pill visible; second open instant (PWA cache); one phone reopened offline."
+  },
+  "R7.10": {
+    "status": "untested",
+    "note": "Sounds and haptics on hit, being hit, elimination and win, audible in a noisy room; iOS after the first tap."
+  },
+  "R7.12": {
+    "status": "untested",
+    "note": "20-minute round on a midrange phone, torch off: battery drop under 25%."
+  },
+  "R7.14": {
+    "status": "untested",
+    "note": "Add to home screen on iOS and Android; the installed app behaves like the tab."
+  }
+}
