@@ -14,7 +14,8 @@
     "sim:full": "node --import ./tests/register.mjs tests/sim/report.ts --seeds 100 --strict",
     "replay:rec": "node --import ./tests/register.mjs tests/replay/run.ts",
     "preview": "vite preview --host",
-    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json"
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
+    "rubric": "node scripts/rubric.mjs"
   },
   "dependencies": {
     "@vladmandic/human": "^3.3.6",

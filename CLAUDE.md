@@ -15,6 +15,7 @@ npm test                       # tsc (tests config) + node --test tests/*.test.t
 npm run typecheck              # tsc for app and tests
 npm run sim -- --seeds 100     # 100-seed simulation table for every scenario
 npm run build                  # tsc + vite build
+npm run rubric                 # score against docs/tracking-rubric.md (sim + tests + build + recorded evidence), logs to docs/rubric-scores.md
 ```
 
 Other useful commands:
