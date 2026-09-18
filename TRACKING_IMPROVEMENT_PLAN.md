@@ -463,3 +463,19 @@ What only phones can settle next: the validation set in `docs/validation.md`, an
 - A confident crosshair target is still cropped every frame while its lead over the runner-up is under the hit margin plus 0.2 (FACE_REFRESH_MIN_LEAD): zero wrong; lookalike-faces hit 87% to 90%, lock 57% to 63%, latency 460 to 395 ms; everything else unchanged. Calibration 2026-09-14.8. This closes the trade-off item 10 recorded.
 
 State at the end of the follow-up: calibration `2026-09-14.8`, 130 tests, strict sweep clean. Final hit rates over possible shots: duel 97, back-shot 97, range-8m 91, approach 96, crossing 85, pan-crossing 82, crossing-backs 83, occlusion 100+, turn-around 97, lookalike-tops 96, lookalike-faces 90, slow-phone 95, hiccups 91, flaky-pose 94, dim-light 96; strangers, mirrors and identical tops refuse.
+
+### Where the crossing misses go (2026-09-17, `scripts/miss-causes.mjs`, 30 seeds)
+
+The 100-seed table on `main` after PR #4: pan-crossing 82 % of possible shots, crossing-backs 83 %, crossing 85 %, every other scenario 90 % or better (identical tops, strangers and the mirror refuse by design), zero wrong hits and zero wrong locks. The crossings lose their points to MISS, not to UNCLEAR (3 to 4 per 1100 shots). Classifying every instant miss by what the fire path saw:
+
+| cause | pan-crossing | crossing-backs | crossing |
+| --- | --- | --- | --- |
+| a coasting track (seen a moment ago) still covers the dot | 17 | 25 | 26 |
+| the dot is inside the box but on a limb, outside the observed torso/head | 17 | 11 | 8 |
+| two boxes under the dot (the crossing itself) | 13 | 18 | 10 |
+| another box within the aim edge band | 0 | 3 | 5 |
+| nobody detected under the dot (dropout) | 5 | 0 | 0 |
+| burst opened, settled as miss | 9 | 6 | 1 |
+| misses in 330 shots (318 to 320 possible) | 61 | 63 | 50 |
+
+All but the dropouts are deliberate refusals: the cover rule, the torso rule and the overlap rule are what keep occlusion seed 60 and its relatives at zero wrong hits. Moving the cover check to a motion-predicted box would stop refusing when a person who was in front a moment ago is predicted to have moved, which is exactly the geometry of the occlusion wrong hit; nominating from the outer box was already tried and rejected (LESSONS). No tracking change was made; the bound in `tests/sim.test.ts` (pan-crossing >= 35 %) stands far below the measured 82 %.
