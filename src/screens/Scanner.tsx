@@ -325,7 +325,13 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
     }
   };
 
-  useVisionLoop(videoRef, camReady && humanReady && stage !== 'saving' && stage !== 'error' && stage !== 'bodyMode', onFrame);
+  // The face stage needs face boxes only, from a copy no wider than SCAN_CALIB.faceDetectWidth: the
+  // body model and a 1080p copy would cost a phone most of each frame for nothing. The body stages
+  // keep the full frame and both models.
+  useVisionLoop(videoRef, camReady && humanReady && stage !== 'saving' && stage !== 'error' && stage !== 'bodyMode', onFrame, {
+    pass: stage === 'face' ? 'face' : 'frame',
+    maxWidth: stage === 'face' ? SCAN_CALIB.faceDetectWidth : undefined,
+  });
 
   const copy = ((): { heading: string; prompt: string } => {
     switch (stage) {

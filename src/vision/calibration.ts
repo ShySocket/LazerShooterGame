@@ -55,6 +55,8 @@ export const SCAN_CALIB = {
   enrolYawMax: 60,
   /** Pause after an accepted sample before the next one may be taken. */
   settleMs: 400,
+  /** The face stage detects on a copy no wider than this; a selfie-distance face is still hundreds of pixels. */
+  faceDetectWidth: 960,
   /** How long the front body stage waits for far face samples once the outfit is complete. */
   farFacePatienceMs: 6000,
 };

@@ -42,11 +42,14 @@ export const humanConfig: Partial<Config> = {
  * face would only slow the loop down on a phone. Human keeps one mutable config, so the two passes
  * flip these flags before each detect call inside the same serialized session.
  */
-export function configurePass(h: Human, pass: 'frame' | 'crop'): void {
+export type HumanPass = 'frame' | 'crop' | 'face';
+
+export function configurePass(h: Human, pass: HumanPass): void {
   const crop = pass === 'crop';
   h.config.face.mesh!.enabled = crop;
   (h.config.face as unknown as { insightface: { enabled: boolean } }).insightface.enabled = crop;
-  h.config.body.enabled = !crop;
+  // The enrolment face stage wants face boxes alone: the body model would only cost time there.
+  h.config.body.enabled = pass === 'frame';
 }
 
 let instance: Human | null = null;
