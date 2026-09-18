@@ -2,6 +2,16 @@
 
 Everything in `docs/tracking-rubric.md` that a machine can check is green (`npm run rubric`: every Must that needs no phone passes). What is left needs real phones in the real venue. One afternoon with two or three friends covers it. This page lists exactly what to do, which rubric ids each recording settles, and how to turn the results into a score.
 
+## Scan check first (settles R8.01, R8.06, R8.13)
+
+Before anything else, enrol once on the iPhone and once on an Android. The face stage shows `yaw N° · pitch M°` under the hint. For each prompt, turn until the hint says "Hold it" and note:
+
+- whether every prompt advanced within about 3 s of holding the pose (R8.01), and which one needed more than one try;
+- the yaw the readout showed at a comfortable "slightly" turn and at a "further" turn, both sides, and the pitch at chin up and chin down (R8.13, these tune `SCAN_CALIB` in `src/vision/calibration.ts`);
+- the time for the face scan and for the whole enrolment on the slowest phone (R8.06: under 45 s and under 2 min).
+
+If a prompt refuses a correct pose, the numbers say why: the bands are straight 0 to 15°, slight 12 to 40°, further 25 to 60°, tilt 8 to 40°.
+
 ## Before the session
 
 - Open https://lazer-shooter-game.vercel.app on every phone once on the venue Wi-Fi so the models are cached. Note each phone model and browser.
@@ -66,4 +76,4 @@ The score line lands in `docs/rubric-scores.md`; the Must-only score is what "ba
 
 ## Go / no-go for the demo
 
-Section 8 of `docs/tracking-rubric.md` is the demo-day protocol (venue, phones, a three-player smoke round, what to record). If any Must in section 1 fails on the recordings, run the demo in range mode (no damage) rather than with real scores.
+Section 9 of `docs/tracking-rubric.md` is the demo-day protocol (venue, phones, a three-player smoke round, what to record). If any Must in section 1 fails on the recordings, run the demo in range mode (no damage) rather than with real scores.

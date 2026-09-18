@@ -9,7 +9,7 @@ How to use this file:
 - **Should** items are what makes the game feel good. Aim to pass all of them, but a miss is a known limitation to tell players about, not a blocker.
 - **Nice** items are polish. Skip them until every Must and Should is green.
 - Numbers come from three sources: what the automated gates already enforce (`tests/sim.test.ts`, `npm run sim:full`), what `docs/validation.md` says to measure on phones, and the targets proposed here for a real venue. Where a real-phone target is lower than the sim bound, that is deliberate: the sim's detector is a model of the real one.
-- Every scored line ends in a comment `<!-- Rn.nn evidence -->`: a stable id and the evidence that earns the tick. `auto:sim.x` is a check on the simulation aggregates, `auto:test:<name>` a named unit test that must pass, `auto:build` the production build, `auto:validate` the real-phone validation set, `e2e:<name>` a Playwright test, `phone` a real-phone measurement recorded in `docs/rubric-status.json`, `manual` a hand-checked item recorded in the same file. `npm run rubric` reads these and prints the score; sections 8 to 10 are procedure, not scored.
+- Every scored line ends in a comment `<!-- Rn.nn evidence -->`: a stable id and the evidence that earns the tick. `auto:sim.x` is a check on the simulation aggregates, `auto:test:<name>` a named unit test that must pass, `auto:build` the production build, `auto:validate` the real-phone validation set, `e2e:<name>` a Playwright test, `phone` a real-phone measurement recorded in `docs/rubric-status.json`, `manual` a hand-checked item recorded in the same file. `npm run rubric` reads these and prints the score; sections 9 to 11 are procedure, not scored.
 - Order of decision when two items conflict: wrong hits first (must be zero), then wrong locks, then missed hits, then latency. Never buy a hit rate by loosening what counts as "under the dot" (see the LESSONS in `CLAUDE.md`).
 
 Tiers of outcome, so you know what to aim for overall:
@@ -144,7 +144,28 @@ The demo is everyone against everyone: 3 lives, no respawn, last standing wins. 
 - [ ] **Should**: Debug overlay and range mode can be turned on and off mid-round without breaking the game, and range mode shots deal no damage. <!-- R7.13 auto:test:the range-test recorder returns the same accuracy summary -->
 - [ ] **Nice**: Install-to-home-screen works on both platforms and the installed app behaves identically to the browser tab. <!-- R7.14 phone -->
 
-## 8. Demo-day protocol (run this before the first guest picks up a phone)
+## 8. Enrolment scan (face angles, body scans)
+
+The eight-angle face scan and the two body scans are the first thing every player does; a scan that refuses a correct head turn or takes minutes is the demo's first failure. The prompt logic is pure (`src/vision/scan.ts`, tunables in `SCAN_CALIB`) so most of this is unit-tested; the timings need a phone.
+
+Automated evidence: `tests/scan.test.ts` and the `[scan-smoke]` Playwright scenario (real models in Chrome).
+Real-phone evidence: a rescan on the phones players use, with the yaw/pitch readout the face stage shows.
+
+- [ ] **Must**: Each face prompt advances within 3 s of the player holding the correct pose (no prompt needs more than one try on a phone that shows the pose in the readout). <!-- R8.01 phone -->
+- [ ] **Must**: Both turn directions work whatever the mirrored preview shows: left and right only have to be opposite ways, latched from the first turn. <!-- R8.02 auto:test:mirrored player -->
+- [ ] **Must**: The hint names the actual correction: a turn that is too small says "turn a bit more", too large says "turn back", and "the other way" appears only when the direction is wrong. <!-- R8.03 auto:test:turn-less, not other-way -->
+- [ ] **Must**: The same person is never refused for turning their head: a sample counts when it matches any accepted sample, so a far turn chains through the adjacent angle. <!-- R8.04 auto:test:same-person chain -->
+- [ ] **Must**: Chin up and chin down complete whatever sign the model gives pitch on the device. <!-- R8.05 auto:test:inverted pitch sign -->
+- [ ] **Must**: The face scan completes in under 45 s and the whole enrolment (face, front and back body scans) in under 2 min on the slowest phone in the group. <!-- R8.06 phone -->
+- [ ] **Must**: A 720p selfie at arm's length is not stuck on "Move closer": the enrolment face size gate is 48 px, not 64. <!-- R8.07 auto:test:minimum face size -->
+- [ ] **Must**: The body stages keep their outfit samples through a step or a phone shift; only 1.5 s without a usable body starts over. <!-- R8.08 auto:test:movement does not lose -->
+- [ ] **Must**: The models load, the camera starts and the face stage runs in a real browser without console errors. <!-- R8.09 e2e:scan-smoke -->
+- [ ] **Should**: The face stage shows the measured yaw and pitch under the hint, so a phone can report what the model sees and `SCAN_CALIB` can be tuned from real numbers. <!-- R8.10 manual -->
+- [ ] **Should**: The far-face step of the front body scan waits at most 6 s after the outfit is complete. <!-- R8.11 auto:test:far faces are waited -->
+- [ ] **Should**: A signed-in player's deep scan is reused and only a complete scan from the current face model counts. <!-- R8.12 auto:test:a stored scan stands in for a face scan -->
+- [ ] **Nice**: The yaw and pitch a real phone reports at a comfortable "slight" and "further" turn are written next to the bands in `SCAN_CALIB`. <!-- R8.13 manual -->
+
+## 9. Demo-day protocol (run this before the first guest picks up a phone)
 
 Venue and people:
 
@@ -174,7 +195,7 @@ Go / no-go:
 
 - [ ] Every Must in sections 1, 4, 6 and 7 was green in the smoke round. If any Must in section 1 fails, do not run the demo with real scores; run it as a range-test demo instead (range mode deals no damage).
 
-## 9. Automated gates to keep green on every tracking change
+## 10. Automated gates to keep green on every tracking change
 
 - [ ] `npm test` (unit tests, pipeline pins, 3-seed sim round, replay fixture)
 - [ ] `npm run typecheck`
@@ -184,6 +205,6 @@ Go / no-go:
 - [ ] `node scripts/validate.mjs recordings/<latest>` (exit 0, once real recordings exist)
 - [ ] `CALIBRATION_VERSION` bumped and README thresholds updated whenever a constant in `src/vision/calibration.ts` changes.
 
-## 10. What is already covered and what still needs phones
+## 11. What is already covered and what still needs phones
 
-Covered by automation today (2026-09-17): every sim item in sections 1 to 4, the tap-time rule, the hit resolution race, and the replay fixture. Not yet measured, and only phones can settle it: the real-phone columns in sections 1, 3, 5 and 8, everything in section 6 at 8 or more players, and section 7 on iOS Safari and Android Chrome. The validation set in `docs/validation.md` is the first job; this rubric says what a passing set looks like.
+Covered by automation today (2026-09-17): every sim item in sections 1 to 4, the tap-time rule, the hit resolution race, and the replay fixture. Not yet measured, and only phones can settle it: the real-phone columns in sections 1, 3, 5, 8 and 9, everything in section 6 at 8 or more players, and section 7 on iOS Safari and Android Chrome. The validation set in `docs/validation.md` is the first job; this rubric says what a passing set looks like.
