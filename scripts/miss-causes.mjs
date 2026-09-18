@@ -15,9 +15,10 @@
  */
 import { fileURLToPath, pathToFileURL } from 'node:url';
 await import(pathToFileURL(fileURLToPath(new URL('../tests/register.mjs', import.meta.url))).href);
-import { simulate, SCENARIOS } from '../tests/sim/engine.ts';
-import { VisionPipeline } from '../src/vision/pipeline.ts';
-import { AIM_EDGE_BAND } from '../src/vision/calibration.ts';
+// Dynamic imports: the TypeScript hook above must be registered before the app's modules resolve.
+const { simulate, SCENARIOS } = await import('../tests/sim/engine.ts');
+const { VisionPipeline } = await import('../src/vision/pipeline.ts');
+const { AIM_EDGE_BAND } = await import('../src/vision/calibration.ts');
 
 const inside = (b, x, y) => x >= b[0] && x <= b[0] + b[2] && y >= b[1] && y <= b[1] + b[3];
 const nearBand = (b, x, y) => { const gx = b[2] * AIM_EDGE_BAND.x, gy = b[3] * AIM_EDGE_BAND.y; return x >= b[0] - gx && x <= b[0] + b[2] + gx && y >= b[1] - gy && y <= b[1] + b[3] + gy; };
