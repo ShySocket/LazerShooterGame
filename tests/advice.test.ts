@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { connectState, HIT_CONFIDENCE_NOTE, RANGE_TARGET_NOTE, verdictAdvice, isStalled, loadProgress, lobbyHint, rejoinFailure, saveError, shareFallback, STALL_TEXT } from '../src/ui/advice';
+import { connectState, crashNotice, HIT_CONFIDENCE_NOTE, RANGE_TARGET_NOTE, updateAllowed, verdictAdvice, isStalled, loadProgress, lobbyHint, rejoinFailure, saveError, shareFallback, STALL_TEXT } from '../src/ui/advice';
 import { LOAD_CALIB } from '../src/vision/calibration';
 
 const REQUIRED = ['blazeface', 'facemesh', 'insightface-mobilenet-swish', 'movenet-multipose'];
@@ -78,4 +78,21 @@ test('verdict advice names what to do for every refusal and stays silent on hits
   assert.match(verdictAdvice('UNCLEAR TARGET'), /closer|green name/);
   assert.match(verdictAdvice('CAMERA TOO SLOW'), /light/);
   assert.match(RANGE_TARGET_NOTE, /FIRE/);
+});
+
+test('update allowed only when nothing on the phone would be lost by a reload', () => {
+  assert.equal(updateAllowed({ inRoom: false, profileOpen: false, inputFocused: false }), true);
+  assert.equal(updateAllowed({ inRoom: true, profileOpen: false, inputFocused: false }), false);
+  assert.equal(updateAllowed({ inRoom: false, profileOpen: true, inputFocused: false }), false);
+  assert.equal(updateAllowed({ inRoom: false, profileOpen: false, inputFocused: true }), false);
+});
+
+test('crash notice speaks plainly and keeps the raw text behind details', () => {
+  const n = crashNotice({ t: 0, kind: 'error', message: 'TypeError: x is undefined\n  at foo' });
+  assert.equal(n.title, 'The app restarted unexpectedly');
+  assert.doesNotMatch(n.summary, /TypeError/);
+  assert.match(n.details, /TypeError: x is undefined/);
+  const r = crashNotice({ t: 0, kind: 'reload', message: 'The page reloaded on its own while in room ABCD.' });
+  assert.match(r.summary, /room ABCD/);
+  assert.match(r.summary, /join again/);
 });

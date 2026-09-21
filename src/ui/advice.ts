@@ -125,3 +125,29 @@ export function verdictAdvice(text: string): string {
 }
 
 export const RANGE_TARGET_NOTE = 'Choose who you are aiming at to enable FIRE.';
+
+/** A waiting build is applied only when nothing on this phone would be lost by a reload. */
+export function updateAllowed(state: { inRoom: boolean; profileOpen: boolean; inputFocused: boolean }): boolean {
+  return !state.inRoom && !state.profileOpen && !state.inputFocused;
+}
+
+export interface CrashNotice {
+  title: string;
+  summary: string;
+  details: string;
+}
+
+/** The crash diary in plain words: what the player should know first, the raw text behind a toggle. */
+export function crashNotice(incident: { t: number; kind: 'error' | 'rejection' | 'reload'; message: string }): CrashNotice {
+  const when = new Date(incident.t).toLocaleTimeString();
+  const room = incident.message.match(/room ([A-Z]{4})/)?.[1];
+  const summary =
+    incident.kind === 'reload'
+      ? `The page reloaded on its own${room ? ` while in room ${room}` : ''} at ${when}. Rejoining should have brought you back; if not, join again with the code.`
+      : `Something in the app failed at ${when} and it had to restart. Your enrolment and room are unaffected; if it happens again, tell the host.`;
+  return { title: 'The app restarted unexpectedly', summary, details: `${incident.kind}: ${incident.message}` };
+}
+
+export const REVIEW_SKIP_ONE = 'Skip this shot';
+export const REVIEW_DONE = 'Done reviewing';
+export const RESET_FAILED = 'Could not reset the room. Check the connection and tap again.';

@@ -13,7 +13,7 @@ import { loadHuman } from './vision/human';
 import { applyPendingUpdate, onUpdatePending, updatePending } from './pwa';
 import { recordIncident, wasReloaded } from './diag';
 import { isE2E } from './e2e/hook';
-import { connectState, rejoinFailure } from './ui/advice';
+import { connectState, rejoinFailure, updateAllowed } from './ui/advice';
 
 function guestPid(): string {
   let v = localStorage.getItem('lz:pid');
@@ -69,9 +69,11 @@ export default function App() {
 
   useEffect(() => onAccount(setAccount, setNotice), []);
   useEffect(() => onUpdatePending(() => setSwPending(true)), []);
-  // A new build is applied only while nobody is mid-scan or mid-round on this phone.
+  // A new build is applied only while nobody is mid-scan, mid-round or mid-typing on this phone.
   useEffect(() => {
-    if (swPending && !code && !showProfile) applyPendingUpdate();
+    if (!swPending) return;
+    const focused = document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement;
+    if (updateAllowed({ inRoom: Boolean(code), profileOpen: showProfile, inputFocused: focused })) applyPendingUpdate();
   }, [swPending, code, showProfile]);
   // Models are ~24 MB; start fetching while the player is still typing a name.
   useEffect(() => {

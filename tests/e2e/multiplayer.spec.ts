@@ -13,7 +13,9 @@ let code = '';
 const P = (i: number) => phones[i];
 
 test.afterAll(async () => {
-  if (phones[0] && code) await deleteRoom(phones[0], code);
+  // The host's context is closed by the host-migration-results scenario; any live phone can delete the room.
+  const live = [...phones].reverse().find((p) => p.ctx.pages().length > 0) ?? phones[phones.length - 1];
+  if (live && code) await deleteRoom(live, code);
   await closeAll(phones);
 });
 
@@ -171,11 +173,21 @@ test('[leaderboard] the results list every player in order with their tags', asy
   for (const p of phones) await expect(p.page.locator('.standings li')).toHaveCount(8);
 });
 
+test('[host-migration-results] the host leaving on the results screen does not strand the room: another phone gets Back to lobby', async () => {
+  test.setTimeout(60_000);
+  const [host, next] = phones;
+  await expect(next.page.getByText('Waiting for the host to start another round.')).toBeVisible();
+  await host.ctx.close();
+  await expect(next.page.getByRole('button', { name: 'Back to lobby' })).toBeVisible({ timeout: 30_000 });
+  expect((await room(next)).hostId).toBe(next.pid);
+});
+
 test('[second-round] Back to lobby then Start gives everybody fresh lives, status and tags', async () => {
   test.setTimeout(60_000);
-  const host = P(0);
+  const live = phones.slice(1);
+  const host = live[0];
   await host.page.getByRole('button', { name: 'Back to lobby' }).click();
-  for (const p of phones) await expect(p.page.getByText(/Start game|Waiting for .* to start/)).toBeVisible();
+  for (const p of live) await expect(p.page.getByText(/Start game|Waiting for .* to start/)).toBeVisible();
   const lobby = await room(host);
   for (const p of Object.values(lobby.players)) {
     expect(p.lives).toBe(3);
@@ -183,7 +195,7 @@ test('[second-round] Back to lobby then Start gives everybody fresh lives, statu
     expect(p.tags).toBe(0);
   }
   await startGame(host);
-  for (const p of phones) await expect(heartsOn(p)).toHaveCount(3);
+  for (const p of live) await expect(heartsOn(p)).toHaveCount(3);
 });
 
 test('[no-console-errors] no console errors or uncaught exceptions on any phone through join, lobby, play and results', async () => {

@@ -232,7 +232,8 @@ input, .code-input {
 .range-panel th:first-child, .range-panel td:first-child { text-align: left; color: var(--text); }
 
 .note.incident { display: flex; flex-direction: column; gap: 4px; }
-.incident-msg { font-family: ui-monospace, Menlo, monospace; font-size: 12px; word-break: break-word; color: var(--text); }
+.incident-msg { font-size: 13px; word-break: break-word; color: var(--text); }
+.incident-details { font-family: ui-monospace, Menlo, monospace; font-size: 11px; white-space: pre-wrap; word-break: break-word; color: var(--muted); max-height: 160px; overflow: auto; margin: 6px 0; }
 
 /* Tracking bench (?bench) */
 .bench { gap: 12px; }

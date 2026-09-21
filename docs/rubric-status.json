@@ -142,5 +142,10 @@
     "status": "pass",
     "date": "2026-09-21",
     "note": "Game.tsx range panel shows RANGE_TARGET_NOTE while no target is chosen (branch phone-gates)."
+  },
+  "R7.19": {
+    "status": "pass",
+    "date": "2026-09-21",
+    "note": "ShotReview: 'Skip this shot' (next shot) and 'Done reviewing'; Results: resetForNewRound failure shows RESET_FAILED and keeps the button (branch phone-gates)."
   }
 }

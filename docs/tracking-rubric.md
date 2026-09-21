@@ -151,6 +151,10 @@ The demo is everyone against everyone: 3 lives, no respawn, last standing wins. 
 - [ ] **Must**: A stalled model download ends in a Retry button with a plain message, never a black camera: the loading text shows progress and a download with no progress for 45 s is abandoned. <!-- R7.15 auto:test:a stalled download -->
 - [ ] **Must**: "Connecting" and "Rejoining your room" admit after 10 s that they are taking long and offer a Back button. <!-- R7.16 auto:test:still connecting -->
 - [ ] **Should**: A failed rejoin after a reload says why on the Home screen instead of silently dropping the player. <!-- R7.17 auto:test:a failed rejoin -->
+- [ ] **Must**: The host leaving on the results screen does not strand the room: another phone becomes host and gets "Back to lobby". <!-- R7.18 e2e:host-migration-results -->
+- [ ] **Should**: The shot review lets a player skip one shot or finish reviewing, and a failed room reset says so and keeps the button. <!-- R7.19 manual -->
+- [ ] **Should**: A waiting app update never reloads while the player is in a room, in the profile, or typing. <!-- R7.20 auto:test:update allowed -->
+- [ ] **Should**: The crash notice speaks plainly and keeps the raw error behind a Details toggle. <!-- R7.21 auto:test:crash notice -->
 
 ## 8. Enrolment scan (face angles, body scans)
 
