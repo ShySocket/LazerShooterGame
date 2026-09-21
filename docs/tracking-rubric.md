@@ -143,6 +143,9 @@ The demo is everyone against everyone: 3 lives, no respawn, last standing wins. 
 - [ ] **Should**: Battery: a 20-minute round costs under 25 % on a midrange phone with the torch off. <!-- R7.12 phone -->
 - [ ] **Should**: Debug overlay and range mode can be turned on and off mid-round without breaking the game, and range mode shots deal no damage. <!-- R7.13 auto:test:the range-test recorder returns the same accuracy summary -->
 - [ ] **Nice**: Install-to-home-screen works on both platforms and the installed app behaves identically to the browser tab. <!-- R7.14 phone -->
+- [ ] **Must**: A stalled model download ends in a Retry button with a plain message, never a black camera: the loading text shows progress and a download with no progress for 45 s is abandoned. <!-- R7.15 auto:test:a stalled download -->
+- [ ] **Must**: "Connecting" and "Rejoining your room" admit after 10 s that they are taking long and offer a Back button. <!-- R7.16 auto:test:still connecting -->
+- [ ] **Should**: A failed rejoin after a reload says why on the Home screen instead of silently dropping the player. <!-- R7.17 auto:test:a failed rejoin -->
 
 ## 8. Enrolment scan (face angles, body scans)
 
