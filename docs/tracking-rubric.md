@@ -167,6 +167,10 @@ Real-phone evidence: a rescan on the phones players use, with the yaw/pitch read
 - [ ] **Should**: The far-face step of the front body scan waits at most 6 s after the outfit is complete. <!-- R8.11 auto:test:far faces are waited -->
 - [ ] **Should**: A signed-in player's deep scan is reused and only a complete scan from the current face model counts. <!-- R8.12 auto:test:a stored scan stands in for a face scan -->
 - [ ] **Nice**: The yaw and pitch a real phone reports at a comfortable "slight" and "further" turn are written next to the bands in `SCAN_CALIB`. <!-- R8.13 manual -->
+- [ ] **Must**: Somebody else in the frame pauses the body scan and keeps its samples; only 1.5 s of intrusion starts over, and the hint says which. <!-- R8.14 auto:test:a bystander pauses -->
+- [ ] **Must**: The body scan's settle counts from the first usable body frame, not from a countdown that ended while the player was walking back. <!-- R8.15 auto:test:the settle counts -->
+- [ ] **Should**: A small room gets an alternative to stepping back (raise the phone, tilt it down) and a scan without the legs still counts. <!-- R8.16 auto:test:small room -->
+- [ ] **Should**: A propped phone stays awake through the scan, and the far-face wait is a bar and a tick per sample, readable from 3 m. <!-- R8.17 manual -->
 
 ## 9. Demo-day protocol (run this before the first guest picks up a phone)
 

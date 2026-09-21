@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { bodySampleDecision, FACE_PROMPTS, faceBigEnough, farFacesDone, hintFor, holdStep, initialScanState, judgePose, promptFor, samePerson, SCAN_CALIB, type ScanState } from '../src/vision/scan';
+import { bodySampleDecision, bystanderDecision, FACE_PROMPTS, settleDone, smallRoomHint, SMALL_ROOM_TEXT, STEP_BACK_TEXT, faceBigEnough, farFacesDone, hintFor, holdStep, initialScanState, judgePose, promptFor, samePerson, SCAN_CALIB, type ScanState } from '../src/vision/scan';
 import { iou, type NBox } from '../src/vision/geometry';
 import { FACE_SAMPLES } from '../src/vision/embedding';
 
@@ -143,4 +143,22 @@ test('far faces are waited for after the outfit completes, six seconds at most',
   assert.equal(farFacesDone(true, 2, 10000, 10000 + SCAN_CALIB.farFacePatienceMs - 1), false, 'still waiting');
   assert.equal(farFacesDone(true, 2, 10000, 10000 + SCAN_CALIB.farFacePatienceMs + 1), true, 'patience is up');
   assert.equal(SCAN_CALIB.farFacePatienceMs, 6000);
+});
+
+test('a bystander pauses the body scan and keeps the samples; only a long intrusion starts over', () => {
+  assert.equal(bystanderDecision(1000, 1000 + SCAN_CALIB.bodyGapMs - 1), 'pause');
+  assert.equal(bystanderDecision(1000, 1000 + SCAN_CALIB.bodyGapMs + 1), 'restart');
+});
+
+test('the settle counts from the first usable body frame, not from the countdown', () => {
+  assert.equal(settleDone(0, 5000), false, 'no usable frame yet');
+  assert.equal(settleDone(4000, 4000 + SCAN_CALIB.bodySettleMs - 1), false);
+  assert.equal(settleDone(4000, 4000 + SCAN_CALIB.bodySettleMs), true);
+});
+
+test('small room: after a while the step-back hint offers raising the phone and a legless scan', () => {
+  assert.equal(smallRoomHint(0, 9000), STEP_BACK_TEXT);
+  assert.equal(smallRoomHint(1000, 1000 + SCAN_CALIB.smallRoomHintMs - 1), STEP_BACK_TEXT);
+  assert.equal(smallRoomHint(1000, 1000 + SCAN_CALIB.smallRoomHintMs + 1), `${STEP_BACK_TEXT} ${SMALL_ROOM_TEXT}`);
+  assert.match(SMALL_ROOM_TEXT, /without the legs still counts/);
 });

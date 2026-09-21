@@ -148,3 +148,25 @@ export function farFacesDone(frontStage: boolean, farFaces: number, outfitDoneAt
   if (farFaces >= minFarFaces) return true;
   return outfitDoneAt > 0 && now - outfitDoneAt > patienceMs;
 }
+
+/**
+ * Somebody else in the frame (a bystander, a poster, a mirror) pauses the body scan and keeps the
+ * samples already taken; only when the intrusion lasts longer than `gapMs` does the scan start over,
+ * because by then the samples may belong to the wrong person.
+ */
+export function bystanderDecision(intrudingSince: number, now: number, gapMs = SCAN_CALIB.bodyGapMs): 'pause' | 'restart' {
+  return now - intrudingSince > gapMs ? 'restart' : 'pause';
+}
+
+/** The settle before sampling counts from the first usable body frame, not from a countdown that ended while the player was still walking. */
+export function settleDone(firstUsableAt: number, now: number, settleMs = SCAN_CALIB.bodySettleMs): boolean {
+  return firstUsableAt > 0 && now - firstUsableAt >= settleMs;
+}
+
+export const STEP_BACK_TEXT = 'Shoulders and hips must both be visible. Step back so more of you fits.';
+export const SMALL_ROOM_TEXT = 'No room to step back? Raise the phone and tilt it down. A scan without the legs still counts.';
+
+/** The step-back hint, and after `hintMs` of it the alternative for a small room. */
+export function smallRoomHint(stepBackSince: number, now: number, hintMs = SCAN_CALIB.smallRoomHintMs): string {
+  return stepBackSince > 0 && now - stepBackSince > hintMs ? `${STEP_BACK_TEXT} ${SMALL_ROOM_TEXT}` : STEP_BACK_TEXT;
+}

@@ -64,6 +64,10 @@ export const SCAN_CALIB = {
   bodyMinOverlap: 0.25,
   /** Longer than this without a usable body and the outfit samples start over. */
   bodyGapMs: 1500,
+  /** Sampling starts this long after the first usable body frame, so a player still walking back is not sampled mid-stride. */
+  bodySettleMs: 800,
+  /** After this long of "step back", the hint offers the small-room alternative. */
+  smallRoomHintMs: 5000,
 };
 
 // ---- Loading and connecting (useHumanStatus.ts, App.tsx) ------------------------------------------

@@ -127,5 +127,10 @@
   "R8.13": {
     "status": "untested",
     "note": "Write the yaw the readout shows at a comfortable slight turn and a further turn (both sides) and the pitch at chin up/down next to the bands in SCAN_CALIB (src/vision/calibration.ts)."
+  },
+  "R8.17": {
+    "status": "pass",
+    "date": "2026-09-21",
+    "note": "Scanner.tsx calls useWakeLock(true); during the far-face wait the progress bar shows farFaces/6 and sfx.tick plays per accepted sample (commit on branch phone-gates)."
   }
 }
