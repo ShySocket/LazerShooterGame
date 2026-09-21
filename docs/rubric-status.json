@@ -137,5 +137,10 @@
     "status": "pass",
     "date": "2026-09-21",
     "note": "Lobby.tsx: NumberField max 0.7 with HIT_CONFIDENCE_NOTE under it; MUTE_SWITCH_NOTE under the sound pill (branch phone-gates)."
+  },
+  "R4.11": {
+    "status": "pass",
+    "date": "2026-09-21",
+    "note": "Game.tsx range panel shows RANGE_TARGET_NOTE while no target is chosen (branch phone-gates)."
   }
 }

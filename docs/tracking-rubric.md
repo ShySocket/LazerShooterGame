@@ -87,6 +87,8 @@ Face carries the identity up close and face-on; outfit carries it at range and f
 - [ ] **Should**: MISS and UNCLEAR TARGET are distinguishable to players: MISS when nobody is under the dot, UNCLEAR TARGET when someone is but identity is not settled. In a 10-minute round, UNCLEAR TARGET on a clearly aimed, face-on, 3 m shot happens fewer than 1 time in 10. <!-- R4.07 phone -->
 - [ ] **Should**: The shot log on the results screen explains every refused shot with the top beliefs, frame age, and stale allowance, and lists the calibration version. <!-- R4.08 auto:test:every shot log entry records the calibration version -->
 - [ ] **Nice**: Median FIRE-to-verdict under 400 ms on the fastest phone in the group (measure from the shot log timestamps). <!-- R4.09 phone -->
+- [ ] **Must**: Every refusal on the HUD (UNCLEAR TARGET, NOT A PLAYER, THAT IS YOU, CAMERA TOO SLOW, NO FRESH FRAMES, NO CAMERA LOCK, SHOT LOST) carries a second line saying what to do. <!-- R4.10 auto:test:verdict advice -->
+- [ ] **Should**: Range mode says why FIRE is disabled until a target is chosen. <!-- R4.11 manual -->
 
 ## 5. Distance and pose table (what to hand players as expectations)
 

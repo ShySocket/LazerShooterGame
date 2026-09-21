@@ -110,7 +110,8 @@ test('[background-resume] after the page was hidden and shown again, the first F
     // The verdict is decided at the tap; React paints the banner a moment later.
     const text = async () => {
       await new Promise((r) => setTimeout(r, 40));
-      return document.querySelector('.banner')?.textContent ?? '';
+      // The verdict is the banner's first line; the advice under it is a separate element.
+      return document.querySelector('.banner span')?.textContent ?? '';
     };
     setHidden(true);
     fire();

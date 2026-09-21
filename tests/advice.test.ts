@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { connectState, HIT_CONFIDENCE_NOTE, isStalled, loadProgress, lobbyHint, rejoinFailure, saveError, shareFallback, STALL_TEXT } from '../src/ui/advice';
+import { connectState, HIT_CONFIDENCE_NOTE, RANGE_TARGET_NOTE, verdictAdvice, isStalled, loadProgress, lobbyHint, rejoinFailure, saveError, shareFallback, STALL_TEXT } from '../src/ui/advice';
 import { LOAD_CALIB } from '../src/vision/calibration';
 
 const REQUIRED = ['blazeface', 'facemesh', 'insightface-mobilenet-swish', 'movenet-multipose'];
@@ -67,4 +67,15 @@ test('the lobby names a phone that dropped before claiming it needs more players
 test('share fallback shows the code, and the hit confidence note says where the field stops', () => {
   assert.equal(shareFallback('ABCD'), 'Could not copy. The code is ABCD.');
   assert.match(HIT_CONFIDENCE_NOTE, /0\.7/);
+});
+
+test('verdict advice names what to do for every refusal and stays silent on hits and clean misses', () => {
+  for (const v of ['UNCLEAR TARGET', 'NOT A PLAYER', 'THAT IS YOU', 'CAMERA TOO SLOW', 'NO FRESH FRAMES', 'NO CAMERA LOCK', 'SHOT LOST', 'NO CONNECTION, SHOT LOST']) {
+    assert.ok(verdictAdvice(v).length > 10, `${v} has advice`);
+  }
+  assert.equal(verdictAdvice('MISS'), '');
+  assert.equal(verdictAdvice('HIT Sam'), '');
+  assert.match(verdictAdvice('UNCLEAR TARGET'), /closer|green name/);
+  assert.match(verdictAdvice('CAMERA TOO SLOW'), /light/);
+  assert.match(RANGE_TARGET_NOTE, /FIRE/);
 });

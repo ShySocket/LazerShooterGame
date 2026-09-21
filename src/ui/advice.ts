@@ -96,3 +96,32 @@ export const shareFallback = (code: string): string => `Could not copy. The code
 
 export const HIT_CONFIDENCE_NOTE = '0.5 suits most rounds. Above 0.7 few shots can land, so the field stops there.';
 export const MUTE_SWITCH_NOTE = 'On an iPhone, sounds stay off while the mute switch is on.';
+
+/**
+ * The second line under a HUD verdict: what the player can do about it. Hits and a clean miss need
+ * none; every refusal names the one thing that helps.
+ */
+export function verdictAdvice(text: string): string {
+  switch (text) {
+    case 'UNCLEAR TARGET':
+      return 'Get closer or wait for the green name.';
+    case 'NOT A PLAYER':
+      return 'Nobody enrolled looks like that.';
+    case 'THAT IS YOU':
+      return 'A mirror, or your own reflection.';
+    case 'CAMERA TOO SLOW':
+      return 'More light, and close other apps.';
+    case 'NO FRESH FRAMES':
+      return 'The camera stopped. Tap Retry if it stays.';
+    case 'NO CAMERA LOCK':
+      return 'Wait a moment for the camera to catch up.';
+    case 'SHOT LOST':
+      return 'The app was interrupted mid-shot. Fire again.';
+    case 'NO CONNECTION, SHOT LOST':
+      return 'Check the Wi-Fi; hits need the network.';
+    default:
+      return '';
+  }
+}
+
+export const RANGE_TARGET_NOTE = 'Choose who you are aiming at to enable FIRE.';
