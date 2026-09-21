@@ -12,6 +12,10 @@ Before anything else, enrol once on the iPhone and once on an Android. The face 
 
 If a prompt refuses a correct pose, the numbers say why: the bands are straight 0 to 15°, slight 12 to 40°, further 25 to 60°, tilt 8 to 40°.
 
+## New hints to watch for (2026-09-21 audit)
+
+The app now names its corrections. On the phone, note whether these appear when they should and whether they help: "Move into better light and face the camera" (weak face detection), "Paused, someone else is in frame. Samples kept." (a bystander during the body scan), the small-room line under "Step back" after 5 s, "Loading models n of 4" with a Retry if the download stalls for 45 s, a Back button after 10 s on "Connecting", the advice line under UNCLEAR TARGET / CAMERA TOO SLOW / NO CAMERA LOCK, "Waiting for <name>'s phone to reconnect" in the lobby, and "Try again" after a failed scan save keeping the scan.
+
 ## Before the session
 
 - Open https://lazer-shooter-game.vercel.app on every phone once on the venue Wi-Fi so the models are cached. Note each phone model and browser.

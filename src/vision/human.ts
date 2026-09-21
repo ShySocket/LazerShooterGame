@@ -55,6 +55,27 @@ export function configurePass(h: Human, pass: HumanPass): void {
 let instance: Human | null = null;
 let loading: Promise<Human> | null = null;
 let ready = false;
+/** Bumped by abandonHumanLoad so a load left behind cannot mark a later instance ready. */
+let generation = 0;
+
+/** The models the game needs, checked after Human's load (it logs some download failures without rejecting). */
+export const REQUIRED_MODELS = ['blazeface', 'facemesh', 'insightface-mobilenet-swish', 'movenet-multipose'];
+
+/** Progress of the current load: which required models are in, and how many bytes so far. */
+export function modelStats(): { name: string; loaded: boolean; sizeLoadedWeights: number }[] {
+  return instance ? instance.models.stats().modelStats.map((m) => ({ name: m.name, loaded: m.loaded, sizeLoadedWeights: m.sizeLoadedWeights })) : [];
+}
+
+/**
+ * Give up on a download that has stalled: the next loadHuman() starts over on a fresh instance. The
+ * abandoned load keeps running in the background and is ignored if it ever finishes.
+ */
+export function abandonHumanLoad(): void {
+  generation++;
+  loading = null;
+  ready = false;
+  instance = null;
+}
 
 // Human keeps mutable config and model caches. A frame and all its crops form one session.
 export const withHumanSession = createSerialQueue();
@@ -74,26 +95,28 @@ export function isHumanReady(): boolean {
 /** Loads models once; safe to call from many places. A failed load is forgotten so the next call retries. */
 export function loadHuman(onStatus?: (msg: string) => void): Promise<Human> {
   if (!loading) {
+    const mine = generation;
     loading = (async () => {
       const h = getHuman();
       onStatus?.('Loading vision models');
       await h.load(humanConfig);
       // Human logs some download failures without rejecting load(). Do not report a partial load as ready.
-      const required = ['blazeface', 'facemesh', 'insightface-mobilenet-swish', 'movenet-multipose'];
       const stats = h.models.stats().modelStats;
-      const missing = required.filter((name) => !stats.some((model) => model.name === name && model.loaded));
+      const missing = REQUIRED_MODELS.filter((name) => !stats.some((model) => model.name === name && model.loaded));
       if (missing.length) throw new Error('Could not load vision models: ' + missing.join(', '));
       onStatus?.('Warming up');
       const result = await h.warmup();
       if (result?.error) throw new Error(result.error);
-      ready = true;
+      if (mine === generation) ready = true;
       onStatus?.('Ready');
       return h;
     })().catch((e: unknown) => {
-      ready = false;
-      loading = null;
-      // Reset also invalidates Human's module-level model caches for the next load attempt.
-      getHuman().reset();
+      if (mine === generation) {
+        ready = false;
+        loading = null;
+        // Reset also invalidates Human's module-level model caches for the next load attempt.
+        getHuman().reset();
+      }
       throw e;
     });
   }

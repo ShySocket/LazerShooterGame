@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Human, Result } from '@vladmandic/human';
 import { backend, MIN_PLAYERS } from '../net';
 import { decideRoundEnd } from '../net/backend';
+import { RANGE_TARGET_NOTE, verdictAdvice } from '../ui/advice';
 import { alivePlayers, enrolledPlayers, livesLabel, UNKNOWN_ID, type Player, type Room } from '../types';
 import { useCamera } from '../hooks/useCamera';
 import { useVisionLoop, type VisionFrame } from '../hooks/useVisionLoop';
@@ -558,7 +559,12 @@ export function Game({ room, me, pid, onLeave }: Props) {
         </div>
       </div>
 
-      {banner && <div className={`banner ${banner.kind}`}>{banner.text}</div>}
+      {banner && (
+        <div className={`banner ${banner.kind}`}>
+          <span>{banner.text}</span>
+          {verdictAdvice(banner.text) && <small>{verdictAdvice(banner.text)}</small>}
+        </div>
+      )}
       {countdown !== null && <div className="countdown">{countdown > 0 ? countdown : 'GO'}</div>}
       {!spectating && (!camReady || !humanReady) && (
         <div className="status-pill">
@@ -622,7 +628,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
               </tbody>
             </table>
           )}
-          <span className="tag">Shots here deal no damage.</span>
+          <span className="tag">{rangeTargetId ? 'Shots here deal no damage.' : RANGE_TARGET_NOTE}</span>
         </div>
       )}
 

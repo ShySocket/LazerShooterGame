@@ -87,6 +87,8 @@ Face carries the identity up close and face-on; outfit carries it at range and f
 - [ ] **Should**: MISS and UNCLEAR TARGET are distinguishable to players: MISS when nobody is under the dot, UNCLEAR TARGET when someone is but identity is not settled. In a 10-minute round, UNCLEAR TARGET on a clearly aimed, face-on, 3 m shot happens fewer than 1 time in 10. <!-- R4.07 phone -->
 - [ ] **Should**: The shot log on the results screen explains every refused shot with the top beliefs, frame age, and stale allowance, and lists the calibration version. <!-- R4.08 auto:test:every shot log entry records the calibration version -->
 - [ ] **Nice**: Median FIRE-to-verdict under 400 ms on the fastest phone in the group (measure from the shot log timestamps). <!-- R4.09 phone -->
+- [ ] **Must**: Every refusal on the HUD (UNCLEAR TARGET, NOT A PLAYER, THAT IS YOU, CAMERA TOO SLOW, NO FRESH FRAMES, NO CAMERA LOCK, SHOT LOST) carries a second line saying what to do. <!-- R4.10 auto:test:verdict advice -->
+- [ ] **Should**: Range mode says why FIRE is disabled until a target is chosen. <!-- R4.11 manual -->
 
 ## 5. Distance and pose table (what to hand players as expectations)
 
@@ -126,6 +128,9 @@ The demo is everyone against everyone: 3 lives, no respawn, last standing wins. 
 - [ ] **Should**: Tags (hits landed) per player and the final standing are shown on Results for all players, sorted, so a 12-player round has a leaderboard, not just a winner (implemented in `src/screens/Results.tsx`; verify it agrees on every phone). <!-- R6.16 e2e:leaderboard -->
 - [ ] **Nice**: A late player can enrol during the lobby while others are already enrolled without resetting anyone else. <!-- R6.17 manual -->
 - [ ] **Nice**: A round timer or a "last 2 standing" call-out for big rounds, so a 12-player game does not drag when two cautious players remain. <!-- R6.18 manual -->
+- [ ] **Must**: When an enrolled player's phone drops, the lobby names them ("Waiting for Pia's phone to reconnect") and marks them in the list, instead of claiming it needs more players. <!-- R6.19 e2e:lobby-reconnect -->
+- [ ] **Should**: When neither the share sheet nor the clipboard works, the lobby shows the code to read out instead of doing nothing. <!-- R6.20 auto:test:share fallback -->
+- [ ] **Should**: The Hit confidence field stops at 0.7 with a note, so a host cannot make every shot UNCLEAR for a round; the sound pill says the iPhone mute switch keeps sounds off. <!-- R6.21 manual -->
 
 ## 7. Using the app without bugs (robustness)
 
@@ -143,6 +148,13 @@ The demo is everyone against everyone: 3 lives, no respawn, last standing wins. 
 - [ ] **Should**: Battery: a 20-minute round costs under 25 % on a midrange phone with the torch off. <!-- R7.12 phone -->
 - [ ] **Should**: Debug overlay and range mode can be turned on and off mid-round without breaking the game, and range mode shots deal no damage. <!-- R7.13 auto:test:the range-test recorder returns the same accuracy summary -->
 - [ ] **Nice**: Install-to-home-screen works on both platforms and the installed app behaves identically to the browser tab. <!-- R7.14 phone -->
+- [ ] **Must**: A stalled model download ends in a Retry button with a plain message, never a black camera: the loading text shows progress and a download with no progress for 45 s is abandoned. <!-- R7.15 auto:test:a stalled download -->
+- [ ] **Must**: "Connecting" and "Rejoining your room" admit after 10 s that they are taking long and offer a Back button. <!-- R7.16 auto:test:still connecting -->
+- [ ] **Should**: A failed rejoin after a reload says why on the Home screen instead of silently dropping the player. <!-- R7.17 auto:test:a failed rejoin -->
+- [ ] **Must**: The host leaving on the results screen does not strand the room: another phone becomes host and gets "Back to lobby". <!-- R7.18 e2e:host-migration-results -->
+- [ ] **Should**: The shot review lets a player skip one shot or finish reviewing, and a failed room reset says so and keeps the button. <!-- R7.19 manual -->
+- [ ] **Should**: A waiting app update never reloads while the player is in a room, in the profile, or typing. <!-- R7.20 auto:test:update allowed -->
+- [ ] **Should**: The crash notice speaks plainly and keeps the raw error behind a Details toggle. <!-- R7.21 auto:test:crash notice -->
 
 ## 8. Enrolment scan (face angles, body scans)
 
@@ -164,6 +176,13 @@ Real-phone evidence: a rescan on the phones players use, with the yaw/pitch read
 - [ ] **Should**: The far-face step of the front body scan waits at most 6 s after the outfit is complete. <!-- R8.11 auto:test:far faces are waited -->
 - [ ] **Should**: A signed-in player's deep scan is reused and only a complete scan from the current face model counts. <!-- R8.12 auto:test:a stored scan stands in for a face scan -->
 - [ ] **Nice**: The yaw and pitch a real phone reports at a comfortable "slight" and "further" turn are written next to the bands in `SCAN_CALIB`. <!-- R8.13 manual -->
+- [ ] **Must**: Somebody else in the frame pauses the body scan and keeps its samples; only 1.5 s of intrusion starts over, and the hint says which. <!-- R8.14 auto:test:a bystander pauses -->
+- [ ] **Must**: The body scan's settle counts from the first usable body frame, not from a countdown that ended while the player was walking back. <!-- R8.15 auto:test:the settle counts -->
+- [ ] **Should**: A small room gets an alternative to stepping back (raise the phone, tilt it down) and a scan without the legs still counts. <!-- R8.16 auto:test:small room -->
+- [ ] **Should**: A propped phone stays awake through the scan, and the far-face wait is a bar and a tick per sample, readable from 3 m. <!-- R8.17 manual -->
+- [ ] **Must**: A weak face detection names light as the fix, never "hold still"; each cheap gate (no face, several faces, crop) has one message. <!-- R8.18 auto:test:low light is named -->
+- [ ] **Must**: The enrolment face size gate is measured in full-frame pixels, so a 720p phone is not held closer than a 1080p one. <!-- R8.19 auto:test:the face size gate is measured -->
+- [ ] **Must**: A failed scan upload keeps the captured scan: the message says why in plain words, "Try again" re-sends it, and "Start over" is a separate link. <!-- R8.20 auto:test:a failed scan upload -->
 
 ## 9. Demo-day protocol (run this before the first guest picks up a phone)
 

@@ -13,6 +13,7 @@ import { loadHuman } from './vision/human';
 import { applyPendingUpdate, onUpdatePending, updatePending } from './pwa';
 import { recordIncident, wasReloaded } from './diag';
 import { isE2E } from './e2e/hook';
+import { connectState, rejoinFailure, updateAllowed } from './ui/advice';
 
 function guestPid(): string {
   let v = localStorage.getItem('lz:pid');
@@ -68,9 +69,11 @@ export default function App() {
 
   useEffect(() => onAccount(setAccount, setNotice), []);
   useEffect(() => onUpdatePending(() => setSwPending(true)), []);
-  // A new build is applied only while nobody is mid-scan or mid-round on this phone.
+  // A new build is applied only while nobody is mid-scan, mid-round or mid-typing on this phone.
   useEffect(() => {
-    if (swPending && !code && !showProfile) applyPendingUpdate();
+    if (!swPending) return;
+    const focused = document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement;
+    if (updateAllowed({ inRoom: Boolean(code), profileOpen: showProfile, inputFocused: focused })) applyPendingUpdate();
   }, [swPending, code, showProfile]);
   // Models are ~24 MB; start fetching while the player is still typing a name.
   useEffect(() => {
@@ -144,15 +147,18 @@ export default function App() {
       .joinRoom(url, { id: pid, name: last.name })
       .then((r) => {
         if (r === 'ok') enter(url, last.name);
-        else writeLastRoom(null);
+        else {
+          writeLastRoom(null);
+          setNotice(rejoinFailure(url, r));
+        }
       })
-      .catch(() => undefined)
+      .catch((e: unknown) => setNotice(rejoinFailure(url, e instanceof Error ? e : String(e))))
       .finally(() => setRejoining(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account, deepLoaded]);
 
-  if (account === undefined || !deepLoaded) return <Notice text="Connecting" />;
-  if (rejoining) return <Notice text="Rejoining your room" />;
+  if (account === undefined || !deepLoaded) return <Waiting base="Connecting" onBack={() => window.location.reload()} />;
+  if (rejoining) return <Waiting base="Rejoining your room" onBack={leave} />;
 
   if (showProfile && account) {
     return <Profile account={account} deep={deep} onDeepChange={setDeep} onBack={() => setShowProfile(false)} />;
@@ -179,7 +185,7 @@ export default function App() {
       />
     );
   }
-  if (room === undefined) return <Notice text="Connecting" />;
+  if (room === undefined) return <Waiting base="Connecting to the room" onBack={leave} />;
   if (room === null) return <Notice text="This room no longer exists." onBack={leave} />;
   const me = room.players[pid];
   if (!me) return <Notice text="You are not in this room." onBack={leave} />;
@@ -193,6 +199,18 @@ export default function App() {
     case 'ended':
       return <Results room={room} pid={pid} onLeave={leave} />;
   }
+}
+
+/** A wait that admits when it is taking too long and offers a way out (connectState). */
+function Waiting({ base, onBack }: { base: string; onBack: () => void }) {
+  const [started] = useState(() => Date.now());
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const iv = window.setInterval(() => tick((n) => n + 1), 1000);
+    return () => window.clearInterval(iv);
+  }, []);
+  const state = connectState(base, Date.now() - started);
+  return <Notice text={state.text} onBack={state.showBack ? onBack : undefined} />;
 }
 
 function Notice({ text, onBack }: { text: string; onBack?: () => void }) {

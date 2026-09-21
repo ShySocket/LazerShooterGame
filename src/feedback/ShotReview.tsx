@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { REVIEW_DONE, REVIEW_SKIP_ONE } from '../ui/advice';
 import { backend } from '../net';
 import type { Room } from '../types';
 import { feedbackStore, type StoredRound, type StoredShot } from './store';
@@ -166,8 +167,11 @@ export function ShotReview({ room, pid }: Props) {
       </div>
       <div className="review-foot">
         <span className="tag">Only the numbers behind the shot are uploaded, never the photo.</span>
+        <button className="link" onClick={() => void answer(round, shot, null)}>
+          {REVIEW_SKIP_ONE}
+        </button>
         <button className="link" onClick={() => void skip(round)}>
-          Skip
+          {REVIEW_DONE}
         </button>
       </div>
     </div>

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { crashNotice } from '../ui/advice';
 import { backend } from '../net';
 import { authAvailable, signInGoogle, type Account } from '../net/auth';
 import type { DeepProfile } from '../types';
@@ -27,6 +28,7 @@ export function Home({ initialCode, account, deep, notice, onProfile, onCreate, 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [incident, setIncident] = useState(readIncident);
+  const [showDetails, setShowDetails] = useState(false);
 
   const run = async (fn: () => Promise<void>) => {
     unlockAudio();
@@ -106,10 +108,12 @@ export function Home({ initialCode, account, deep, notice, onProfile, onCreate, 
       {(err ?? notice) && <div className="note bad">{err ?? notice}</div>}
       {incident && (
         <div className="note warn incident">
-          <div className="label">Last session ended unexpectedly</div>
-          <div className="incident-msg">
-            {new Date(incident.t).toLocaleTimeString()} · {incident.kind}: {incident.message.split('\n')[0]}
-          </div>
+          <div className="label">{crashNotice(incident).title}</div>
+          <div className="incident-msg">{crashNotice(incident).summary}</div>
+          {showDetails && <pre className="incident-details">{crashNotice(incident).details}</pre>}
+          <button className="link" onClick={() => setShowDetails((v) => !v)}>
+            {showDetails ? 'Hide details' : 'Details'}
+          </button>
           <button
             className="link"
             onClick={() => {

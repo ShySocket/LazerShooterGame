@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { backend, MIN_PLAYERS } from '../net';
+import { HIT_CONFIDENCE_NOTE, lobbyHint, MUTE_SWITCH_NOTE, shareFallback } from '../ui/advice';
 import { CLOTHING_CONFLICT, type Player, type Room, type RoomSettings } from '../types';
 import { outfitConflict } from '../vision/clothing';
 import { centredSimilarity, FACE_CONFLICT, isCurrentFaceScan } from '../vision/human';
@@ -18,6 +19,7 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
   const isHost = room.hostId === pid;
   const [settings, setSettings] = useState<RoomSettings>(room.settings);
   const [copied, setCopied] = useState(false);
+  const [shareNote, setShareNote] = useState('');
   const audio = useAudioState();
   useEffect(() => setSettings(room.settings), [room.settings]);
 
@@ -55,7 +57,16 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
   }, [room.profiles, enrolledIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const notEnrolled = connected.filter((p) => !p.enrolled);
+  const disconnectedEnrolled = players.filter((p) => !p.connected && p.enrolled);
   const canStart = isHost && enrolled.length >= MIN_PLAYERS && notEnrolled.length === 0 && conflicts.length === 0 && stale.length === 0;
+  const startHint = lobbyHint({
+    disconnectedEnrolled: disconnectedEnrolled.map((p) => p.name),
+    enrolledConnected: enrolled.length,
+    notEnrolled: notEnrolled.map((p) => p.name),
+    stale: stale.map((p) => p.name),
+    conflicts: conflicts.length,
+    minPlayers: MIN_PLAYERS,
+  });
 
   const link = `${location.origin}${import.meta.env.BASE_URL}?room=${room.code}`;
   const share = async () => {
@@ -66,8 +77,11 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
         setCopied(true);
         setTimeout(() => setCopied(false), 1500);
       }
-    } catch {
-      /* cancelled */
+    } catch (e) {
+      // The share sheet was cancelled (fine) or the clipboard was refused: the code itself is the fallback.
+      if (e instanceof DOMException && e.name === 'AbortError') return;
+      setShareNote(shareFallback(room.code));
+      setTimeout(() => setShareNote(''), 4000);
     }
   };
 
@@ -101,11 +115,14 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
         </button>
       </div>
 
+      {shareNote && <div className="note">{shareNote}</div>}
+
       {audio !== 'running' && (
         <button className="note warn sound-check" onClick={soundCheck}>
           {audio === 'none' ? 'Tap to enable sound and buzz' : 'Sound is blocked. Tap to turn it back on'}
         </button>
       )}
+      <p className="readout">{MUTE_SWITCH_NOTE}</p>
 
       <ShotReview room={room} pid={pid} />
 
@@ -119,7 +136,7 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
               {p.id === room.hostId && <small> host</small>}
               {p.id === pid && <small> you</small>}
             </span>
-            <span className={`tag ${p.enrolled ? 'ok' : 'todo'}`}>{p.enrolled ? 'enrolled' : 'enrolling'}</span>
+            <span className={`tag ${p.enrolled ? 'ok' : 'todo'}`}>{!p.connected ? 'reconnecting…' : p.enrolled ? 'enrolled' : 'enrolling'}</span>
           </li>
         ))}
       </ul>
@@ -164,8 +181,9 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
             Shield after hit (ms) <NumberField value={settings.invulnMs} min={0} max={30000} step={500} onCommit={(v) => saveSettings({ invulnMs: v })} />
           </label>
           <label>
-            Hit confidence <NumberField value={settings.hitThreshold} min={0.2} max={0.95} step={0.05} onCommit={(v) => saveSettings({ hitThreshold: v })} />
+            Hit confidence <NumberField value={settings.hitThreshold} min={0.2} max={0.7} step={0.05} onCommit={(v) => saveSettings({ hitThreshold: v })} />
           </label>
+          <p className="readout">{HIT_CONFIDENCE_NOTE}</p>
         </div>
       ) : (
         <p className="sub">
@@ -181,17 +199,7 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
         ) : (
           <p className="sub">Waiting for {room.players[room.hostId]?.name ?? 'the host'} to start.</p>
         )}
-        {isHost && !canStart && (
-          <p className="hint">
-            {enrolled.length < MIN_PLAYERS
-              ? `Need at least ${MIN_PLAYERS} enrolled players.`
-              : notEnrolled.length > 0
-                ? `Waiting for ${notEnrolled.map((p) => p.name).join(', ')} to enroll.`
-                : stale.length > 0
-                  ? 'Someone needs to redo an outdated scan.'
-                  : 'Resolve the clothing conflict above.'}
-          </p>
-        )}
+        {isHost && !canStart && startHint && <p className="hint">{startHint}</p>}
         <div className="row">
           <button className="link" onClick={() => backend.updatePlayer(room.code, me.id, { enrolled: false })}>
             Redo my enrollment

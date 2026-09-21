@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-09-18.1';
+export const CALIBRATION_VERSION = '2026-09-21.1';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /**
@@ -52,6 +52,10 @@ export const SCAN_CALIB = {
   holdFrames: 2,
   samePerson: SAME_PERSON_MIN,
   minFacePx: 48,
+  /** Detector and crop scores below this mean poor light or a clipped face, not motion. */
+  minFaceScore: 0.7,
+  /** A magnified crop must overlap the detected face box this much (IoU) to be the same face. */
+  minCropOverlap: 0.25,
   enrolYawMax: 60,
   /** Pause after an accepted sample before the next one may be taken. */
   settleMs: 400,
@@ -64,6 +68,20 @@ export const SCAN_CALIB = {
   bodyMinOverlap: 0.25,
   /** Longer than this without a usable body and the outfit samples start over. */
   bodyGapMs: 1500,
+  /** Sampling starts this long after the first usable body frame, so a player still walking back is not sampled mid-stride. */
+  bodySettleMs: 800,
+  /** After this long of "step back", the hint offers the small-room alternative. */
+  smallRoomHintMs: 5000,
+};
+
+// ---- Loading and connecting (useHumanStatus.ts, App.tsx) ------------------------------------------
+/** A model download that makes no progress for this long is reported as stalled, with a Retry. */
+export const LOAD_CALIB = {
+  modelStallMs: 45000,
+  /** How often the loading text is refreshed from Human's model stats. */
+  progressPollMs: 500,
+  /** After this long on "Connecting" the player gets a Back button. */
+  connectPatienceMs: 10000,
 };
 
 // ---- Evidence fusion (scoring.ts) ---------------------------------------------------------------

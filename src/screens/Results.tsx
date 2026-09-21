@@ -4,6 +4,7 @@ import { enrolledPlayers, livesLabel, type Room } from '../types';
 import { sfx } from '../audio/sfx';
 import { shotLog } from '../debug/shotLog';
 import { ShotReview } from '../feedback/ShotReview';
+import { RESET_FAILED } from '../ui/advice';
 
 interface Props {
   room: Room;
@@ -15,6 +16,7 @@ export function Results({ room, pid, onLeave }: Props) {
   const isHost = room.hostId === pid;
   const winner = room.winnerId ? room.players[room.winnerId] : null;
   const [showLog, setShowLog] = useState(false);
+  const [resetNote, setResetNote] = useState('');
   const shots = shotLog.all();
   useEffect(() => {
     sfx.gameOver();
@@ -44,9 +46,12 @@ export function Results({ room, pid, onLeave }: Props) {
       </ol>
       <ShotReview room={room} pid={pid} />
       {isHost ? (
-        <button className="btn primary big" onClick={() => backend.resetForNewRound(room.code)}>
-          Back to lobby
-        </button>
+        <>
+          <button className="btn primary big" onClick={() => backend.resetForNewRound(room.code).then(() => setResetNote(''), () => setResetNote(RESET_FAILED))}>
+            Back to lobby
+          </button>
+          {resetNote && <div className="note bad">{resetNote}</div>}
+        </>
       ) : (
         <p className="sub">Waiting for the host to start another round.</p>
       )}

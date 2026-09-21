@@ -5,7 +5,9 @@ import { useCamera, type Facing } from '../hooks/useCamera';
 import { useVisionLoop, type VisionFrame } from '../hooks/useVisionLoop';
 import { useHumanStatus } from '../hooks/useHumanStatus';
 import { compactEmbedding, FACE_SAMPLES, faceYawDeg, MAX_YAW_DEG, MIN_FACE_PX, isValidEmbedding } from '../vision/human';
-import { bodySampleDecision, faceBigEnough, farFacesDone, hintFor, holdStep, initialScanState, judgePose, promptFor, samePerson, SCAN_CALIB, type Judgement, type ScanState } from '../vision/scan';
+import { bodySampleDecision, bystanderDecision, faceBigEnough, faceGate, farFacesDone, gateHint, hintFor, SAME_FACE_TEXT, holdStep, initialScanState, judgePose, promptFor, samePerson, SCAN_CALIB, settleDone, smallRoomHint, type Judgement, type ScanState } from '../vision/scan';
+import { useWakeLock } from '../hooks/useWakeLock';
+import { saveError } from '../ui/advice';
 import { averageOutfits, averageProps, bodyProportions, FrameSampler, outfitRegions, outfitSignature } from '../vision/clothing';
 import { drawOverlay } from '../vision/overlay';
 import { iou, toNBox, type NBox } from '../vision/geometry';
@@ -74,6 +76,8 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
   const [countdown, setCountdown] = useState<number | null>(null);
   const facing: Facing = stage === 'face' || bodyMode === 'prop' ? 'user' : 'environment';
   const { videoRef, ready: camReady, error: camError, retry: retryCamera } = useCamera(facing, stage !== 'saving');
+  // A propped phone must not fall asleep mid-scan.
+  useWakeLock(true);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const faces = useRef<number[][]>([]);
   const farFaces = useRef<number[][]>([]);
@@ -87,6 +91,12 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
   const lastBodySample = useRef(0);
   /** When the outfit samples of the current body stage were complete; the far-face wait counts from here. */
   const outfitDoneAt = useRef(0);
+  /** Since when somebody else has been in the frame (0 when it is just the player). */
+  const intrudingSince = useRef(0);
+  /** The first frame with a usable body while recording; the settle counts from it. */
+  const firstUsableAt = useRef(0);
+  /** Since when the "step back" hint has been showing. */
+  const stepBackSince = useRef(0);
   const generation = useRef(0);
   const mounted = useRef(true);
   const front = useRef<OutfitSig | null>(null);
@@ -116,20 +126,33 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
     setRecordingState(v);
   };
 
-  const finish = async (back: OutfitSig | null) => {
+  /** The captured scan, kept so a failed save can be retried without scanning again. */
+  const lastResult = useRef<ScanResult | null>(null);
+
+  const submit = async (result: ScanResult) => {
+    lastResult.current = result;
     go('saving');
     try {
-      await onDone({
-        face: faces.current,
-        farFace: farFaces.current,
-        body: averageProps(props.current),
-        outfit: outfit && front.current && back ? { front: front.current, back } : null,
-      });
+      await onDone(result);
     } catch (e) {
       if (!mounted.current) return;
-      setErrMsg(e instanceof Error ? e.message : String(e));
+      setErrMsg(saveError(e));
       go('error');
     }
+  };
+
+  const finish = (back: OutfitSig | null) =>
+    submit({
+      face: faces.current,
+      farFace: farFaces.current,
+      body: averageProps(props.current),
+      outfit: outfit && front.current && back ? { front: front.current, back } : null,
+    });
+
+  /** Try the save again with the scan already captured; "Start over" is the separate, destructive path. */
+  const retrySave = () => {
+    if (lastResult.current) void submit(lastResult.current);
+    else restart();
   };
 
   const restart = () => {
@@ -144,6 +167,9 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
     lastBody.current = null;
     lastBodySample.current = 0;
     outfitDoneAt.current = 0;
+    intrudingSince.current = 0;
+    firstUsableAt.current = 0;
+    stepBackSince.current = 0;
     front.current = null;
     setFaceIdx(0);
     setProgress(0);
@@ -158,6 +184,7 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
     stageProps.current = [];
     lastBody.current = null;
     lastBodySample.current = 0;
+    firstUsableAt.current = 0;
     setProgress(0);
     haptic();
     if (bodyMode === 'helper') {
@@ -206,11 +233,12 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
     }
     if (s === 'face') {
       if (now - stageStart.current < SCAN_CALIB.settleMs) return;
-      if (res.face.length === 0) return setHint('No face found. Move closer and face the camera.');
-      if (res.face.length > 1) return setHint('Only one face in frame please.');
+      const gate = faceGate({ faces: res.face.length, score: res.face[0]?.score });
+      if (gate !== 'ok') return setHint(gateHint(gate));
       const detected = res.face[0];
-      if (detected.score < 0.7) return setHint('Hold still');
-      if (!faceBigEnough(detected.boxRaw[2] * res.width, detected.boxRaw[3] * res.height)) {
+      // The size gate is measured in full-frame pixels: the face stage detects on a downscaled copy.
+      const copyScale = res.width / (v.videoWidth || res.width);
+      if (!faceBigEnough(detected.boxRaw[2] * res.width, detected.boxRaw[3] * res.height, SCAN_CALIB.minFacePx, copyScale)) {
         return setHint('Move closer so your face is clear.');
       }
       // The embedding, and the head angle, come from a square crop, the same way the game reads faces (see
@@ -218,11 +246,10 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
       const crops = await zoom.current.run(human, context.frame, faceRegion(toNBox(detected.boxRaw), res.width / res.height));
       if (!isCurrent()) return;
       // A magnified crop can include a neighbour. Never take an arbitrary first face.
-      if (crops.length !== 1 || iou(crops[0].box, toNBox(detected.boxRaw)) < 0.25) {
-        return setHint('Keep just your face in frame and hold still.');
-      }
+      const cropGate = faceGate({ faces: 1, cropCount: crops.length, cropOverlap: crops.length === 1 ? iou(crops[0].box, toNBox(detected.boxRaw)) : 0, score: crops[0]?.face.score });
+      if (cropGate !== 'ok') return setHint(gateHint(cropGate));
       const f = crops[0].face;
-      if (!isValidEmbedding(f.embedding) || f.score < 0.7 || !Number.isFinite(faceYawDeg(f))) return setHint('Hold still and face the camera a little more.');
+      if (!isValidEmbedding(f.embedding) || !Number.isFinite(faceYawDeg(f))) return setHint('Hold still and face the camera a little more.');
       const yawSigned = ((f.rotation?.angle?.yaw ?? 0) * 180) / Math.PI;
       const pitchSigned = ((f.rotation?.angle?.pitch ?? 0) * 180) / Math.PI;
       setAngles({ yaw: Math.round(yawSigned), pitch: Math.round(pitchSigned) });
@@ -240,7 +267,7 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
       // A different face than the earlier samples: keep the hold so the next good frame retries at once.
       if (!samePerson(f.embedding, faces.current)) {
         scan.current = { ...scan.current, hold: SCAN_CALIB.holdFrames - 1 };
-        return setHint('That does not look like the same person as the earlier frames.');
+        return setHint(SAME_FACE_TEXT);
       }
       scan.current = held.state;
       faces.current.push(compactEmbedding(f.embedding));
@@ -258,13 +285,21 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
         lastBody.current = null;
         lastBodySample.current = 0;
         outfitDoneAt.current = 0;
+        firstUsableAt.current = 0;
         setProgress(0);
       };
+      // Somebody else in the frame pauses the scan and keeps the samples; a long intrusion starts over.
       if (res.body.length > 1 || res.face.length > 1) {
-        clearSamples();
-        setHint('Only the player being scanned should be in frame.');
+        if (!intrudingSince.current) intrudingSince.current = now;
+        if (bystanderDecision(intrudingSince.current, now) === 'restart') {
+          clearSamples();
+          setHint('Starting the body scan over: only the player being scanned should be in frame.');
+        } else {
+          setHint(outfits.current.length ? 'Paused, someone else is in frame. Samples kept.' : 'Only the player being scanned should be in frame.');
+        }
         return;
       }
+      intrudingSince.current = 0;
       const b = res.body[0];
       // The body scan is the one moment the enrolment camera is metres away, like an opponent's phone.
       // Face samples from here match a round far better than the close selfie set alone.
@@ -278,25 +313,38 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
           const known = referenceFace ? [referenceFace, ...faces.current] : faces.current;
           if (f && isValidEmbedding(f.embedding) && f.score >= 0.7 && faceYawDeg(f) <= MAX_YAW_DEG && samePerson(f.embedding, known)) {
             farFaces.current.push(compactEmbedding(f.embedding));
+            // During the far-face wait the player is metres away: a tick per sample and a bar they can see.
+            if (outfitDoneAt.current) {
+              sfx.tick();
+              setProgress(Math.min(1, farFaces.current.length / MIN_FAR_FACES));
+            }
           }
         }
       }
       const regions = b ? outfitRegions(b, 0.4, res.width / res.height) : null;
       if (!b || !regions?.top) {
         if (lastBodySample.current && now - lastBodySample.current > SCAN_CALIB.bodyGapMs) clearSamples();
-        setHint('Shoulders and hips must both be visible. Step back so the whole body fits.');
+        if (!stepBackSince.current) stepBackSince.current = now;
+        setHint(smallRoomHint(stepBackSince.current, now));
         return;
       }
+      stepBackSince.current = 0;
       const wholeBody = Boolean(regions.shins?.length === 2);
       if (!recordingRef.current) {
-        setHint(wholeBody ? 'Whole body in frame. Ready to scan.' : 'Head to feet should be in frame for the best scan.');
+        setHint(wholeBody ? 'Whole body in frame. Ready to scan.' : 'Shoulders and hips are in. Head to feet is best, and the legs help from behind.');
         return;
       }
-      if (now - stageStart.current < 800 || now - lastBodySample.current < BODY_SAMPLE_INTERVAL_MS) return;
+      // The settle counts from the first usable frame while recording, not from the countdown's end.
+      if (!firstUsableAt.current) firstUsableAt.current = now;
+      if (!settleDone(firstUsableAt.current, now) || now - lastBodySample.current < BODY_SAMPLE_INTERVAL_MS) return;
       const box = toNBox(b.boxRaw);
       // A step or a phone shift skips the frame and keeps the samples; only a real gap starts over.
       const decision = outfits.current.length < BODY_SAMPLES ? bodySampleDecision(lastBody.current, box, now, lastBodySample.current, iou) : 'skip';
-      if (decision === 'restart') clearSamples();
+      if (decision === 'restart') {
+        clearSamples();
+        firstUsableAt.current = now;
+        return setHint('Starting the body scan over, hold still.');
+      }
       if (decision === 'skip' && outfits.current.length < BODY_SAMPLES) {
         lastBody.current = box;
         return setHint('Hold still.');
@@ -315,8 +363,10 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
       if (outfits.current.length >= BODY_SAMPLES && !outfitDoneAt.current) outfitDoneAt.current = now;
       const farDone = farFacesDone(s === 'bodyFront', farFaces.current.length, outfitDoneAt.current, now);
       if (outfits.current.length >= BODY_SAMPLES && !farDone) {
-        // Outfit done; hold the pose a little longer so the far face set fills up.
-        setHint(res.face.length === 1 ? `Look at the phone: ${farFaces.current.length} of ${MIN_FAR_FACES} far face samples.` : 'Look at the phone so it can learn your face from here.');
+        // Outfit done; hold the pose a little longer so the far face set fills up. The bar shows the
+        // far faces now, large enough to read from where the player stands.
+        setProgress(Math.min(1, farFaces.current.length / MIN_FAR_FACES));
+        setHint(res.face.length === 1 ? `Look at the phone: ${farFaces.current.length} / ${MIN_FAR_FACES}` : 'Look at the phone.');
         return;
       }
       if (outfits.current.length >= BODY_SAMPLES) {
@@ -352,7 +402,7 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
       case 'face':
         return { heading: `Face ${faceIdx + 1} of ${FACE_SAMPLES}`, prompt: promptFor(faceIdx).text };
       case 'bodyMode':
-        return { heading: 'Body scan', prompt: 'The scan needs your whole body, head to feet. Who is holding the phone?' };
+        return { heading: 'Body scan', prompt: 'The scan needs your shoulders and hips in frame; head to feet is best. Who is holding the phone?' };
       case 'bodyFront':
         return {
           heading: 'Body scan: front',
@@ -434,9 +484,14 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
         )}
         <div className="row">
           {stage === 'error' && (
-            <button className="btn primary" onClick={restart}>
-              Try again
-            </button>
+            <>
+              <button className="btn primary" onClick={retrySave}>
+                Try again
+              </button>
+              <button className="link" onClick={restart}>
+                Start over
+              </button>
+            </>
           )}
           {stage !== 'saving' && stage !== 'error' && (
             <button className="link" onClick={restart}>

@@ -32,6 +32,23 @@ test('[lobby-gating] Start waits for every player to enrol and refuses two outfi
   await expect(start).toBeEnabled();
 });
 
+test('[lobby-reconnect] a dropped phone is named as the reason Start is disabled, not "need 2 players"', async ({ browser }) => {
+  const [host, p1] = phones;
+  const zed = await openPhone(browser, 'Zed');
+  await joinRoom(zed, code);
+  await enroll(zed, 9);
+  // Pia redoes her enrolment, so the room's second enrolled phone is Zed's.
+  await p1.page.getByRole('button', { name: 'Redo my enrollment' }).click();
+  await expect(host.page.locator('.hint')).toHaveText('Waiting for Pia to enroll.');
+  await zed.ctx.close();
+  await expect(host.page.locator('.hint')).toHaveText("Waiting for Zed's phone to reconnect.", { timeout: 15_000 });
+  await expect(host.page.getByRole('button', { name: 'Start game' })).toBeDisabled();
+  await expect(host.page.locator('.players li', { hasText: 'Zed' })).toContainText('reconnecting');
+  // Pia enrols again for the tests that follow; Zed stays dropped and no longer matters.
+  await enroll(p1, 1);
+  await expect(host.page.getByRole('button', { name: 'Start game' })).toBeEnabled();
+});
+
 test('[host-migration] when the host phone disappears, the earliest-joined connected player becomes host', async ({ browser }) => {
   test.setTimeout(60_000);
   const [host, p1] = phones;
@@ -88,6 +105,7 @@ test('[rejoin] a phone that reloads mid-round is back in the same round with the
   expect(r.players[pidBefore].connected).toBe(true);
   expect(r.players[pidBefore].lives).toBe(2);
   expect(r.status).toBe('playing');
-  expect(Object.keys(r.players).length).toBe(4);
+  // Host (context closed) and Zed (dropped) are still in the room, disconnected; the three others are live.
+  expect(Object.values(r.players).filter((p) => p.connected).length).toBe(3);
   expect(r.players[p3.pid].enrolled).toBe(true);
 });

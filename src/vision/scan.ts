@@ -99,8 +99,44 @@ export function samePerson(candidate: number[], accepted: number[][], min = SCAN
   return accepted.some((a) => sim(candidate, a) >= min);
 }
 
-/** The face box (in pixels) is large enough for a trustworthy enrolment embedding. */
-export const faceBigEnough = (widthPx: number, heightPx: number, min = SCAN_CALIB.minFacePx): boolean => Math.min(widthPx, heightPx) >= min;
+/**
+ * The face box is large enough for a trustworthy enrolment embedding, measured in full-frame pixels:
+ * `copyScale` is the detect copy's width over the camera's (1 for a full-size copy), so a 720p phone
+ * that got no downscale is not held to a stricter bar than a 1080p one that did.
+ */
+export const faceBigEnough = (widthPx: number, heightPx: number, min = SCAN_CALIB.minFacePx, copyScale = 1): boolean => Math.min(widthPx, heightPx) / (copyScale || 1) >= min;
+
+export type FaceGateReason = 'ok' | 'no-face' | 'many-faces' | 'low-light' | 'crop';
+
+/**
+ * The cheap gates before a face sample: how many faces, how sure the detector is, and whether the
+ * magnified crop found the same single face. A low score is poor light or a clipped face, so the
+ * hint says light, never "hold still".
+ */
+export function faceGate(input: { faces: number; score?: number; cropCount?: number; cropOverlap?: number }, minScore = SCAN_CALIB.minFaceScore, minOverlap = SCAN_CALIB.minCropOverlap): FaceGateReason {
+  if (input.faces === 0) return 'no-face';
+  if (input.faces > 1) return 'many-faces';
+  if (input.score !== undefined && input.score < minScore) return 'low-light';
+  if (input.cropCount !== undefined && (input.cropCount !== 1 || (input.cropOverlap ?? 0) < minOverlap)) return 'crop';
+  return 'ok';
+}
+
+export function gateHint(reason: FaceGateReason): string {
+  switch (reason) {
+    case 'ok':
+      return '';
+    case 'no-face':
+      return 'No face found. Move closer and face the camera.';
+    case 'many-faces':
+      return 'Only one face in frame please.';
+    case 'low-light':
+      return 'Move into better light and face the camera.';
+    case 'crop':
+      return 'Keep just your face in the frame.';
+  }
+}
+
+export const SAME_FACE_TEXT = 'This looks like a different face than the earlier frames: better light, hat and glasses off, or Restart scan.';
 
 /** What to tell the player, given the prompt and why the frame did not count. */
 export function hintFor(prompt: FacePrompt, reason: PoseReason): string {
@@ -147,4 +183,26 @@ export function farFacesDone(frontStage: boolean, farFaces: number, outfitDoneAt
   if (!frontStage) return true;
   if (farFaces >= minFarFaces) return true;
   return outfitDoneAt > 0 && now - outfitDoneAt > patienceMs;
+}
+
+/**
+ * Somebody else in the frame (a bystander, a poster, a mirror) pauses the body scan and keeps the
+ * samples already taken; only when the intrusion lasts longer than `gapMs` does the scan start over,
+ * because by then the samples may belong to the wrong person.
+ */
+export function bystanderDecision(intrudingSince: number, now: number, gapMs = SCAN_CALIB.bodyGapMs): 'pause' | 'restart' {
+  return now - intrudingSince > gapMs ? 'restart' : 'pause';
+}
+
+/** The settle before sampling counts from the first usable body frame, not from a countdown that ended while the player was still walking. */
+export function settleDone(firstUsableAt: number, now: number, settleMs = SCAN_CALIB.bodySettleMs): boolean {
+  return firstUsableAt > 0 && now - firstUsableAt >= settleMs;
+}
+
+export const STEP_BACK_TEXT = 'Shoulders and hips must both be visible. Step back so more of you fits.';
+export const SMALL_ROOM_TEXT = 'No room to step back? Raise the phone and tilt it down. A scan without the legs still counts.';
+
+/** The step-back hint, and after `hintMs` of it the alternative for a small room. */
+export function smallRoomHint(stepBackSince: number, now: number, hintMs = SCAN_CALIB.smallRoomHintMs): string {
+  return stepBackSince > 0 && now - stepBackSince > hintMs ? `${STEP_BACK_TEXT} ${SMALL_ROOM_TEXT}` : STEP_BACK_TEXT;
 }

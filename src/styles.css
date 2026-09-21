@@ -149,6 +149,7 @@ input, .code-input {
   padding: 10px 22px; border-radius: 999px; font-weight: 900; font-size: 22px; letter-spacing: 1px;
   background: rgba(0, 0, 0, 0.7); white-space: nowrap;
 }
+.banner small { display: block; font-size: 14px; font-weight: 400; color: var(--muted); margin-top: 4px; }
 .banner.good { color: var(--good); }
 .banner.warn { color: var(--warn); }
 .banner.bad { color: var(--bad); }
@@ -231,7 +232,8 @@ input, .code-input {
 .range-panel th:first-child, .range-panel td:first-child { text-align: left; color: var(--text); }
 
 .note.incident { display: flex; flex-direction: column; gap: 4px; }
-.incident-msg { font-family: ui-monospace, Menlo, monospace; font-size: 12px; word-break: break-word; color: var(--text); }
+.incident-msg { font-size: 13px; word-break: break-word; color: var(--text); }
+.incident-details { font-family: ui-monospace, Menlo, monospace; font-size: 11px; white-space: pre-wrap; word-break: break-word; color: var(--muted); max-height: 160px; overflow: auto; margin: 6px 0; }
 
 /* Tracking bench (?bench) */
 .bench { gap: 12px; }
