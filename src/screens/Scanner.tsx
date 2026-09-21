@@ -7,6 +7,7 @@ import { useHumanStatus } from '../hooks/useHumanStatus';
 import { compactEmbedding, FACE_SAMPLES, faceYawDeg, MAX_YAW_DEG, MIN_FACE_PX, isValidEmbedding } from '../vision/human';
 import { bodySampleDecision, bystanderDecision, faceBigEnough, faceGate, farFacesDone, gateHint, hintFor, SAME_FACE_TEXT, holdStep, initialScanState, judgePose, promptFor, samePerson, SCAN_CALIB, settleDone, smallRoomHint, type Judgement, type ScanState } from '../vision/scan';
 import { useWakeLock } from '../hooks/useWakeLock';
+import { saveError } from '../ui/advice';
 import { averageOutfits, averageProps, bodyProportions, FrameSampler, outfitRegions, outfitSignature } from '../vision/clothing';
 import { drawOverlay } from '../vision/overlay';
 import { iou, toNBox, type NBox } from '../vision/geometry';
@@ -125,20 +126,33 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
     setRecordingState(v);
   };
 
-  const finish = async (back: OutfitSig | null) => {
+  /** The captured scan, kept so a failed save can be retried without scanning again. */
+  const lastResult = useRef<ScanResult | null>(null);
+
+  const submit = async (result: ScanResult) => {
+    lastResult.current = result;
     go('saving');
     try {
-      await onDone({
-        face: faces.current,
-        farFace: farFaces.current,
-        body: averageProps(props.current),
-        outfit: outfit && front.current && back ? { front: front.current, back } : null,
-      });
+      await onDone(result);
     } catch (e) {
       if (!mounted.current) return;
-      setErrMsg(e instanceof Error ? e.message : String(e));
+      setErrMsg(saveError(e));
       go('error');
     }
+  };
+
+  const finish = (back: OutfitSig | null) =>
+    submit({
+      face: faces.current,
+      farFace: farFaces.current,
+      body: averageProps(props.current),
+      outfit: outfit && front.current && back ? { front: front.current, back } : null,
+    });
+
+  /** Try the save again with the scan already captured; "Start over" is the separate, destructive path. */
+  const retrySave = () => {
+    if (lastResult.current) void submit(lastResult.current);
+    else restart();
   };
 
   const restart = () => {
@@ -470,9 +484,14 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
         )}
         <div className="row">
           {stage === 'error' && (
-            <button className="btn primary" onClick={restart}>
-              Try again
-            </button>
+            <>
+              <button className="btn primary" onClick={retrySave}>
+                Try again
+              </button>
+              <button className="link" onClick={restart}>
+                Start over
+              </button>
+            </>
           )}
           {stage !== 'saving' && stage !== 'error' && (
             <button className="link" onClick={restart}>

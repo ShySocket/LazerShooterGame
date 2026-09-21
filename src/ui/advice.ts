@@ -51,3 +51,14 @@ export function rejoinFailure(code: string, result: 'missing' | 'in-progress' | 
   const reason = result instanceof Error ? result.message : typeof result === 'string' ? result : 'unknown error';
   return `Could not rejoin room ${code}: ${reason}. Check the connection and join again.`;
 }
+
+/** Why a scan could not be saved, in plain words, so the player knows whether to retry or to fix the room. */
+export function saveError(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e ?? '');
+  const code = (e as { code?: string } | null)?.code ?? '';
+  const text = `${code} ${raw}`.toLowerCase();
+  if (/permission/.test(text)) return 'Could not save the scan: the server refused it. Ask the host to check the room, then try again.';
+  if (/network|offline|failed to fetch|unavailable|disconnected/.test(text)) return 'Could not save the scan: no connection. Try again when the Wi-Fi is back.';
+  if (/timeout|timed out/.test(text)) return 'Could not save the scan: the connection timed out. Try again.';
+  return `Could not save the scan: ${raw || 'unknown error'}. Try again.`;
+}

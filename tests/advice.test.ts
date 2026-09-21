@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { connectState, isStalled, loadProgress, rejoinFailure, STALL_TEXT } from '../src/ui/advice';
+import { connectState, isStalled, loadProgress, rejoinFailure, saveError, STALL_TEXT } from '../src/ui/advice';
 import { LOAD_CALIB } from '../src/vision/calibration';
 
 const REQUIRED = ['blazeface', 'facemesh', 'insightface-mobilenet-swish', 'movenet-multipose'];
@@ -41,4 +41,12 @@ test('a failed rejoin says why in the player\'s words', () => {
   assert.match(rejoinFailure('ABCD', 'in-progress'), /a round is in progress/);
   assert.match(rejoinFailure('ABCD', new Error('network down')), /network down/);
   assert.match(rejoinFailure('ABCD', 'timeout'), /timeout/);
+});
+
+test('a failed scan upload is explained in plain words and always offers to try again', () => {
+  assert.match(saveError(Object.assign(new Error('PERMISSION_DENIED: Permission denied'), { code: 'PERMISSION_DENIED' })), /server refused/);
+  assert.match(saveError(new Error('Failed to fetch')), /no connection/);
+  assert.match(saveError(new Error('write timed out after 6000 ms')), /timed out/);
+  assert.match(saveError(new Error('something odd')), /something odd/);
+  for (const e of [new Error('x'), 'y', null]) assert.match(saveError(e), /[Tt]ry again/);
 });

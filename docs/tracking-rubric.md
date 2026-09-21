@@ -173,6 +173,7 @@ Real-phone evidence: a rescan on the phones players use, with the yaw/pitch read
 - [ ] **Should**: A propped phone stays awake through the scan, and the far-face wait is a bar and a tick per sample, readable from 3 m. <!-- R8.17 manual -->
 - [ ] **Must**: A weak face detection names light as the fix, never "hold still"; each cheap gate (no face, several faces, crop) has one message. <!-- R8.18 auto:test:low light is named -->
 - [ ] **Must**: The enrolment face size gate is measured in full-frame pixels, so a 720p phone is not held closer than a 1080p one. <!-- R8.19 auto:test:the face size gate is measured -->
+- [ ] **Must**: A failed scan upload keeps the captured scan: the message says why in plain words, "Try again" re-sends it, and "Start over" is a separate link. <!-- R8.20 auto:test:a failed scan upload -->
 
 ## 9. Demo-day protocol (run this before the first guest picks up a phone)
 
