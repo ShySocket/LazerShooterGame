@@ -126,6 +126,9 @@ The demo is everyone against everyone: 3 lives, no respawn, last standing wins. 
 - [ ] **Should**: Tags (hits landed) per player and the final standing are shown on Results for all players, sorted, so a 12-player round has a leaderboard, not just a winner (implemented in `src/screens/Results.tsx`; verify it agrees on every phone). <!-- R6.16 e2e:leaderboard -->
 - [ ] **Nice**: A late player can enrol during the lobby while others are already enrolled without resetting anyone else. <!-- R6.17 manual -->
 - [ ] **Nice**: A round timer or a "last 2 standing" call-out for big rounds, so a 12-player game does not drag when two cautious players remain. <!-- R6.18 manual -->
+- [ ] **Must**: When an enrolled player's phone drops, the lobby names them ("Waiting for Pia's phone to reconnect") and marks them in the list, instead of claiming it needs more players. <!-- R6.19 e2e:lobby-reconnect -->
+- [ ] **Should**: When neither the share sheet nor the clipboard works, the lobby shows the code to read out instead of doing nothing. <!-- R6.20 auto:test:share fallback -->
+- [ ] **Should**: The Hit confidence field stops at 0.7 with a note, so a host cannot make every shot UNCLEAR for a round; the sound pill says the iPhone mute switch keeps sounds off. <!-- R6.21 manual -->
 
 ## 7. Using the app without bugs (robustness)
 

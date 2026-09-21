@@ -62,3 +62,37 @@ export function saveError(e: unknown): string {
   if (/timeout|timed out/.test(text)) return 'Could not save the scan: the connection timed out. Try again.';
   return `Could not save the scan: ${raw || 'unknown error'}. Try again.`;
 }
+
+export interface LobbyState {
+  /** Names of enrolled players whose phone is currently disconnected. */
+  disconnectedEnrolled: string[];
+  /** Enrolled and connected players. */
+  enrolledConnected: number;
+  notEnrolled: string[];
+  stale: string[];
+  conflicts: number;
+  minPlayers: number;
+}
+
+const list = (names: string[]) => (names.length <= 1 ? names[0] ?? '' : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`);
+const possessive = (name: string) => (name.endsWith('s') ? `${name}'` : `${name}'s`);
+
+/** The one sentence under a disabled Start: a phone that dropped is named before "need 2 players" is claimed. */
+export function lobbyHint(s: LobbyState): string {
+  if (s.disconnectedEnrolled.length && s.enrolledConnected < s.minPlayers) {
+    return s.disconnectedEnrolled.length === 1
+      ? `Waiting for ${possessive(s.disconnectedEnrolled[0])} phone to reconnect.`
+      : `Waiting for ${list(s.disconnectedEnrolled)} to reconnect.`;
+  }
+  if (s.enrolledConnected < s.minPlayers) return `Need at least ${s.minPlayers} enrolled players.`;
+  if (s.notEnrolled.length) return `Waiting for ${list(s.notEnrolled)} to enroll.`;
+  if (s.stale.length) return `${list(s.stale)} need${s.stale.length === 1 ? 's' : ''} to redo an outdated scan.`;
+  if (s.conflicts) return 'Resolve the clothing conflict above.';
+  return '';
+}
+
+/** When neither the share sheet nor the clipboard works, the code itself is the fallback. */
+export const shareFallback = (code: string): string => `Could not copy. The code is ${code}.`;
+
+export const HIT_CONFIDENCE_NOTE = '0.5 suits most rounds. Above 0.7 few shots can land, so the field stops there.';
+export const MUTE_SWITCH_NOTE = 'On an iPhone, sounds stay off while the mute switch is on.';

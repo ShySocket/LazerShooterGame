@@ -17,3 +17,4 @@ One line per `npm run rubric` run that was worth keeping (versions are the merge
 | 2026-09-21 20:21 | 54f96cd | 2026-09-21.1 | 3 | 75.4 | 49/59 | 20/30 | 1/8 | phone-gates task 2: body scan keeps progress |
 | 2026-09-21 20:24 | f8119c5 | 2026-09-21.1 | 3 | 75.8 | 51/61 | 20/30 | 1/8 | phone-gates task 3: face-stage gates |
 | 2026-09-21 20:26 | 8dffc27 | 2026-09-21.1 | 3 | 76.0 | 52/62 | 20/30 | 1/8 | phone-gates task 4: scan upload retry |
+| 2026-09-21 20:32 | 65739f9 | 2026-09-21.1 | 3 | 62.6 | 41/63 | 21/32 | 1/8 | phone-gates task 5: lobby |

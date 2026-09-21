@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { connectState, isStalled, loadProgress, rejoinFailure, saveError, STALL_TEXT } from '../src/ui/advice';
+import { connectState, HIT_CONFIDENCE_NOTE, isStalled, loadProgress, lobbyHint, rejoinFailure, saveError, shareFallback, STALL_TEXT } from '../src/ui/advice';
 import { LOAD_CALIB } from '../src/vision/calibration';
 
 const REQUIRED = ['blazeface', 'facemesh', 'insightface-mobilenet-swish', 'movenet-multipose'];
@@ -49,4 +49,22 @@ test('a failed scan upload is explained in plain words and always offers to try 
   assert.match(saveError(new Error('write timed out after 6000 ms')), /timed out/);
   assert.match(saveError(new Error('something odd')), /something odd/);
   for (const e of [new Error('x'), 'y', null]) assert.match(saveError(e), /[Tt]ry again/);
+});
+
+test('the lobby names a phone that dropped before claiming it needs more players', () => {
+  const base = { disconnectedEnrolled: [] as string[], enrolledConnected: 1, notEnrolled: [] as string[], stale: [] as string[], conflicts: 0, minPlayers: 2 };
+  assert.equal(lobbyHint({ ...base, disconnectedEnrolled: ['Pia'] }), "Waiting for Pia's phone to reconnect.");
+  assert.equal(lobbyHint({ ...base, disconnectedEnrolled: ['Pia', 'Quinn'] }), 'Waiting for Pia and Quinn to reconnect.');
+  assert.equal(lobbyHint(base), 'Need at least 2 enrolled players.');
+  assert.equal(lobbyHint({ ...base, enrolledConnected: 2, notEnrolled: ['Rae'] }), 'Waiting for Rae to enroll.');
+  assert.equal(lobbyHint({ ...base, enrolledConnected: 2, stale: ['Rae'] }), 'Rae needs to redo an outdated scan.');
+  assert.equal(lobbyHint({ ...base, enrolledConnected: 2, conflicts: 1 }), 'Resolve the clothing conflict above.');
+  assert.equal(lobbyHint({ ...base, enrolledConnected: 2 }), '');
+  // A dropped phone that does not block the start is not the headline.
+  assert.equal(lobbyHint({ ...base, enrolledConnected: 2, disconnectedEnrolled: ['Zed'], notEnrolled: ['Rae'] }), 'Waiting for Rae to enroll.');
+});
+
+test('share fallback shows the code, and the hit confidence note says where the field stops', () => {
+  assert.equal(shareFallback('ABCD'), 'Could not copy. The code is ABCD.');
+  assert.match(HIT_CONFIDENCE_NOTE, /0\.7/);
 });

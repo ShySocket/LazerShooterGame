@@ -132,5 +132,10 @@
     "status": "pass",
     "date": "2026-09-21",
     "note": "Scanner.tsx calls useWakeLock(true); during the far-face wait the progress bar shows farFaces/6 and sfx.tick plays per accepted sample (commit on branch phone-gates)."
+  },
+  "R6.21": {
+    "status": "pass",
+    "date": "2026-09-21",
+    "note": "Lobby.tsx: NumberField max 0.7 with HIT_CONFIDENCE_NOTE under it; MUTE_SWITCH_NOTE under the sound pill (branch phone-gates)."
   }
 }
