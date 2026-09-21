@@ -171,6 +171,8 @@ Real-phone evidence: a rescan on the phones players use, with the yaw/pitch read
 - [ ] **Must**: The body scan's settle counts from the first usable body frame, not from a countdown that ended while the player was walking back. <!-- R8.15 auto:test:the settle counts -->
 - [ ] **Should**: A small room gets an alternative to stepping back (raise the phone, tilt it down) and a scan without the legs still counts. <!-- R8.16 auto:test:small room -->
 - [ ] **Should**: A propped phone stays awake through the scan, and the far-face wait is a bar and a tick per sample, readable from 3 m. <!-- R8.17 manual -->
+- [ ] **Must**: A weak face detection names light as the fix, never "hold still"; each cheap gate (no face, several faces, crop) has one message. <!-- R8.18 auto:test:low light is named -->
+- [ ] **Must**: The enrolment face size gate is measured in full-frame pixels, so a 720p phone is not held closer than a 1080p one. <!-- R8.19 auto:test:the face size gate is measured -->
 
 ## 9. Demo-day protocol (run this before the first guest picks up a phone)
 

@@ -52,6 +52,10 @@ export const SCAN_CALIB = {
   holdFrames: 2,
   samePerson: SAME_PERSON_MIN,
   minFacePx: 48,
+  /** Detector and crop scores below this mean poor light or a clipped face, not motion. */
+  minFaceScore: 0.7,
+  /** A magnified crop must overlap the detected face box this much (IoU) to be the same face. */
+  minCropOverlap: 0.25,
   enrolYawMax: 60,
   /** Pause after an accepted sample before the next one may be taken. */
   settleMs: 400,

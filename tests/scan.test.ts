@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { bodySampleDecision, bystanderDecision, FACE_PROMPTS, settleDone, smallRoomHint, SMALL_ROOM_TEXT, STEP_BACK_TEXT, faceBigEnough, farFacesDone, hintFor, holdStep, initialScanState, judgePose, promptFor, samePerson, SCAN_CALIB, type ScanState } from '../src/vision/scan';
+import { bodySampleDecision, bystanderDecision, FACE_PROMPTS, faceGate, gateHint, SAME_FACE_TEXT, settleDone, smallRoomHint, SMALL_ROOM_TEXT, STEP_BACK_TEXT, faceBigEnough, farFacesDone, hintFor, holdStep, initialScanState, judgePose, promptFor, samePerson, SCAN_CALIB, type ScanState } from '../src/vision/scan';
 import { iou, type NBox } from '../src/vision/geometry';
 import { FACE_SAMPLES } from '../src/vision/embedding';
 
@@ -161,4 +161,26 @@ test('small room: after a while the step-back hint offers raising the phone and 
   assert.equal(smallRoomHint(1000, 1000 + SCAN_CALIB.smallRoomHintMs - 1), STEP_BACK_TEXT);
   assert.equal(smallRoomHint(1000, 1000 + SCAN_CALIB.smallRoomHintMs + 1), `${STEP_BACK_TEXT} ${SMALL_ROOM_TEXT}`);
   assert.match(SMALL_ROOM_TEXT, /without the legs still counts/);
+});
+
+test('low light is named as the fix, not holding still, and each cheap gate has one message', () => {
+  assert.equal(faceGate({ faces: 0 }), 'no-face');
+  assert.equal(faceGate({ faces: 2, score: 0.9 }), 'many-faces');
+  assert.equal(faceGate({ faces: 1, score: 0.6 }), 'low-light');
+  assert.equal(gateHint('low-light'), 'Move into better light and face the camera.');
+  assert.doesNotMatch(gateHint('low-light'), /hold still/i);
+  assert.equal(faceGate({ faces: 1, score: 0.9, cropCount: 2, cropOverlap: 0.9 }), 'crop');
+  assert.equal(faceGate({ faces: 1, score: 0.9, cropCount: 1, cropOverlap: 0.1 }), 'crop');
+  assert.equal(gateHint('crop'), 'Keep just your face in the frame.');
+  assert.equal(faceGate({ faces: 1, score: 0.9, cropCount: 1, cropOverlap: 0.6 }), 'ok');
+  assert.match(SAME_FACE_TEXT, /better light/);
+  assert.match(SAME_FACE_TEXT, /Restart scan/);
+});
+
+test('the face size gate is measured in full-frame pixels, so a 720p phone is not held closer', () => {
+  // A 1080p camera detected on a 960 px copy: a 30 px face on the copy is 60 px in the frame.
+  assert.ok(faceBigEnough(30, 40, SCAN_CALIB.minFacePx, 960 / 1920));
+  // A 720p camera gets no downscale (copy scale 1): 30 px is 30 px.
+  assert.ok(!faceBigEnough(30, 40, SCAN_CALIB.minFacePx, 1));
+  assert.ok(faceBigEnough(48, 60, SCAN_CALIB.minFacePx, 1));
 });

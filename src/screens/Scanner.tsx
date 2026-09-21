@@ -5,7 +5,7 @@ import { useCamera, type Facing } from '../hooks/useCamera';
 import { useVisionLoop, type VisionFrame } from '../hooks/useVisionLoop';
 import { useHumanStatus } from '../hooks/useHumanStatus';
 import { compactEmbedding, FACE_SAMPLES, faceYawDeg, MAX_YAW_DEG, MIN_FACE_PX, isValidEmbedding } from '../vision/human';
-import { bodySampleDecision, bystanderDecision, faceBigEnough, farFacesDone, hintFor, holdStep, initialScanState, judgePose, promptFor, samePerson, SCAN_CALIB, settleDone, smallRoomHint, type Judgement, type ScanState } from '../vision/scan';
+import { bodySampleDecision, bystanderDecision, faceBigEnough, faceGate, farFacesDone, gateHint, hintFor, SAME_FACE_TEXT, holdStep, initialScanState, judgePose, promptFor, samePerson, SCAN_CALIB, settleDone, smallRoomHint, type Judgement, type ScanState } from '../vision/scan';
 import { useWakeLock } from '../hooks/useWakeLock';
 import { averageOutfits, averageProps, bodyProportions, FrameSampler, outfitRegions, outfitSignature } from '../vision/clothing';
 import { drawOverlay } from '../vision/overlay';
@@ -219,11 +219,12 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
     }
     if (s === 'face') {
       if (now - stageStart.current < SCAN_CALIB.settleMs) return;
-      if (res.face.length === 0) return setHint('No face found. Move closer and face the camera.');
-      if (res.face.length > 1) return setHint('Only one face in frame please.');
+      const gate = faceGate({ faces: res.face.length, score: res.face[0]?.score });
+      if (gate !== 'ok') return setHint(gateHint(gate));
       const detected = res.face[0];
-      if (detected.score < 0.7) return setHint('Hold still');
-      if (!faceBigEnough(detected.boxRaw[2] * res.width, detected.boxRaw[3] * res.height)) {
+      // The size gate is measured in full-frame pixels: the face stage detects on a downscaled copy.
+      const copyScale = res.width / (v.videoWidth || res.width);
+      if (!faceBigEnough(detected.boxRaw[2] * res.width, detected.boxRaw[3] * res.height, SCAN_CALIB.minFacePx, copyScale)) {
         return setHint('Move closer so your face is clear.');
       }
       // The embedding, and the head angle, come from a square crop, the same way the game reads faces (see
@@ -231,11 +232,10 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
       const crops = await zoom.current.run(human, context.frame, faceRegion(toNBox(detected.boxRaw), res.width / res.height));
       if (!isCurrent()) return;
       // A magnified crop can include a neighbour. Never take an arbitrary first face.
-      if (crops.length !== 1 || iou(crops[0].box, toNBox(detected.boxRaw)) < 0.25) {
-        return setHint('Keep just your face in frame and hold still.');
-      }
+      const cropGate = faceGate({ faces: 1, cropCount: crops.length, cropOverlap: crops.length === 1 ? iou(crops[0].box, toNBox(detected.boxRaw)) : 0, score: crops[0]?.face.score });
+      if (cropGate !== 'ok') return setHint(gateHint(cropGate));
       const f = crops[0].face;
-      if (!isValidEmbedding(f.embedding) || f.score < 0.7 || !Number.isFinite(faceYawDeg(f))) return setHint('Hold still and face the camera a little more.');
+      if (!isValidEmbedding(f.embedding) || !Number.isFinite(faceYawDeg(f))) return setHint('Hold still and face the camera a little more.');
       const yawSigned = ((f.rotation?.angle?.yaw ?? 0) * 180) / Math.PI;
       const pitchSigned = ((f.rotation?.angle?.pitch ?? 0) * 180) / Math.PI;
       setAngles({ yaw: Math.round(yawSigned), pitch: Math.round(pitchSigned) });
@@ -253,7 +253,7 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
       // A different face than the earlier samples: keep the hold so the next good frame retries at once.
       if (!samePerson(f.embedding, faces.current)) {
         scan.current = { ...scan.current, hold: SCAN_CALIB.holdFrames - 1 };
-        return setHint('That does not look like the same person as the earlier frames.');
+        return setHint(SAME_FACE_TEXT);
       }
       scan.current = held.state;
       faces.current.push(compactEmbedding(f.embedding));

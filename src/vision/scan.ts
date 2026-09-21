@@ -99,8 +99,44 @@ export function samePerson(candidate: number[], accepted: number[][], min = SCAN
   return accepted.some((a) => sim(candidate, a) >= min);
 }
 
-/** The face box (in pixels) is large enough for a trustworthy enrolment embedding. */
-export const faceBigEnough = (widthPx: number, heightPx: number, min = SCAN_CALIB.minFacePx): boolean => Math.min(widthPx, heightPx) >= min;
+/**
+ * The face box is large enough for a trustworthy enrolment embedding, measured in full-frame pixels:
+ * `copyScale` is the detect copy's width over the camera's (1 for a full-size copy), so a 720p phone
+ * that got no downscale is not held to a stricter bar than a 1080p one that did.
+ */
+export const faceBigEnough = (widthPx: number, heightPx: number, min = SCAN_CALIB.minFacePx, copyScale = 1): boolean => Math.min(widthPx, heightPx) / (copyScale || 1) >= min;
+
+export type FaceGateReason = 'ok' | 'no-face' | 'many-faces' | 'low-light' | 'crop';
+
+/**
+ * The cheap gates before a face sample: how many faces, how sure the detector is, and whether the
+ * magnified crop found the same single face. A low score is poor light or a clipped face, so the
+ * hint says light, never "hold still".
+ */
+export function faceGate(input: { faces: number; score?: number; cropCount?: number; cropOverlap?: number }, minScore = SCAN_CALIB.minFaceScore, minOverlap = SCAN_CALIB.minCropOverlap): FaceGateReason {
+  if (input.faces === 0) return 'no-face';
+  if (input.faces > 1) return 'many-faces';
+  if (input.score !== undefined && input.score < minScore) return 'low-light';
+  if (input.cropCount !== undefined && (input.cropCount !== 1 || (input.cropOverlap ?? 0) < minOverlap)) return 'crop';
+  return 'ok';
+}
+
+export function gateHint(reason: FaceGateReason): string {
+  switch (reason) {
+    case 'ok':
+      return '';
+    case 'no-face':
+      return 'No face found. Move closer and face the camera.';
+    case 'many-faces':
+      return 'Only one face in frame please.';
+    case 'low-light':
+      return 'Move into better light and face the camera.';
+    case 'crop':
+      return 'Keep just your face in the frame.';
+  }
+}
+
+export const SAME_FACE_TEXT = 'This looks like a different face than the earlier frames: better light, hat and glasses off, or Restart scan.';
 
 /** What to tell the player, given the prompt and why the frame did not count. */
 export function hintFor(prompt: FacePrompt, reason: PoseReason): string {

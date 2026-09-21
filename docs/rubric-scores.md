@@ -15,3 +15,4 @@ One line per `npm run rubric` run that was worth keeping (versions are the merge
 | 2026-09-18 23:24 | d3bea05 | 2026-09-18.1 | 3 | 73.6 | 45/55 | 17/27 | 1/8 | scan rubric section 8 added |
 | 2026-09-21 20:18 | 49ff935 | 2026-09-21.1 | 3 | 74.4 | 47/57 | 18/28 | 1/8 | phone-gates task 1: model load stall, connecting back button |
 | 2026-09-21 20:21 | 54f96cd | 2026-09-21.1 | 3 | 75.4 | 49/59 | 20/30 | 1/8 | phone-gates task 2: body scan keeps progress |
+| 2026-09-21 20:24 | f8119c5 | 2026-09-21.1 | 3 | 75.8 | 51/61 | 20/30 | 1/8 | phone-gates task 3: face-stage gates |
