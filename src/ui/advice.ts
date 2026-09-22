@@ -1,4 +1,5 @@
 import { LOAD_CALIB } from '../vision/calibration';
+import { isTimeout } from '../net/withTimeout';
 
 /**
  * Player-facing words for the moments an app can leave a phone stuck: what a wait is doing, when it
@@ -151,3 +152,10 @@ export function crashNotice(incident: { t: number; kind: 'error' | 'rejection' |
 export const REVIEW_SKIP_ONE = 'Skip this shot';
 export const REVIEW_DONE = 'Done reviewing';
 export const RESET_FAILED = 'Could not reset the room. Check the connection and tap again.';
+
+/** The banner for a hit the server never confirmed: offline or timed out is a lost shot, anything else is refused. */
+export function hitFailureText(e: unknown): string {
+  const text = (e instanceof Error ? `${e.name} ${e.message}` : String(e ?? '')).toLowerCase();
+  if (isTimeout(e) || /network|offline|disconnected|unavailable/.test(text)) return 'NO CONNECTION, SHOT LOST';
+  return 'SHOT LOST';
+}

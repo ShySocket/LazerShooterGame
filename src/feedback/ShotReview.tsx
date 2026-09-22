@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { withTimeout } from '../net/withTimeout';
 import { REVIEW_DONE, REVIEW_SKIP_ONE } from '../ui/advice';
 import { backend } from '../net';
 import type { Room } from '../types';
@@ -21,18 +22,6 @@ const SAID: Record<string, string> = { unclear: 'UNCLEAR TARGET', miss: 'MISS', 
 /** Firebase writes never reject while offline, they wait; past this the upload is queued and retried later instead. */
 const UPLOAD_TIMEOUT_MS = 6000;
 
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const tm = setTimeout(() => reject(new Error('upload timed out')), ms);
-    p.then((v) => {
-      clearTimeout(tm);
-      resolve(v);
-    }, (e: unknown) => {
-      clearTimeout(tm);
-      reject(e);
-    });
-  });
-}
 
 const fmtRound = (ms: number) => {
   const s = Math.max(0, Math.round(ms / 1000));

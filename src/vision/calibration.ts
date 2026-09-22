@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-09-21.1';
+export const CALIBRATION_VERSION = '2026-09-22.1';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /**
@@ -82,6 +82,16 @@ export const LOAD_CALIB = {
   progressPollMs: 500,
   /** After this long on "Connecting" the player gets a Back button. */
   connectPatienceMs: 10000,
+};
+
+// ---- Network (Game.tsx, firebase.ts) ---------------------------------------------------------------
+export const NET_CALIB = {
+  /** A hit the server has not confirmed within this is reported as lost; the phone is offline or the link is dead. */
+  hitTimeoutMs: 4000,
+  /** Each phone stamps players/{id}/seenAt this often while the app is visible. */
+  heartbeatMs: 20000,
+  /** A player whose heartbeat is older than this counts as gone, whatever Firebase's own presence says. */
+  presenceStaleMs: 60000,
 };
 
 // ---- Evidence fusion (scoring.ts) ---------------------------------------------------------------

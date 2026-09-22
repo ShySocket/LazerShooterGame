@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Human, Result } from '@vladmandic/human';
 import { backend, MIN_PLAYERS } from '../net';
 import { decideRoundEnd } from '../net/backend';
-import { RANGE_TARGET_NOTE, verdictAdvice } from '../ui/advice';
+import { hitFailureText, RANGE_TARGET_NOTE, verdictAdvice } from '../ui/advice';
+import { withTimeout } from '../net/withTimeout';
+import { NET_CALIB } from '../vision/calibration';
 import { alivePlayers, enrolledPlayers, livesLabel, UNKNOWN_ID, type Player, type Room } from '../types';
 import { useCamera } from '../hooks/useCamera';
 import { useVisionLoop, type VisionFrame } from '../hooks/useVisionLoop';
@@ -339,8 +341,8 @@ export function Game({ room, me, pid, onLeave }: Props) {
       return show('UNCLEAR TARGET', 'warn');
     }
     const name = room.players[r.id]?.name ?? '?';
-    backend
-      .registerHit(room.code, pid, r.id, r.score, r.via)
+    // Offline, a Firebase write waits forever; the player gets a verdict either way.
+    withTimeout(backend.registerHit(room.code, pid, r.id, r.score, r.via), NET_CALIB.hitTimeoutMs, 'the hit')
       .then((out) => {
         logShot(out, track, { targetName: name, targetId: r.id, via: r.via, resolveMs, zoom: zoomed }, context.shotId);
         if (out === 'hit' || out === 'eliminated') {
@@ -352,8 +354,9 @@ export function Game({ room, me, pid, onLeave }: Props) {
       })
       .catch((e: unknown) => {
         console.warn('hit not registered', e);
+        sfx.unclear();
         logShot('network error', track, { targetName: name, targetId: r.id, via: r.via, resolveMs, zoom: zoomed }, context.shotId);
-        show('NO CONNECTION, SHOT LOST', 'warn', 2000);
+        show(hitFailureText(e), 'warn', 2000);
       });
   };
   settleRef.current = settleShot;
