@@ -243,6 +243,34 @@ test('work shedding: a slow phone keeps the crosshair target\'s crop and drops t
   assert.ok(twoCropFrames >= 1, 'at a normal period the extra body gets its crop');
 });
 
+test('crop priority: a body with no face sample yet is cropped before one that already has a face', async () => {
+  const h = harness();
+  // Two bystanders well away from the dot; the crop ops give a face only to the one on the right,
+  // so after the first look the left one is still without a sample and must be preferred.
+  const left = body([0.02, 0.3, 0.14, 0.3], [0.05, 0.31, 0.06, 0.1]);
+  const right = body([0.84, 0.3, 0.14, 0.3], [0.87, 0.31, 0.06, 0.1]);
+  const looks: number[] = [];
+  const ops: FrameOps = {
+    sampleOutfit: () => null,
+    cropFaces: async (region) => {
+      looks.push(region[0]);
+      if (region[2] > 0.3) return [{ box: [region[0] + 0.12, 0.26, 0.08, 0.1], embedding: BOB_FACE, quality: 1 }];
+      return region[0] > 0.5 ? [{ box: [region[0] + 0.04, 0.32, 0.05, 0.07], embedding: ALICE_FACE, quality: 1 }] : [];
+    },
+    isCurrent: () => true,
+  };
+  let t = 0;
+  for (let i = 0; i < 8; i++) {
+    h.clock.now = t + PERIOD;
+    await h.pipeline.processFrame([body(BOB_BOX, BOB_HIT), left, right], t, 1280, 720, CROSSHAIR, ops);
+    t += PERIOD;
+  }
+  const bystanderLooks = looks.filter((x) => x < 0.3 || x > 0.5);
+  const leftLooks = bystanderLooks.filter((x) => x < 0.3).length;
+  const rightLooks = bystanderLooks.length - leftLooks;
+  assert.ok(leftLooks > rightLooks, `the sampleless body gets most looks: left ${leftLooks}, right ${rightLooks}`);
+});
+
 test('(f) a stationary target is not nominated by prediction: nobody under the dot is a miss', async () => {
   const h = harness();
   await h.establishBob(6);

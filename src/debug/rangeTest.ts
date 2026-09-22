@@ -73,6 +73,7 @@ export function summarizeRangeShots(records: readonly RangeShot[]): RangeSummary
 /** Accuracy bench: range-test attempts deal no damage and compare recognition with the chosen target. */
 export const rangeTest = {
   add(r: RangeShot): void {
+    if (shots.length >= 500) shots.shift();
     shots.push(r);
   },
   all(): RangeShot[] {

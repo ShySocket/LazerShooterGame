@@ -112,6 +112,8 @@ interface PendingShot<C> {
 
 /** Besides the crosshair target, this many other bodies get a face crop per frame, round-robin. */
 const EXTRA_CROPS = 1;
+/** The live-enrolment log kept for the shot log and the bench; older entries roll off. */
+const LEARNED_LOG_MAX = 200;
 
 /** Whether a track other than `id` in the list still covers the point. */
 const coveredByOther = (tracks: Track[], id: number, x: number, y: number): boolean => tracks.some((c) => c.id !== id && containsPoint(c.box, x, y));
@@ -199,6 +201,7 @@ export class VisionPipeline<C = unknown> {
     if (list.some((s) => centredSimilarity(s, emb) >= LIVE_FACE_NOVELTY)) return;
     list.push(emb.slice());
     if (list.length > LIVE_FACES_PER_PLAYER) list.shift();
+    if (this.learned.length >= LEARNED_LOG_MAX) this.learned.shift();
     this.learned.push({ id, t: this.clock(), toEnrolled: Math.round(toEnrolled * 100) / 100, quality: Math.round(quality * 100) / 100 });
     this.liveFaces.set(id, list);
     this.augmented = null;
@@ -324,11 +327,18 @@ export class VisionPipeline<C = unknown> {
     // A slow or throttled phone sheds the extra crops (schedule.ts): the target keeps its own.
     const extraCrops = cropBudget(this.period.ms(), EXTRA_CROPS);
     if (extraCrops > 0 && dets.length > (idx >= 0 ? 1 : 0)) {
-      for (let k = 0; k < dets.length && order.length < 1 + extraCrops; k++) {
-        const j = (this.cropCursor + k) % dets.length;
-        if (j !== idx && (dets[j].face || dets[j].body)) order.push(j);
-      }
-      this.cropCursor = (this.cropCursor + 1) % dets.length;
+      // Who needs a look most: a body with no face sample yet, then the one whose face is oldest;
+      // ties rotate with the cursor so a plain round-robin is the fallback.
+      const n = dets.length;
+      const pool = dets.map((_, j) => j).filter((j) => j !== idx && (dets[j].face || dets[j].body));
+      const key = (j: number): [number, number, number] => [tracks[j].faceSamples > 0 ? 1 : 0, tracks[j].lastFaceAt || 0, (j - this.cropCursor + n) % n];
+      pool.sort((a, b) => {
+        const ka = key(a);
+        const kb = key(b);
+        return ka[0] - kb[0] || ka[1] - kb[1] || ka[2] - kb[2];
+      });
+      for (const j of pool) if (order.length < 1 + extraCrops) order.push(j);
+      this.cropCursor = (this.cropCursor + 1) % n;
     }
     const faced = new Set<number>();
     for (const j of order) {

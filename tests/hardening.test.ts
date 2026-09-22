@@ -4,6 +4,7 @@ import { isTimeout, TimeoutError, withTimeout } from '../src/net/withTimeout';
 import { cameraRequestPlan, hitFailureText } from '../src/ui/advice';
 import { CAM_CALIB, NET_CALIB, SCHED_CALIB } from '../src/vision/calibration';
 import { clothingDue, cropBudget, failureDecision } from '../src/vision/schedule';
+import { MODELS_CACHE, STALE_MODEL_CACHES } from '../src/vision/modelCache';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -44,4 +45,10 @@ test('the camera permission sheet is waited for: a minute, with a message, and n
     assert.equal(plan.timeoutMs, CAM_CALIB.requestTimeoutMs);
     assert.equal(plan.fallbacksAfterTimeout, true);
   }
+});
+
+test('the model cache is versioned and the old name is swept, so a bad cached shard can be retired', () => {
+  assert.notEqual(MODELS_CACHE, 'vision-models');
+  assert.ok(STALE_MODEL_CACHES.includes('vision-models'));
+  assert.match(MODELS_CACHE, /^vision-models-v\d+$/);
 });

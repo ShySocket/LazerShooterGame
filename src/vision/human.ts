@@ -1,5 +1,7 @@
 import { Human, type Config } from '@vladmandic/human';
 import { createSerialQueue } from './serial';
+import { clearModelCaches } from './modelCache';
+export { MODELS_CACHE, STALE_MODEL_CACHES, clearModelCaches } from './modelCache';
 export * from './embedding';
 
 const modelBasePath = import.meta.env.BASE_URL.replace(/\/?$/, '/') + 'models/';
@@ -61,6 +63,7 @@ let generation = 0;
 /** The models the game needs, checked after Human's load (it logs some download failures without rejecting). */
 export const REQUIRED_MODELS = ['blazeface', 'facemesh', 'insightface-mobilenet-swish', 'movenet-multipose'];
 
+
 /** Progress of the current load: which required models are in, and how many bytes so far. */
 export function modelStats(): { name: string; loaded: boolean; sizeLoadedWeights: number }[] {
   return instance ? instance.models.stats().modelStats.map((m) => ({ name: m.name, loaded: m.loaded, sizeLoadedWeights: m.sizeLoadedWeights })) : [];
@@ -74,7 +77,16 @@ export function abandonHumanLoad(): void {
   generation++;
   loading = null;
   ready = false;
+  // Release the old instance's GPU tensors before the next load builds a fresh set.
+  const old = instance;
   instance = null;
+  if (old) {
+    try {
+      for (const model of Object.values(old.models.models)) (model as { dispose?: () => void } | null)?.dispose?.();
+    } catch {
+      /* best effort */
+    }
+  }
 }
 
 // Human keeps mutable config and model caches. A frame and all its crops form one session.
@@ -103,7 +115,10 @@ export function loadHuman(onStatus?: (msg: string) => void): Promise<Human> {
       // Human logs some download failures without rejecting load(). Do not report a partial load as ready.
       const stats = h.models.stats().modelStats;
       const missing = REQUIRED_MODELS.filter((name) => !stats.some((model) => model.name === name && model.loaded));
-      if (missing.length) throw new Error('Could not load vision models: ' + missing.join(', '));
+      if (missing.length) {
+        await clearModelCaches();
+        throw new Error('Could not load vision models: ' + missing.join(', '));
+      }
       onStatus?.('Warming up');
       const result = await h.warmup();
       if (result?.error) throw new Error(result.error);

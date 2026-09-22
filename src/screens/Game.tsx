@@ -167,7 +167,11 @@ export function Game({ room, me, pid, onLeave }: Props) {
     [room.players, pid],
   );
   const colors = useMemo(() => Object.fromEntries(Object.values(room.players).map((p) => [p.id, p.color])), [room.players]);
-  pipeline.current.configure({ candidates, exclusiveIds, eligible, hitThreshold: settings.hitThreshold, hitMargin: settings.hitMargin });
+  // Only when the candidate list or the rules change: configure() drops the pipeline's gallery
+  // cache, so calling it on every render (every hit re-renders) would rebuild it needlessly.
+  useEffect(() => {
+    pipeline.current.configure({ candidates, exclusiveIds, eligible, hitThreshold: settings.hitThreshold, hitMargin: settings.hitMargin });
+  }, [candidates, exclusiveIds, eligible, settings.hitThreshold, settings.hitMargin]);
 
   // A range-test target who was eliminated or left would otherwise keep being "expected" silently.
   useEffect(() => {
@@ -179,10 +183,13 @@ export function Game({ room, me, pid, onLeave }: Props) {
     window.clearTimeout(bannerTimer.current);
     bannerTimer.current = window.setTimeout(() => setBanner(null), ms);
   };
+  const flashTimer = useRef<number | undefined>(undefined);
   const flashScreen = (color: string, ms = 220) => {
     setFlash(color);
-    window.setTimeout(() => setFlash(null), ms);
+    window.clearTimeout(flashTimer.current);
+    flashTimer.current = window.setTimeout(() => setFlash(null), ms);
   };
+  useEffect(() => () => window.clearTimeout(flashTimer.current), []);
 
   // Countdown before the round, then flip to playing.
   useEffect(() => {
