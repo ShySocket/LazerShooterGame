@@ -43,6 +43,8 @@ export interface RoomBackend {
   submitShotFeedback(round: string, sample: ShotSample, profiles: ProfilesSnapshot | null): Promise<void>;
   /** Server-synchronised clock in ms. */
   now(): number;
+  /** Whether this phone currently has a live link to the room server; the callback fires on every change, and once at subscription. */
+  onConnection(cb: (online: boolean) => void): () => void;
 }
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ';

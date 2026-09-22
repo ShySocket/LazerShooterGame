@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Human, Result } from '@vladmandic/human';
 import { backend, MIN_PLAYERS } from '../net';
 import { decideRoundEnd } from '../net/backend';
-import { hitFailureText, RANGE_TARGET_NOTE, verdictAdvice } from '../ui/advice';
+import { hitFailureText, OFFLINE_TEXT, RANGE_TARGET_NOTE, verdictAdvice } from '../ui/advice';
+import { useConnection } from '../hooks/useConnection';
 import { withTimeout } from '../net/withTimeout';
 import { NET_CALIB } from '../vision/calibration';
 import { alivePlayers, enrolledPlayers, livesLabel, UNKNOWN_ID, type Player, type Room } from '../types';
@@ -61,6 +62,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   useWakeLock(true);
+  const online = useConnection();
   const torch = useTorch(videoRef);
 
   const [debug, setDebug] = useState(false);
@@ -531,6 +533,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
       )}
       {flash && <div className="flash" style={{ background: flash }} />}
 
+      {!online && <div className="status-pill offline">{OFFLINE_TEXT}</div>}
       <div className="hud-top">
         <div className="hearts">
           {hearts.map((on, i) => (

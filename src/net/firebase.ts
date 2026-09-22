@@ -74,6 +74,10 @@ export class FirebaseBackend implements RoomBackend {
     return Date.now() + this.offset;
   }
 
+  onConnection(cb: (online: boolean) => void): () => void {
+    return this.sdk.onValue(this.sdk.ref(this.db, '.info/connected'), (s) => cb(s.val() === true));
+  }
+
   private path(code: string, sub = ''): string {
     return `rooms/${code}${sub ? '/' + sub : ''}`;
   }

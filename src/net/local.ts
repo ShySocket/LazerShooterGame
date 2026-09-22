@@ -27,6 +27,11 @@ export class LocalBackend implements RoomBackend {
     return Date.now();
   }
 
+  onConnection(cb: (online: boolean) => void): () => void {
+    cb(true);
+    return () => undefined;
+  }
+
   private emit(code: string): void {
     const room = this.rooms.get(code) ?? null;
     this.subs.get(code)?.forEach((cb) => cb(room ? structuredClone(room) : null));

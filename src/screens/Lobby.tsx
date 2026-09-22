@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { backend, MIN_PLAYERS } from '../net';
-import { HIT_CONFIDENCE_NOTE, lobbyHint, MUTE_SWITCH_NOTE, shareFallback } from '../ui/advice';
+import { HIT_CONFIDENCE_NOTE, lobbyHint, MUTE_SWITCH_NOTE, OFFLINE_TEXT, shareFallback } from '../ui/advice';
+import { useConnection } from '../hooks/useConnection';
 import { CLOTHING_CONFLICT, type Player, type Room, type RoomSettings } from '../types';
 import { outfitConflict } from '../vision/clothing';
 import { centredSimilarity, FACE_CONFLICT, isCurrentFaceScan } from '../vision/human';
@@ -21,6 +22,7 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
   const [copied, setCopied] = useState(false);
   const [shareNote, setShareNote] = useState('');
   const audio = useAudioState();
+  const online = useConnection();
   useEffect(() => setSettings(room.settings), [room.settings]);
 
   const players = Object.values(room.players).sort((a, b) => a.joinedAt - b.joinedAt);
@@ -116,6 +118,7 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
       </div>
 
       {shareNote && <div className="note">{shareNote}</div>}
+      {!online && <div className="note bad offline">{OFFLINE_TEXT}</div>}
 
       {audio !== 'running' && (
         <button className="note warn sound-check" onClick={soundCheck}>

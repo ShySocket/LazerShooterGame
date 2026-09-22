@@ -159,3 +159,5 @@ export function hitFailureText(e: unknown): string {
   if (isTimeout(e) || /network|offline|disconnected|unavailable/.test(text)) return 'NO CONNECTION, SHOT LOST';
   return 'SHOT LOST';
 }
+
+export const OFFLINE_TEXT = 'OFFLINE. Shots are not counting. Reconnecting…';

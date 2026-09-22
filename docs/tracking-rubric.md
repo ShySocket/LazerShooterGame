@@ -156,6 +156,7 @@ The demo is everyone against everyone: 3 lives, no respawn, last standing wins. 
 - [ ] **Should**: The shot review lets a player skip one shot or finish reviewing, and a failed room reset says so and keeps the button. <!-- R7.19 manual -->
 - [ ] **Should**: A waiting app update never reloads while the player is in a room, in the profile, or typing. <!-- R7.20 auto:test:update allowed -->
 - [ ] **Should**: The crash notice speaks plainly and keeps the raw error behind a Details toggle. <!-- R7.21 auto:test:crash notice -->
+- [ ] **Must**: A phone that loses its link to the room server shows OFFLINE in the game and the lobby while it lasts, instead of a HUD that looks live on cached state. <!-- R7.22 e2e:offline-pill -->
 
 ## 8. Enrolment scan (face angles, body scans)
 

@@ -215,6 +215,7 @@ input, .code-input {
 .google-btn { display: flex; align-items: center; justify-content: center; gap: 10px; }
 
 .status-pill.solo-note { top: auto; bottom: calc(env(safe-area-inset-bottom) + 200px); }
+.status-pill.offline { top: calc(env(safe-area-inset-top) + 64px); background: var(--bad); color: #fff; font-weight: 700; }
 .hud-top .row { gap: 6px; }
 
 .range-panel {
