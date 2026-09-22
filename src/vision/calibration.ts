@@ -94,6 +94,14 @@ export const NET_CALIB = {
   presenceStaleMs: 60000,
 };
 
+// ---- Camera (useCamera.ts) --------------------------------------------------------------------------
+export const CAM_CALIB = {
+  /** How long a camera request may take when no permission prompt is expected. */
+  requestTimeoutMs: 20000,
+  /** How long to wait while the browser's permission sheet is open: a player reading it carefully takes a while. */
+  promptTimeoutMs: 60000,
+};
+
 // ---- Scheduling under load (schedule.ts, useVisionLoop.ts) --------------------------------------
 export const SCHED_CALIB = {
   /** Above this frame period the pipeline sheds work: no extra crops, clothing every other frame. The shot rules do not change. */

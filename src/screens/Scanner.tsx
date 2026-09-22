@@ -75,7 +75,7 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
   const recordingRef = useRef(false);
   const [countdown, setCountdown] = useState<number | null>(null);
   const facing: Facing = stage === 'face' || bodyMode === 'prop' ? 'user' : 'environment';
-  const { videoRef, ready: camReady, error: camError, retry: retryCamera } = useCamera(facing, stage !== 'saving');
+  const { videoRef, ready: camReady, error: camError, notice: camNotice, retry: retryCamera } = useCamera(facing, stage !== 'saving');
   // A propped phone must not fall asleep mid-scan.
   useWakeLock(true);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -457,7 +457,7 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
         )}
         {stage !== 'bodyMode' && (!camReady || !humanReady) && (
           <p className="hint">
-            {camError ?? (camReady ? status : 'Starting camera')}
+            {camError ?? (camReady ? status : (camNotice ?? 'Starting camera'))}
             {(camError || humanFailed) && (
               <>
                 {' '}

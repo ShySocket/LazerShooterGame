@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { isTimeout, TimeoutError, withTimeout } from '../src/net/withTimeout';
-import { hitFailureText } from '../src/ui/advice';
-import { NET_CALIB, SCHED_CALIB } from '../src/vision/calibration';
+import { cameraRequestPlan, hitFailureText } from '../src/ui/advice';
+import { CAM_CALIB, NET_CALIB, SCHED_CALIB } from '../src/vision/calibration';
 import { clothingDue, cropBudget, failureDecision } from '../src/vision/schedule';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -31,4 +31,17 @@ test('the work budget shrinks on a slow phone and is untouched on a fast one', (
   assert.equal(clothingDue(200, 0, 150), true);
   assert.equal(clothingDue(400, 0, 500), false, 'every other frame on a slow phone');
   assert.equal(clothingDue(400, 0, 800), true);
+});
+
+test('the camera permission sheet is waited for: a minute, with a message, and no re-prompting after a timeout', () => {
+  const prompt = cameraRequestPlan('prompt');
+  assert.equal(prompt.timeoutMs, CAM_CALIB.promptTimeoutMs);
+  assert.ok(prompt.timeoutMs >= 45000);
+  assert.match(prompt.waitingText, /allow the camera/);
+  assert.equal(prompt.fallbacksAfterTimeout, false);
+  for (const st of ['granted', 'denied', 'unknown'] as const) {
+    const plan = cameraRequestPlan(st);
+    assert.equal(plan.timeoutMs, CAM_CALIB.requestTimeoutMs);
+    assert.equal(plan.fallbacksAfterTimeout, true);
+  }
 });

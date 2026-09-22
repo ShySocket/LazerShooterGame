@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { cameraRequestPlan, type CameraPermission } from '../ui/advice';
 
 export type Facing = 'user' | 'environment';
 
@@ -52,6 +53,8 @@ export function useCamera(facing: Facing, enabled = true) {
   const attachRef = useRef<(v: HTMLVideoElement) => void>(() => undefined);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** What the camera is doing while there is no error and no stream yet ("Waiting for you to allow the camera…"). */
+  const [notice, setNotice] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
 
@@ -127,7 +130,20 @@ export function useCamera(facing: Facing, enabled = true) {
     };
     attachRef.current = (v) => void attach(v);
 
+    /** What the browser knows about the camera permission; 'unknown' where the Permissions API has no camera entry (Safari). */
+    const permissionState = async (): Promise<CameraPermission> => {
+      try {
+        const st = await navigator.permissions?.query({ name: 'camera' as PermissionName });
+        return st?.state === 'prompt' || st?.state === 'granted' || st?.state === 'denied' ? st.state : 'unknown';
+      } catch {
+        return 'unknown';
+      }
+    };
+
     (async () => {
+      const plan = cameraRequestPlan(await permissionState());
+      if (cancelled) return;
+      setNotice(plan.waitingText);
       // 1080p when the phone offers it: the detectors resize the frame to their own input size, so the
       // full-frame pass costs the same, but the magnified face crops read from the sharper frame and a
       // face keeps full weight (see FULL_QUALITY_FACE_PX) about 1.5x farther away. Phones that only
@@ -143,17 +159,21 @@ export function useCamera(facing: Facing, enabled = true) {
           // A request that resolves only after the timeout below must not leave a live camera stream
           // running that nothing owns. The guard is armed in the catch path, after the timeout has
           // rejected, so it can never run against the stream this attempt adopts.
+          let timedOut = false;
           try {
-            stream = await withTimeout(request, 20000, 'The camera permission prompt');
+            stream = await withTimeout(request, plan.timeoutMs, 'The camera permission prompt');
           } catch (e) {
+            timedOut = !(e instanceof DOMException);
             request.then((late) => late.getTracks().forEach((t) => t.stop()), () => undefined);
-            throw e;
+            throw Object.assign(e instanceof Error ? e : new Error(String(e)), { timedOut });
           }
           break;
         } catch (e) {
           lastError = e;
           // A denied permission will not change by relaxing constraints; a busy or over-constrained camera might.
           if (e instanceof DOMException && (e.name === 'NotAllowedError' || e.name === 'SecurityError')) break;
+          // A timeout while the permission sheet was open must not re-prompt with the fallback constraints.
+          if ((e as { timedOut?: boolean }).timedOut && !plan.fallbacksAfterTimeout) break;
         }
         if (cancelled) return;
       }
@@ -161,6 +181,7 @@ export function useCamera(facing: Facing, enabled = true) {
         stream?.getTracks().forEach((t) => t.stop());
         return;
       }
+      setNotice(null);
       if (!stream) {
         setError(explain(lastError));
         return;
@@ -200,5 +221,5 @@ export function useCamera(facing: Facing, enabled = true) {
     };
   }, [facing, enabled, attempt, retry]);
 
-  return { videoRef, ready, error, retry };
+  return { videoRef, ready, error, notice, retry };
 }

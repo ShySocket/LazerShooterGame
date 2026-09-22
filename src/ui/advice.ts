@@ -1,4 +1,4 @@
-import { LOAD_CALIB } from '../vision/calibration';
+import { CAM_CALIB, LOAD_CALIB } from '../vision/calibration';
 import { isTimeout } from '../net/withTimeout';
 
 /**
@@ -161,3 +161,20 @@ export function hitFailureText(e: unknown): string {
 }
 
 export const OFFLINE_TEXT = 'OFFLINE. Shots are not counting. Reconnecting…';
+
+export type CameraPermission = 'prompt' | 'granted' | 'denied' | 'unknown';
+
+export interface CameraRequestPlan {
+  /** Deadline for getUserMedia. */
+  timeoutMs: number;
+  /** What the screen says while the request is pending. */
+  waitingText: string;
+  /** Whether a timeout may be followed by the relaxed-constraint fallbacks (never while a prompt was open: it would re-prompt). */
+  fallbacksAfterTimeout: boolean;
+}
+
+/** How patiently to wait for the camera, given what the browser says about the permission. */
+export function cameraRequestPlan(permission: CameraPermission): CameraRequestPlan {
+  if (permission === 'prompt') return { timeoutMs: CAM_CALIB.promptTimeoutMs, waitingText: 'Waiting for you to allow the camera…', fallbacksAfterTimeout: false };
+  return { timeoutMs: CAM_CALIB.requestTimeoutMs, waitingText: 'Starting camera', fallbacksAfterTimeout: true };
+}

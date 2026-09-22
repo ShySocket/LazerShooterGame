@@ -58,7 +58,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
   const playing = room.status === 'playing';
 
   const { ready: humanReady, status, failed: humanFailed, retry: retryModels, reportFailure } = useHumanStatus();
-  const { videoRef, ready: camReady, error: camError, retry: retryCamera } = useCamera('environment', !spectating);
+  const { videoRef, ready: camReady, error: camError, notice: camNotice, retry: retryCamera } = useCamera('environment', !spectating);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   useWakeLock(true);
@@ -590,7 +590,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
       {countdown !== null && <div className="countdown">{countdown > 0 ? countdown : 'GO'}</div>}
       {!spectating && (!camReady || !humanReady) && (
         <div className="status-pill">
-          {camError ?? (camReady ? status : 'Starting camera')}
+          {camError ?? (camReady ? status : (camNotice ?? 'Starting camera'))}
           {(camError || humanFailed) && (
             <button className="hud-btn" style={{ marginLeft: 8 }} onClick={camError ? retryCamera : retryModels}>
               retry
