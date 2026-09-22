@@ -94,6 +94,14 @@ export const NET_CALIB = {
   presenceStaleMs: 60000,
 };
 
+// ---- Scheduling under load (schedule.ts, useVisionLoop.ts) --------------------------------------
+export const SCHED_CALIB = {
+  /** Above this frame period the pipeline sheds work: no extra crops, clothing every other frame. The shot rules do not change. */
+  slowPeriodMs: 250,
+  /** Consecutive failed frames before the vision loop reloads the models and tells the player. */
+  loopFailuresBeforeReset: 10,
+};
+
 // ---- Evidence fusion (scoring.ts) ---------------------------------------------------------------
 /** Relative weight of each signal when it is present. */
 export const EVIDENCE_WEIGHTS = { face: 0.6, cloth: 0.3, body: 0.1 };

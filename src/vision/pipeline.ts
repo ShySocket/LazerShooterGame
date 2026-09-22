@@ -1,5 +1,6 @@
 import { UNKNOWN_ID, type BodyProps, type OutfitSig } from '../types';
-import { CLOTHING_AUDIT_MS, CLOTHING_BELIEF_ALPHA, CLOTHING_CONTRADICTION, CLOTHING_INTERVAL_MS, FACE_BELIEF_ALPHA, FACE_FRESH_MIN_MARGIN, FACE_FRESH_MS, FACE_REFRESH_MIN_LEAD, FACE_REFRESH_MS, FACE_VIA_TIMEOUT_MS, MATURE_TRACK_OBSERVATIONS, TORSO_COVER_FRACTION, LIVE_FACE_ENROLLED_MIN, LIVE_FACE_MIN, LIVE_FACE_MIN_BELIEF, LIVE_FACE_MIN_QUALITY, LIVE_FACE_MIN_TRACK_SAMPLES, LIVE_FACE_NOVELTY, LIVE_FACE_RUNNER_UP, LIVE_FACES_PER_PLAYER } from './calibration';
+import { clothingDue, cropBudget } from './schedule';
+import { CLOTHING_AUDIT_MS, CLOTHING_BELIEF_ALPHA, CLOTHING_CONTRADICTION, FACE_BELIEF_ALPHA, FACE_FRESH_MIN_MARGIN, FACE_FRESH_MS, FACE_REFRESH_MIN_LEAD, FACE_REFRESH_MS, FACE_VIA_TIMEOUT_MS, MATURE_TRACK_OBSERVATIONS, TORSO_COVER_FRACTION, LIVE_FACE_ENROLLED_MIN, LIVE_FACE_MIN, LIVE_FACE_MIN_BELIEF, LIVE_FACE_MIN_QUALITY, LIVE_FACE_MIN_TRACK_SAMPLES, LIVE_FACE_NOVELTY, LIVE_FACE_RUNNER_UP, LIVE_FACES_PER_PLAYER } from './calibration';
 import { containsPoint, faceOwner, resetIdentity, trackGapMs, Tracker, type Detection, type Track } from './tracker';
 import { crosshairCentre, indexInSight, intersectArea, type NBox } from './geometry';
 import {
@@ -255,7 +256,7 @@ export class VisionPipeline<C = unknown> {
     const tracks = this.tracker.update(dets, now, undefined, gapMs);
     // People the detector skipped this frame but who were here a moment ago: they still occupy their spot.
     const coasting = this.tracker.live().filter((t) => t.lastSeen !== now && now - t.lastSeen <= gapMs && !t.identityConflict).map(snapshotTrack);
-    const sampleClothing = ops.sampleOutfit && now - this.lastClothingAt >= CLOTHING_INTERVAL_MS;
+    const sampleClothing = ops.sampleOutfit && clothingDue(this.period.ms(), this.lastClothingAt, now);
     if (sampleClothing) this.lastClothingAt = now;
     dets.forEach((d, i) => {
       const t = tracks[i];
@@ -320,8 +321,10 @@ export class VisionPipeline<C = unknown> {
     // Everybody else takes turns, including bodies whose face the full-frame pass did not find (the
     // head crop is where a distant face turns up) and a lone person the shooter is not aiming at yet,
     // so an identity is ready by the time the dot reaches them.
-    if (dets.length > (idx >= 0 ? 1 : 0)) {
-      for (let k = 0; k < dets.length && order.length < 1 + EXTRA_CROPS; k++) {
+    // A slow or throttled phone sheds the extra crops (schedule.ts): the target keeps its own.
+    const extraCrops = cropBudget(this.period.ms(), EXTRA_CROPS);
+    if (extraCrops > 0 && dets.length > (idx >= 0 ? 1 : 0)) {
+      for (let k = 0; k < dets.length && order.length < 1 + extraCrops; k++) {
         const j = (this.cropCursor + k) % dets.length;
         if (j !== idx && (dets[j].face || dets[j].body)) order.push(j);
       }

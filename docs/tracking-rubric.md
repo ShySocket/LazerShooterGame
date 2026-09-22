@@ -90,6 +90,7 @@ Face carries the identity up close and face-on; outfit carries it at range and f
 - [ ] **Must**: Every refusal on the HUD (UNCLEAR TARGET, NOT A PLAYER, THAT IS YOU, CAMERA TOO SLOW, NO FRESH FRAMES, NO CAMERA LOCK, SHOT LOST) carries a second line saying what to do. <!-- R4.10 auto:test:verdict advice -->
 - [ ] **Should**: Range mode says why FIRE is disabled until a target is chosen. <!-- R4.11 manual -->
 - [ ] **Must**: A hit the server has not confirmed within 4 s is reported as "NO CONNECTION, SHOT LOST" and its record and photo are closed, never left hanging behind a LOCKING banner. <!-- R4.12 auto:test:a hit that cannot reach -->
+- [ ] **Must**: A slow or throttled phone (frame period over 250 ms) sheds the extra face crop and samples clothing every other frame, keeping the crosshair target's crop, so the period stops growing; the shot rules are untouched and the slow-phone sim keeps its bound. <!-- R4.13 auto:test:work shedding -->
 
 ## 5. Distance and pose table (what to hand players as expectations)
 

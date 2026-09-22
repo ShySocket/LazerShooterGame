@@ -90,7 +90,7 @@ function harness() {
     assert.equal(r.kind, 'pending', 'a stale tap on a recognised player opens a burst');
     return { tap: clock.now, result: r };
   };
-  return { pipeline, clock, frame, establishBob, tapStale, cropCalls, get t() { return t; } };
+  return { pipeline, clock, frame, establishBob, tapStale, cropCalls, ops, get t() { return t; } };
 }
 
 test('(a) a near player\'s identity does not transfer to a concentric far player when the near detection drops for a frame', async () => {
@@ -203,6 +203,35 @@ test('every fire gets a verdict: a burst abandoned by invalidate() hands back it
   assert.equal(h.pipeline.expirePending(r.kind === 'pending' ? r.token : {}), null, 'the timer finds no burst to settle');
   // The next tap is not refused as busy.
   assert.notEqual(h.pipeline.fire({ tap: 78 }, CROSSHAIR).kind, 'busy');
+});
+
+test('work shedding: a slow phone keeps the crosshair target\'s crop and drops the extra crop', async () => {
+  const slowPeriod = 400;
+  // A harness whose frames arrive 400 ms apart: the pipeline measures that period itself.
+  const h = harness();
+  const far = body([0.02, 0.3, 0.12, 0.3], [0.05, 0.31, 0.06, 0.1]);
+  let t = 0;
+  for (let i = 0; i < 8; i++) {
+    h.clock.now = t + slowPeriod;
+    await h.pipeline.processFrame([body(BOB_BOX, BOB_HIT), far], t, 1280, 720, CROSSHAIR, h.ops);
+    t += slowPeriod;
+  }
+  const before = h.cropCalls.length;
+  h.clock.now = t + slowPeriod;
+  await h.pipeline.processFrame([body(BOB_BOX, BOB_HIT), far], t, 1280, 720, CROSSHAIR, h.ops);
+  assert.equal(h.cropCalls.length - before, 1, 'one crop per frame on a slow phone: the target only');
+  // The same scene at a normal period crops the target and one other body.
+  const q = harness();
+  let u = 0;
+  for (let i = 0; i < 8; i++) {
+    q.clock.now = u + PERIOD;
+    await q.pipeline.processFrame([body(BOB_BOX, BOB_HIT), far], u, 1280, 720, CROSSHAIR, q.ops);
+    u += PERIOD;
+  }
+  const b2 = q.cropCalls.length;
+  q.clock.now = u + PERIOD;
+  await q.pipeline.processFrame([body(BOB_BOX, BOB_HIT), far], u, 1280, 720, CROSSHAIR, q.ops);
+  assert.equal(q.cropCalls.length - b2, 2, 'target plus one extra crop at a normal period');
 });
 
 test('(f) a stationary target is not nominated by prediction: nobody under the dot is a miss', async () => {
