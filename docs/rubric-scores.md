@@ -22,3 +22,4 @@ One line per `npm run rubric` run that was worth keeping (versions are the merge
 | 2026-09-21 20:37 | 29eb9f7 | 2026-09-21.1 | 3 | 77.1 | 54/64 | 23/33 | 1/8 | phone-gates task 6: HUD advice |
 | 2026-09-21 20:42 | 734a34d | 2026-09-21.1 | 3 | 77.9 | 55/65 | 26/36 | 1/8 | phone-gates task 7: results, review, app shell |
 | 2026-09-21 20:46 | f28f6b1 | 2026-09-21.1 | 3 | 77.9 | 55/65 | 26/36 | 1/8 | phone-gates: ship (full e2e) |
+| 2026-09-22 15:21 | f81cb9f | 2026-09-22.1 | 3 | 79.1 | 62/72 | 27/37 | 1/8 | evening-hardening: ship (full e2e) |
