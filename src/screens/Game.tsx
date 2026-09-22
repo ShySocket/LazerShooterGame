@@ -57,7 +57,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
   const spectating = me.status === 'out';
   const playing = room.status === 'playing';
 
-  const { ready: humanReady, status, failed: humanFailed, retry: retryModels } = useHumanStatus();
+  const { ready: humanReady, status, failed: humanFailed, retry: retryModels, reportFailure } = useHumanStatus();
   const { videoRef, ready: camReady, error: camError, retry: retryCamera } = useCamera('environment', !spectating);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -421,7 +421,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
     if (debugRef.current && canvasRef.current) drawOverlay(canvasRef.current, { dets, tracks: outcome.tracks, vidW: res.width, vidH: res.height, labels, colors }, false);
   };
 
-  useVisionLoop(videoRef, camReady && humanReady && !spectating, onFrame);
+  useVisionLoop(videoRef, camReady && humanReady && !spectating, onFrame, { onFailure: reportFailure });
 
   const canFire = (playing || rangeMode) && !spectating && camReady && humanReady && (!rangeMode || Boolean(rangeTargetId));
 

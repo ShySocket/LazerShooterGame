@@ -16,3 +16,6 @@ export function clothingDue(periodMs: number, lastAt: number, now: number, inter
   const gap = isSlow(periodMs, slowMs) ? Math.max(interval, 2 * periodMs) : interval;
   return now - lastAt >= gap;
 }
+
+/** After this many consecutive failed frames the loop stops, reloads the models and tells the player. */
+export const failureDecision = (consecutiveFailures: number, threshold = SCHED_CALIB.loopFailuresBeforeReset): 'continue' | 'reset' => (consecutiveFailures >= threshold ? 'reset' : 'continue');

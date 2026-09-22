@@ -1,6 +1,7 @@
 import { useEffect, useRef, type RefObject } from 'react';
 import type { Human, Result } from '@vladmandic/human';
-import { configurePass, loadHuman, withHumanSession, type HumanPass } from '../vision/human';
+import { abandonHumanLoad, configurePass, loadHuman, withHumanSession, type HumanPass } from '../vision/human';
+import { failureDecision } from '../vision/schedule';
 import { visionProfile, waitForVideoFrame } from '../vision/frameClock';
 import { isE2E } from '../e2e/hook';
 
@@ -25,6 +26,12 @@ export interface VisionLoopOptions {
    * face boxes in pixels) are those of the copy. The game never sets it.
    */
   maxWidth?: number;
+  /**
+   * Called when frames keep failing (a lost WebGL context, a detector that throws every time). The
+   * loop has already stopped and abandoned the models; the screen should show the failure with a
+   * Retry that reloads them.
+   */
+  onFailure?: (error: unknown, consecutiveFailures: number) => void;
 }
 
 /** Runs one frame and all its follow-up crops exclusively against the shared Human instance. */
@@ -56,6 +63,7 @@ export function useVisionLoop(
       }
       let lastTime = -1;
       let lastStream: HTMLVideoElement['srcObject'] = null;
+      let failures = 0;
       // The next frame is sampled only after this one is fully handled, and only once the video has
       // presented a new frame (requestVideoFrameCallback where the browser offers it): one frame in
       // flight, never a backlog, and a capture timestamp from the camera pipeline when available.
@@ -103,9 +111,19 @@ export function useVisionLoop(
             await handler(res, human, context);
             visionProfile.record('handler', performance.now() - handlerStart);
             visionProfile.record('age', performance.now() - capturedAt);
+            failures = 0;
           });
         } catch (e) {
           console.warn('vision frame failed', e);
+          failures++;
+          if (failureDecision(failures) === 'reset') {
+            // A loop that fails every frame is dead (context lost, models broken): stop, drop the
+            // models so the next load starts clean, and let the screen say so with a Retry.
+            running = false;
+            abandonHumanLoad();
+            opts.current.onFailure?.(e, failures);
+            return;
+          }
           await sleep(200);
         }
         // Wait for the next presented frame; the fallback never waits on requestAnimationFrame alone,

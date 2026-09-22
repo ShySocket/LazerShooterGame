@@ -62,7 +62,7 @@ type BodyMode = 'helper' | 'prop';
 
 /** Camera-driven capture of face angles, outfit colours, and body ratios. Which parts run is up to the caller. */
 export function Scanner({ face, body, outfit, header, savingText, referenceFace, onDone, onCancel }: Props) {
-  const { ready: humanReady, status, failed: humanFailed, retry: retryModels } = useHumanStatus();
+  const { ready: humanReady, status, failed: humanFailed, retry: retryModels, reportFailure } = useHumanStatus();
   const first: Stage = face ? 'face' : 'bodyMode';
   const [stage, setStageState] = useState<Stage>(first);
   const stageRef = useRef<Stage>(first);
@@ -395,6 +395,7 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
   useVisionLoop(videoRef, camReady && humanReady && stage !== 'saving' && stage !== 'error' && stage !== 'bodyMode', onFrame, {
     pass: stage === 'face' ? 'face' : 'frame',
     maxWidth: stage === 'face' ? SCAN_CALIB.faceDetectWidth : undefined,
+    onFailure: reportFailure,
   });
 
   const copy = ((): { heading: string; prompt: string } => {
