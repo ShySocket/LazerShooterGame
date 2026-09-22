@@ -1,5 +1,6 @@
 import type { Player, Profile, Room, RoomMeta, RoomSettings } from '../types';
 import { DEFAULT_SETTINGS, PLAYER_COLORS } from '../types';
+import { NET_CALIB } from '../vision/calibration';
 import type { ProfilesSnapshot, ShotSample } from '../feedback/sample';
 
 export type HitOutcome = 'hit' | 'eliminated' | 'invulnerable' | 'dead' | 'invalid';
@@ -43,6 +44,8 @@ export interface RoomBackend {
   submitShotFeedback(round: string, sample: ShotSample, profiles: ProfilesSnapshot | null): Promise<void>;
   /** Server-synchronised clock in ms. */
   now(): number;
+  /** Whether this phone currently has a live link to the room server; the callback fires on every change, and once at subscription. */
+  onConnection(cb: (online: boolean) => void): () => void;
 }
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -68,6 +71,7 @@ export function newPlayer(seed: PlayerSeed, color: string, lives: number, now: n
     color,
     joinedAt: now,
     connected: true,
+    seenAt: now,
     enrolled: false,
     lives,
     status: 'alive',
@@ -131,11 +135,23 @@ export function evaluateHit(
   return { outcome: r.outcome, players: next };
 }
 
+/**
+ * A player is present when Firebase still thinks their socket is open AND their heartbeat is
+ * recent. Firebase alone takes about a minute to notice a phone that walked out of Wi-Fi range
+ * without closing the socket; the heartbeat (NET_CALIB.heartbeatMs) bounds that wait.
+ */
+export function isPresent(p: Pick<Player, 'connected' | 'seenAt'>, now: number, staleMs = NET_CALIB.presenceStaleMs): boolean {
+  if (!p.connected) return false;
+  return p.seenAt === undefined || now - p.seenAt <= staleMs;
+}
+
 export interface RoundEnd {
   decided: boolean;
   winnerId: string | null;
   /** Decided because every other survivor's phone has dropped off, not because they were shot. */
   forfeit: boolean;
+  /** Survivors who are not present (the ones a forfeit is waiting on). */
+  absent: Player[];
 }
 
 /**
@@ -143,14 +159,15 @@ export interface RoundEnd {
  * one of the survivors is still connected. Fewer than two contenders never decide anything (a lobby
  * test round with a lone player ends by hand).
  */
-export function decideRoundEnd(players: Record<string, Player> | null | undefined): RoundEnd {
+export function decideRoundEnd(players: Record<string, Player> | null | undefined, now: number): RoundEnd {
   const contenders = Object.values(players ?? {}).filter((p) => p.enrolled);
-  if (contenders.length < 2) return { decided: false, winnerId: null, forfeit: false };
+  if (contenders.length < 2) return { decided: false, winnerId: null, forfeit: false, absent: [] };
   const alive = contenders.filter((p) => p.status === 'alive');
-  if (alive.length <= 1) return { decided: true, winnerId: alive[0]?.id ?? null, forfeit: false };
-  const present = alive.filter((p) => p.connected);
-  if (present.length <= 1) return { decided: true, winnerId: present[0]?.id ?? null, forfeit: true };
-  return { decided: false, winnerId: null, forfeit: false };
+  if (alive.length <= 1) return { decided: true, winnerId: alive[0]?.id ?? null, forfeit: false, absent: [] };
+  const present = alive.filter((p) => isPresent(p, now));
+  const absent = alive.filter((p) => !isPresent(p, now));
+  if (present.length <= 1) return { decided: true, winnerId: present[0]?.id ?? null, forfeit: true, absent };
+  return { decided: false, winnerId: null, forfeit: false, absent };
 }
 
 /** The meta fields that end a playing round, or null when nothing should change. Pure; runs inside a transaction. */
@@ -161,7 +178,7 @@ export function endRoundPatch(
   force = false,
 ): Pick<RoomMeta, 'status' | 'endedAt' | 'winnerId'> | null {
   if (!meta || meta.status !== 'playing') return null;
-  const end = decideRoundEnd(players);
+  const end = decideRoundEnd(players, now);
   if (end.decided) return { status: 'ended', endedAt: now, winnerId: end.winnerId };
   if (!force) return null;
   const alive = Object.values(players ?? {}).filter((p) => p.enrolled && p.status === 'alive');
@@ -169,17 +186,18 @@ export function endRoundPatch(
 }
 
 /** The earliest-joined connected player, enrolled ones first; null when nobody is connected. */
-export function pickNextHost(players: Record<string, Player> | null | undefined): string | null {
-  const connected = Object.values(players ?? {}).filter((p) => p.connected);
+export function pickNextHost(players: Record<string, Player> | null | undefined, now: number): string | null {
+  const connected = Object.values(players ?? {}).filter((p) => isPresent(p, now));
   if (!connected.length) return null;
   connected.sort((a, b) => Number(b.enrolled) - Number(a.enrolled) || a.joinedAt - b.joinedAt || a.id.localeCompare(b.id));
   return connected[0].id;
 }
 
 /** The new host id when the current host is gone and someone else is connected, else null. Pure; runs inside a transaction. */
-export function claimHostPatch(meta: Pick<RoomMeta, 'hostId'> | null | undefined, players: Record<string, Player> | null | undefined): string | null {
+export function claimHostPatch(meta: Pick<RoomMeta, 'hostId'> | null | undefined, players: Record<string, Player> | null | undefined, now: number): string | null {
   if (!meta) return null;
-  if (players?.[meta.hostId]?.connected) return null;
-  const next = pickNextHost(players);
+  const host = players?.[meta.hostId];
+  if (host && isPresent(host, now)) return null;
+  const next = pickNextHost(players, now);
   return next && next !== meta.hostId ? next : null;
 }

@@ -5,7 +5,7 @@ import { LOAD_CALIB } from '../vision/calibration';
 import { isStalled, loadProgress, STALL_TEXT } from '../ui/advice';
 
 /** Kicks off model loading and reports progress text; a failed load can be retried (loadHuman forgets a failure). */
-export function useHumanStatus(): { ready: boolean; status: string; failed: boolean; retry: () => void } {
+export function useHumanStatus(): { ready: boolean; status: string; failed: boolean; retry: () => void; reportFailure: (error: unknown, count: number) => void } {
   const [ready, setReady] = useState(isHumanReady());
   const [status, setStatus] = useState(isHumanReady() ? 'Ready' : 'Loading vision models');
   const [failed, setFailed] = useState(false);
@@ -63,5 +63,11 @@ export function useHumanStatus(): { ready: boolean; status: string; failed: bool
       window.clearInterval(poll);
     };
   }, [attempt]);
-  return { ready, status, failed, retry: () => setAttempt((n) => n + 1) };
+  /** The vision loop gave up after repeated failures and dropped the models: show it, offer Retry. */
+  const reportFailure = (error: unknown, count: number) => {
+    setReady(false);
+    setFailed(true);
+    setStatus(`Camera processing failed ${count} times (${error instanceof Error ? error.message : String(error)}). Tap Retry to reload the models.`);
+  };
+  return { ready, status, failed, retry: () => setAttempt((n) => n + 1), reportFailure };
 }

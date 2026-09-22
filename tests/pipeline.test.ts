@@ -90,7 +90,7 @@ function harness() {
     assert.equal(r.kind, 'pending', 'a stale tap on a recognised player opens a burst');
     return { tap: clock.now, result: r };
   };
-  return { pipeline, clock, frame, establishBob, tapStale, cropCalls, get t() { return t; } };
+  return { pipeline, clock, frame, establishBob, tapStale, cropCalls, ops, get t() { return t; } };
 }
 
 test('(a) a near player\'s identity does not transfer to a concentric far player when the near detection drops for a frame', async () => {
@@ -203,6 +203,72 @@ test('every fire gets a verdict: a burst abandoned by invalidate() hands back it
   assert.equal(h.pipeline.expirePending(r.kind === 'pending' ? r.token : {}), null, 'the timer finds no burst to settle');
   // The next tap is not refused as busy.
   assert.notEqual(h.pipeline.fire({ tap: 78 }, CROSSHAIR).kind, 'busy');
+});
+
+test('work shedding: a slow phone keeps the crosshair target\'s crop and drops the extra crop', async () => {
+  const slowPeriod = 400;
+  // A harness whose frames arrive 400 ms apart: the pipeline measures that period itself.
+  const h = harness();
+  const far = body([0.02, 0.3, 0.12, 0.3], [0.05, 0.31, 0.06, 0.1]);
+  let t = 0;
+  for (let i = 0; i < 8; i++) {
+    h.clock.now = t + slowPeriod;
+    await h.pipeline.processFrame([body(BOB_BOX, BOB_HIT), far], t, 1280, 720, CROSSHAIR, h.ops);
+    t += slowPeriod;
+  }
+  // Four more slow frames: at most one crop each (the target, refreshed on its interval), never the extra body.
+  for (let i = 0; i < 4; i++) {
+    const before = h.cropCalls.length;
+    h.clock.now = t + slowPeriod;
+    await h.pipeline.processFrame([body(BOB_BOX, BOB_HIT), far], t, 1280, 720, CROSSHAIR, h.ops);
+    assert.ok(h.cropCalls.length - before <= 1, `frame ${i}: ${h.cropCalls.length - before} crops on a slow phone`);
+    t += slowPeriod;
+  }
+  // The same scene at a normal period crops the target and one other body.
+  const q = harness();
+  let u = 0;
+  for (let i = 0; i < 8; i++) {
+    q.clock.now = u + PERIOD;
+    await q.pipeline.processFrame([body(BOB_BOX, BOB_HIT), far], u, 1280, 720, CROSSHAIR, q.ops);
+    u += PERIOD;
+  }
+  let twoCropFrames = 0;
+  for (let i = 0; i < 4; i++) {
+    const b2 = q.cropCalls.length;
+    q.clock.now = u + PERIOD;
+    await q.pipeline.processFrame([body(BOB_BOX, BOB_HIT), far], u, 1280, 720, CROSSHAIR, q.ops);
+    if (q.cropCalls.length - b2 === 2) twoCropFrames++;
+    u += PERIOD;
+  }
+  assert.ok(twoCropFrames >= 1, 'at a normal period the extra body gets its crop');
+});
+
+test('crop priority: a body with no face sample yet is cropped before one that already has a face', async () => {
+  const h = harness();
+  // Two bystanders well away from the dot; the crop ops give a face only to the one on the right,
+  // so after the first look the left one is still without a sample and must be preferred.
+  const left = body([0.02, 0.3, 0.14, 0.3], [0.05, 0.31, 0.06, 0.1]);
+  const right = body([0.84, 0.3, 0.14, 0.3], [0.87, 0.31, 0.06, 0.1]);
+  const looks: number[] = [];
+  const ops: FrameOps = {
+    sampleOutfit: () => null,
+    cropFaces: async (region) => {
+      looks.push(region[0]);
+      if (region[2] > 0.3) return [{ box: [region[0] + 0.12, 0.26, 0.08, 0.1], embedding: BOB_FACE, quality: 1 }];
+      return region[0] > 0.5 ? [{ box: [region[0] + 0.04, 0.32, 0.05, 0.07], embedding: ALICE_FACE, quality: 1 }] : [];
+    },
+    isCurrent: () => true,
+  };
+  let t = 0;
+  for (let i = 0; i < 8; i++) {
+    h.clock.now = t + PERIOD;
+    await h.pipeline.processFrame([body(BOB_BOX, BOB_HIT), left, right], t, 1280, 720, CROSSHAIR, ops);
+    t += PERIOD;
+  }
+  const bystanderLooks = looks.filter((x) => x < 0.3 || x > 0.5);
+  const leftLooks = bystanderLooks.filter((x) => x < 0.3).length;
+  const rightLooks = bystanderLooks.length - leftLooks;
+  assert.ok(leftLooks > rightLooks, `the sampleless body gets most looks: left ${leftLooks}, right ${rightLooks}`);
 });
 
 test('(f) a stationary target is not nominated by prediction: nobody under the dot is a miss', async () => {

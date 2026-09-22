@@ -1,5 +1,6 @@
 import { UNKNOWN_ID, type BodyProps, type OutfitSig } from '../types';
-import { CLOTHING_AUDIT_MS, CLOTHING_BELIEF_ALPHA, CLOTHING_CONTRADICTION, CLOTHING_INTERVAL_MS, FACE_BELIEF_ALPHA, FACE_FRESH_MIN_MARGIN, FACE_FRESH_MS, FACE_REFRESH_MIN_LEAD, FACE_REFRESH_MS, FACE_VIA_TIMEOUT_MS, MATURE_TRACK_OBSERVATIONS, TORSO_COVER_FRACTION, LIVE_FACE_ENROLLED_MIN, LIVE_FACE_MIN, LIVE_FACE_MIN_BELIEF, LIVE_FACE_MIN_QUALITY, LIVE_FACE_MIN_TRACK_SAMPLES, LIVE_FACE_NOVELTY, LIVE_FACE_RUNNER_UP, LIVE_FACES_PER_PLAYER } from './calibration';
+import { clothingDue, cropBudget } from './schedule';
+import { CLOTHING_AUDIT_MS, CLOTHING_BELIEF_ALPHA, CLOTHING_CONTRADICTION, FACE_BELIEF_ALPHA, FACE_FRESH_MIN_MARGIN, FACE_FRESH_MS, FACE_REFRESH_MIN_LEAD, FACE_REFRESH_MS, FACE_VIA_TIMEOUT_MS, MATURE_TRACK_OBSERVATIONS, TORSO_COVER_FRACTION, LIVE_FACE_ENROLLED_MIN, LIVE_FACE_MIN, LIVE_FACE_MIN_BELIEF, LIVE_FACE_MIN_QUALITY, LIVE_FACE_MIN_TRACK_SAMPLES, LIVE_FACE_NOVELTY, LIVE_FACE_RUNNER_UP, LIVE_FACES_PER_PLAYER } from './calibration';
 import { containsPoint, faceOwner, resetIdentity, trackGapMs, Tracker, type Detection, type Track } from './tracker';
 import { crosshairCentre, indexInSight, intersectArea, type NBox } from './geometry';
 import {
@@ -111,6 +112,8 @@ interface PendingShot<C> {
 
 /** Besides the crosshair target, this many other bodies get a face crop per frame, round-robin. */
 const EXTRA_CROPS = 1;
+/** The live-enrolment log kept for the shot log and the bench; older entries roll off. */
+const LEARNED_LOG_MAX = 200;
 
 /** Whether a track other than `id` in the list still covers the point. */
 const coveredByOther = (tracks: Track[], id: number, x: number, y: number): boolean => tracks.some((c) => c.id !== id && containsPoint(c.box, x, y));
@@ -198,6 +201,7 @@ export class VisionPipeline<C = unknown> {
     if (list.some((s) => centredSimilarity(s, emb) >= LIVE_FACE_NOVELTY)) return;
     list.push(emb.slice());
     if (list.length > LIVE_FACES_PER_PLAYER) list.shift();
+    if (this.learned.length >= LEARNED_LOG_MAX) this.learned.shift();
     this.learned.push({ id, t: this.clock(), toEnrolled: Math.round(toEnrolled * 100) / 100, quality: Math.round(quality * 100) / 100 });
     this.liveFaces.set(id, list);
     this.augmented = null;
@@ -255,7 +259,7 @@ export class VisionPipeline<C = unknown> {
     const tracks = this.tracker.update(dets, now, undefined, gapMs);
     // People the detector skipped this frame but who were here a moment ago: they still occupy their spot.
     const coasting = this.tracker.live().filter((t) => t.lastSeen !== now && now - t.lastSeen <= gapMs && !t.identityConflict).map(snapshotTrack);
-    const sampleClothing = ops.sampleOutfit && now - this.lastClothingAt >= CLOTHING_INTERVAL_MS;
+    const sampleClothing = ops.sampleOutfit && clothingDue(this.period.ms(), this.lastClothingAt, now);
     if (sampleClothing) this.lastClothingAt = now;
     dets.forEach((d, i) => {
       const t = tracks[i];
@@ -320,12 +324,21 @@ export class VisionPipeline<C = unknown> {
     // Everybody else takes turns, including bodies whose face the full-frame pass did not find (the
     // head crop is where a distant face turns up) and a lone person the shooter is not aiming at yet,
     // so an identity is ready by the time the dot reaches them.
-    if (dets.length > (idx >= 0 ? 1 : 0)) {
-      for (let k = 0; k < dets.length && order.length < 1 + EXTRA_CROPS; k++) {
-        const j = (this.cropCursor + k) % dets.length;
-        if (j !== idx && (dets[j].face || dets[j].body)) order.push(j);
-      }
-      this.cropCursor = (this.cropCursor + 1) % dets.length;
+    // A slow or throttled phone sheds the extra crops (schedule.ts): the target keeps its own.
+    const extraCrops = cropBudget(this.period.ms(), EXTRA_CROPS);
+    if (extraCrops > 0 && dets.length > (idx >= 0 ? 1 : 0)) {
+      // Who needs a look most: a body with no face sample yet, then the one whose face is oldest;
+      // ties rotate with the cursor so a plain round-robin is the fallback.
+      const n = dets.length;
+      const pool = dets.map((_, j) => j).filter((j) => j !== idx && (dets[j].face || dets[j].body));
+      const key = (j: number): [number, number, number] => [tracks[j].faceSamples > 0 ? 1 : 0, tracks[j].lastFaceAt || 0, (j - this.cropCursor + n) % n];
+      pool.sort((a, b) => {
+        const ka = key(a);
+        const kb = key(b);
+        return ka[0] - kb[0] || ka[1] - kb[1] || ka[2] - kb[2];
+      });
+      for (const j of pool) if (order.length < 1 + extraCrops) order.push(j);
+      this.cropCursor = (this.cropCursor + 1) % n;
     }
     const faced = new Set<number>();
     for (const j of order) {

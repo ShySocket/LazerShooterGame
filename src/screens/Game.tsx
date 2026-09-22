@@ -2,7 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Human, Result } from '@vladmandic/human';
 import { backend, MIN_PLAYERS } from '../net';
 import { decideRoundEnd } from '../net/backend';
-import { RANGE_TARGET_NOTE, verdictAdvice } from '../ui/advice';
+import { hitFailureText, OFFLINE_TEXT, RANGE_TARGET_NOTE, verdictAdvice } from '../ui/advice';
+import { useConnection } from '../hooks/useConnection';
+import { withTimeout } from '../net/withTimeout';
+import { NET_CALIB } from '../vision/calibration';
 import { alivePlayers, enrolledPlayers, livesLabel, UNKNOWN_ID, type Player, type Room } from '../types';
 import { useCamera } from '../hooks/useCamera';
 import { useVisionLoop, type VisionFrame } from '../hooks/useVisionLoop';
@@ -54,11 +57,12 @@ export function Game({ room, me, pid, onLeave }: Props) {
   const spectating = me.status === 'out';
   const playing = room.status === 'playing';
 
-  const { ready: humanReady, status, failed: humanFailed, retry: retryModels } = useHumanStatus();
-  const { videoRef, ready: camReady, error: camError, retry: retryCamera } = useCamera('environment', !spectating);
+  const { ready: humanReady, status, failed: humanFailed, retry: retryModels, reportFailure } = useHumanStatus();
+  const { videoRef, ready: camReady, error: camError, notice: camNotice, retry: retryCamera } = useCamera('environment', !spectating);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   useWakeLock(true);
+  const online = useConnection();
   const torch = useTorch(videoRef);
 
   const [debug, setDebug] = useState(false);
@@ -163,7 +167,11 @@ export function Game({ room, me, pid, onLeave }: Props) {
     [room.players, pid],
   );
   const colors = useMemo(() => Object.fromEntries(Object.values(room.players).map((p) => [p.id, p.color])), [room.players]);
-  pipeline.current.configure({ candidates, exclusiveIds, eligible, hitThreshold: settings.hitThreshold, hitMargin: settings.hitMargin });
+  // Only when the candidate list or the rules change: configure() drops the pipeline's gallery
+  // cache, so calling it on every render (every hit re-renders) would rebuild it needlessly.
+  useEffect(() => {
+    pipeline.current.configure({ candidates, exclusiveIds, eligible, hitThreshold: settings.hitThreshold, hitMargin: settings.hitMargin });
+  }, [candidates, exclusiveIds, eligible, settings.hitThreshold, settings.hitMargin]);
 
   // A range-test target who was eliminated or left would otherwise keep being "expected" silently.
   useEffect(() => {
@@ -175,10 +183,13 @@ export function Game({ room, me, pid, onLeave }: Props) {
     window.clearTimeout(bannerTimer.current);
     bannerTimer.current = window.setTimeout(() => setBanner(null), ms);
   };
+  const flashTimer = useRef<number | undefined>(undefined);
   const flashScreen = (color: string, ms = 220) => {
     setFlash(color);
-    window.setTimeout(() => setFlash(null), ms);
+    window.clearTimeout(flashTimer.current);
+    flashTimer.current = window.setTimeout(() => setFlash(null), ms);
   };
+  useEffect(() => () => window.clearTimeout(flashTimer.current), []);
 
   // Countdown before the round, then flip to playing.
   useEffect(() => {
@@ -253,14 +264,30 @@ export function Game({ room, me, pid, onLeave }: Props) {
   // coming back cancels the timer because the effect re-runs on every room change. The write itself
   // is backend.endRound: one transaction that re-checks the players map, so however many phones
   // reach this point they end the round once, with one winner.
+  // The decision is keyed, not the room object: a heartbeat or a hit elsewhere must not restart the
+  // forfeit grace, only a change of who is alive and present does.
+  const roundEnd = decideRoundEnd(room.players, backend.now());
+  const endKey = roundEnd.decided ? `${roundEnd.forfeit ? 'forfeit' : 'out'}:${roundEnd.winnerId ?? '-'}:${roundEnd.absent.map((p) => p.id).join(',')}` : '';
+  const [forfeitDeadline, setForfeitDeadline] = useState<number | null>(null);
   useEffect(() => {
-    if (room.status !== 'playing') return;
-    const end = decideRoundEnd(room.players);
-    if (!end.decided) return;
-    const grace = !end.forfeit ? (isHost ? 0 : 4000) : isHost ? 10000 : 14000;
+    if (room.status !== 'playing' || !endKey) {
+      setForfeitDeadline(null);
+      return;
+    }
+    const forfeit = endKey.startsWith('forfeit');
+    const grace = !forfeit ? (isHost ? 0 : 4000) : isHost ? 10000 : 14000;
+    setForfeitDeadline(forfeit ? Date.now() + grace : null);
     const tm = window.setTimeout(() => void backend.endRound(room.code).catch((e: unknown) => console.warn('endRound failed', e)), grace);
     return () => window.clearTimeout(tm);
-  }, [room, isHost]);
+  }, [room.status, room.code, endKey, isHost]);
+  // A one-second tick while a forfeit countdown is showing.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    if (forfeitDeadline === null) return;
+    const iv = window.setInterval(() => forceTick((n) => n + 1), 1000);
+    return () => window.clearInterval(iv);
+  }, [forfeitDeadline]);
+  const forfeitText = forfeitDeadline !== null && roundEnd.forfeit ? `Waiting for ${roundEnd.absent.map((p) => p.name).join(', ')} to reconnect (${Math.max(0, Math.ceil((forfeitDeadline - Date.now()) / 1000))} s)` : '';
 
   const endRound = () => {
     void backend.endRound(room.code, true).catch(() => undefined);
@@ -339,8 +366,8 @@ export function Game({ room, me, pid, onLeave }: Props) {
       return show('UNCLEAR TARGET', 'warn');
     }
     const name = room.players[r.id]?.name ?? '?';
-    backend
-      .registerHit(room.code, pid, r.id, r.score, r.via)
+    // Offline, a Firebase write waits forever; the player gets a verdict either way.
+    withTimeout(backend.registerHit(room.code, pid, r.id, r.score, r.via), NET_CALIB.hitTimeoutMs, 'the hit')
       .then((out) => {
         logShot(out, track, { targetName: name, targetId: r.id, via: r.via, resolveMs, zoom: zoomed }, context.shotId);
         if (out === 'hit' || out === 'eliminated') {
@@ -352,8 +379,9 @@ export function Game({ room, me, pid, onLeave }: Props) {
       })
       .catch((e: unknown) => {
         console.warn('hit not registered', e);
+        sfx.unclear();
         logShot('network error', track, { targetName: name, targetId: r.id, via: r.via, resolveMs, zoom: zoomed }, context.shotId);
-        show('NO CONNECTION, SHOT LOST', 'warn', 2000);
+        show(hitFailureText(e), 'warn', 2000);
       });
   };
   settleRef.current = settleShot;
@@ -416,7 +444,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
     if (debugRef.current && canvasRef.current) drawOverlay(canvasRef.current, { dets, tracks: outcome.tracks, vidW: res.width, vidH: res.height, labels, colors }, false);
   };
 
-  useVisionLoop(videoRef, camReady && humanReady && !spectating, onFrame);
+  useVisionLoop(videoRef, camReady && humanReady && !spectating, onFrame, { onFailure: reportFailure });
 
   const canFire = (playing || rangeMode) && !spectating && camReady && humanReady && (!rangeMode || Boolean(rangeTargetId));
 
@@ -528,6 +556,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
       )}
       {flash && <div className="flash" style={{ background: flash }} />}
 
+      {!online && <div className="status-pill offline">{OFFLINE_TEXT}</div>}
       <div className="hud-top">
         <div className="hearts">
           {hearts.map((on, i) => (
@@ -536,7 +565,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
             </span>
           ))}
         </div>
-        <div className="hud-mid">{rangeMode ? 'RANGE TEST' : `${alive.length} alive`}</div>
+        <div className="hud-mid">{rangeMode ? 'RANGE TEST' : forfeitText || `${alive.length} alive`}</div>
         <div className="row">
           {isHost && playing && (
             <button className="hud-btn" onClick={endRound}>
@@ -568,7 +597,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
       {countdown !== null && <div className="countdown">{countdown > 0 ? countdown : 'GO'}</div>}
       {!spectating && (!camReady || !humanReady) && (
         <div className="status-pill">
-          {camError ?? (camReady ? status : 'Starting camera')}
+          {camError ?? (camReady ? status : (camNotice ?? 'Starting camera'))}
           {(camError || humanFailed) && (
             <button className="hud-btn" style={{ marginLeft: 8 }} onClick={camError ? retryCamera : retryModels}>
               retry

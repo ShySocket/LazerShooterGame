@@ -27,6 +27,11 @@ export class LocalBackend implements RoomBackend {
     return Date.now();
   }
 
+  onConnection(cb: (online: boolean) => void): () => void {
+    cb(true);
+    return () => undefined;
+  }
+
   private emit(code: string): void {
     const room = this.rooms.get(code) ?? null;
     this.subs.get(code)?.forEach((cb) => cb(room ? structuredClone(room) : null));
@@ -137,7 +142,7 @@ export class LocalBackend implements RoomBackend {
 
   async claimHost(code: string): Promise<string | null> {
     const room = this.rooms.get(code);
-    const next = claimHostPatch(room, room?.players);
+    const next = claimHostPatch(room, room?.players, this.now());
     if (!room || !next) return null;
     room.hostId = next;
     this.emit(code);

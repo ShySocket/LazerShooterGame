@@ -61,6 +61,8 @@ export interface Player {
   color: string;
   joinedAt: number;
   connected: boolean;
+  /** Last heartbeat from this phone (server clock). Older than NET_CALIB.presenceStaleMs counts as gone. */
+  seenAt?: number;
   enrolled: boolean;
   lives: number;
   status: PlayerStatus;

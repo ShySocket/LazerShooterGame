@@ -62,7 +62,7 @@ type BodyMode = 'helper' | 'prop';
 
 /** Camera-driven capture of face angles, outfit colours, and body ratios. Which parts run is up to the caller. */
 export function Scanner({ face, body, outfit, header, savingText, referenceFace, onDone, onCancel }: Props) {
-  const { ready: humanReady, status, failed: humanFailed, retry: retryModels } = useHumanStatus();
+  const { ready: humanReady, status, failed: humanFailed, retry: retryModels, reportFailure } = useHumanStatus();
   const first: Stage = face ? 'face' : 'bodyMode';
   const [stage, setStageState] = useState<Stage>(first);
   const stageRef = useRef<Stage>(first);
@@ -75,7 +75,7 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
   const recordingRef = useRef(false);
   const [countdown, setCountdown] = useState<number | null>(null);
   const facing: Facing = stage === 'face' || bodyMode === 'prop' ? 'user' : 'environment';
-  const { videoRef, ready: camReady, error: camError, retry: retryCamera } = useCamera(facing, stage !== 'saving');
+  const { videoRef, ready: camReady, error: camError, notice: camNotice, retry: retryCamera } = useCamera(facing, stage !== 'saving');
   // A propped phone must not fall asleep mid-scan.
   useWakeLock(true);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -395,6 +395,7 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
   useVisionLoop(videoRef, camReady && humanReady && stage !== 'saving' && stage !== 'error' && stage !== 'bodyMode', onFrame, {
     pass: stage === 'face' ? 'face' : 'frame',
     maxWidth: stage === 'face' ? SCAN_CALIB.faceDetectWidth : undefined,
+    onFailure: reportFailure,
   });
 
   const copy = ((): { heading: string; prompt: string } => {
@@ -456,7 +457,7 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
         )}
         {stage !== 'bodyMode' && (!camReady || !humanReady) && (
           <p className="hint">
-            {camError ?? (camReady ? status : 'Starting camera')}
+            {camError ?? (camReady ? status : (camNotice ?? 'Starting camera'))}
             {(camError || humanFailed) && (
               <>
                 {' '}

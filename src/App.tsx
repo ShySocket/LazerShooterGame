@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { backend } from './net';
-import { HOST_GRACE_MS } from './net/backend';
+import { HOST_GRACE_MS, isPresent } from './net/backend';
 import { authAvailable, loadUser, onAccount, saveUserName, type Account } from './net/auth';
 import type { DeepProfile, Room } from './types';
 import { Home } from './screens/Home';
@@ -115,7 +115,8 @@ export default function App() {
   // Host migration: when the host's phone has been gone for the grace period, whoever notices asks
   // the backend to hand the room to the earliest-joined connected player (one transaction, so every
   // phone that asks gets the same answer).
-  const hostDown = room ? room.players[room.hostId]?.connected === false : false;
+  const hostPlayer = room?.players[room.hostId];
+  const hostDown = Boolean(room && hostPlayer && !isPresent(hostPlayer, backend.now()));
   useEffect(() => {
     if (!hostDown || !code) return;
     const tm = window.setTimeout(() => void backend.claimHost(code).catch(() => undefined), HOST_GRACE_MS);

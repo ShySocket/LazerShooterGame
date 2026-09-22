@@ -43,7 +43,9 @@ export default defineConfig(({ command }) => ({
           {
             urlPattern: /\/models\/.*\.(json|bin)$/,
             handler: 'CacheFirst',
-            options: { cacheName: 'vision-models', expiration: { maxEntries: 24 } },
+            // Only complete 200 responses are kept: a truncated shard cached CacheFirst would brick
+            // model loading forever. The name is versioned so a bad cache can be retired.
+            options: { cacheName: 'vision-models-v2', expiration: { maxEntries: 24 }, cacheableResponse: { statuses: [200] } },
           },
         ],
       },

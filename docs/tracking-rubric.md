@@ -89,6 +89,8 @@ Face carries the identity up close and face-on; outfit carries it at range and f
 - [ ] **Nice**: Median FIRE-to-verdict under 400 ms on the fastest phone in the group (measure from the shot log timestamps). <!-- R4.09 phone -->
 - [ ] **Must**: Every refusal on the HUD (UNCLEAR TARGET, NOT A PLAYER, THAT IS YOU, CAMERA TOO SLOW, NO FRESH FRAMES, NO CAMERA LOCK, SHOT LOST) carries a second line saying what to do. <!-- R4.10 auto:test:verdict advice -->
 - [ ] **Should**: Range mode says why FIRE is disabled until a target is chosen. <!-- R4.11 manual -->
+- [ ] **Must**: A hit the server has not confirmed within 4 s is reported as "NO CONNECTION, SHOT LOST" and its record and photo are closed, never left hanging behind a LOCKING banner. <!-- R4.12 auto:test:a hit that cannot reach -->
+- [ ] **Must**: A slow or throttled phone (frame period over 250 ms) sheds the extra face crop and samples clothing every other frame, keeping the crosshair target's crop, so the period stops growing; the shot rules are untouched and the slow-phone sim keeps its bound. <!-- R4.13 auto:test:work shedding -->
 
 ## 5. Distance and pose table (what to hand players as expectations)
 
@@ -131,6 +133,7 @@ The demo is everyone against everyone: 3 lives, no respawn, last standing wins. 
 - [ ] **Must**: When an enrolled player's phone drops, the lobby names them ("Waiting for Pia's phone to reconnect") and marks them in the list, instead of claiming it needs more players. <!-- R6.19 e2e:lobby-reconnect -->
 - [ ] **Should**: When neither the share sheet nor the clipboard works, the lobby shows the code to read out instead of doing nothing. <!-- R6.20 auto:test:share fallback -->
 - [ ] **Should**: The Hit confidence field stops at 0.7 with a note, so a host cannot make every shot UNCLEAR for a round; the sound pill says the iPhone mute switch keeps sounds off. <!-- R6.21 manual -->
+- [ ] **Must**: A phone that silently lost its network is noticed within a minute through a 20 s heartbeat, not only when Firebase's own socket timeout fires; host migration and the forfeit use the same rule, and the HUD counts the forfeit down by name. <!-- R6.22 auto:test:heartbeat presence -->
 
 ## 7. Using the app without bugs (robustness)
 
@@ -155,6 +158,11 @@ The demo is everyone against everyone: 3 lives, no respawn, last standing wins. 
 - [ ] **Should**: The shot review lets a player skip one shot or finish reviewing, and a failed room reset says so and keeps the button. <!-- R7.19 manual -->
 - [ ] **Should**: A waiting app update never reloads while the player is in a room, in the profile, or typing. <!-- R7.20 auto:test:update allowed -->
 - [ ] **Should**: The crash notice speaks plainly and keeps the raw error behind a Details toggle. <!-- R7.21 auto:test:crash notice -->
+- [ ] **Must**: A phone that loses its link to the room server shows OFFLINE in the game and the lobby while it lasts, instead of a HUD that looks live on cached state. <!-- R7.22 e2e:offline-pill -->
+- [ ] **Must**: A vision loop that fails every frame (a lost graphics context, a broken detector) stops after ten failures, drops the models and shows the failure with a Retry that reloads them, instead of spinning silently for the rest of the evening. <!-- R7.23 auto:test:a vision loop that fails -->
+- [ ] **Must**: While the browser's camera permission sheet is open the app waits a full minute, says "Waiting for you to allow the camera…", and never re-prompts with fallback constraints after a timeout. <!-- R7.24 auto:test:the camera permission sheet is waited for -->
+- [ ] **Must**: The model cache keeps only complete responses under a versioned name, a load that finds a model missing clears it so Retry refetches, and an abandoned load releases its GPU tensors. <!-- R7.25 auto:test:the model cache is versioned -->
+- [ ] **Should**: With several bodies in view, the spare face crop goes to whoever has no face sample yet, then to the oldest face, instead of a blind round-robin; the live-enrolment log and the range-test log are capped. <!-- R7.26 auto:test:crop priority -->
 
 ## 8. Enrolment scan (face angles, body scans)
 
