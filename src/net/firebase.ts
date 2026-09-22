@@ -29,6 +29,7 @@ import {
   type RoomBackend,
 } from './backend';
 import { firebaseApp } from './firebaseApp';
+import { NET_CALIB } from '../vision/calibration';
 import type { ProfilesSnapshot, ShotSample } from '../feedback/sample';
 
 export { hasFirebaseConfig } from './firebaseApp';
@@ -36,6 +37,7 @@ export { hasFirebaseConfig } from './firebaseApp';
 interface Presence {
   connectedRef: DatabaseReference;
   unsubscribe: () => void;
+  heartbeat: ReturnType<typeof setInterval>;
 }
 
 /**
@@ -135,13 +137,22 @@ export class FirebaseBackend implements RoomBackend {
     const key = `${code}/${id}`;
     this.presence.get(key)?.unsubscribe();
     const connectedRef = this.sdk.ref(this.db, this.path(code, `players/${id}/connected`));
+    const seenRef = this.sdk.ref(this.db, this.path(code, `players/${id}/seenAt`));
+    const beat = () => void this.sdk.set(seenRef, this.now()).catch(() => undefined);
     const unsubscribe = this.sdk.onValue(this.sdk.ref(this.db, '.info/connected'), (s) => {
       if (s.val() !== true) return;
       void this.sdk.onDisconnect(connectedRef)
         .set(false)
-        .then(() => this.sdk.set(connectedRef, true));
+        .then(() => this.sdk.set(connectedRef, true))
+        .then(beat);
     });
-    this.presence.set(key, { connectedRef, unsubscribe });
+    // The heartbeat bounds how long a phone that silently lost Wi-Fi keeps counting as present.
+    // Only while the page is visible: a backgrounded phone is not playing.
+    const heartbeat = setInterval(() => {
+      if (typeof document === 'undefined' || document.visibilityState === 'visible') beat();
+    }, NET_CALIB.heartbeatMs);
+    (heartbeat as { unref?: () => void }).unref?.();
+    this.presence.set(key, { connectedRef, unsubscribe, heartbeat });
   }
 
   async leaveRoom(code: string, id: string): Promise<void> {
@@ -149,6 +160,7 @@ export class FirebaseBackend implements RoomBackend {
     const p = this.presence.get(key);
     this.presence.delete(key);
     p?.unsubscribe();
+    if (p) clearInterval(p.heartbeat);
     const connectedRef = p?.connectedRef ?? this.sdk.ref(this.db, this.path(code, `players/${id}/connected`));
     await this.sdk.onDisconnect(connectedRef).cancel();
     await this.sdk.set(connectedRef, false);
@@ -258,7 +270,7 @@ export class FirebaseBackend implements RoomBackend {
   async claimHost(code: string): Promise<string | null> {
     let next: string | null = null;
     const res = await this.roomTransaction(code, (room) => {
-      next = claimHostPatch(room.meta, room.players);
+      next = claimHostPatch(room.meta, room.players, this.now());
       if (!next || !room.meta) return; // abort
       return { ...room, meta: { ...room.meta, hostId: next } };
     });

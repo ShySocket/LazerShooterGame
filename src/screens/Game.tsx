@@ -257,14 +257,30 @@ export function Game({ room, me, pid, onLeave }: Props) {
   // coming back cancels the timer because the effect re-runs on every room change. The write itself
   // is backend.endRound: one transaction that re-checks the players map, so however many phones
   // reach this point they end the round once, with one winner.
+  // The decision is keyed, not the room object: a heartbeat or a hit elsewhere must not restart the
+  // forfeit grace, only a change of who is alive and present does.
+  const roundEnd = decideRoundEnd(room.players, backend.now());
+  const endKey = roundEnd.decided ? `${roundEnd.forfeit ? 'forfeit' : 'out'}:${roundEnd.winnerId ?? '-'}:${roundEnd.absent.map((p) => p.id).join(',')}` : '';
+  const [forfeitDeadline, setForfeitDeadline] = useState<number | null>(null);
   useEffect(() => {
-    if (room.status !== 'playing') return;
-    const end = decideRoundEnd(room.players);
-    if (!end.decided) return;
-    const grace = !end.forfeit ? (isHost ? 0 : 4000) : isHost ? 10000 : 14000;
+    if (room.status !== 'playing' || !endKey) {
+      setForfeitDeadline(null);
+      return;
+    }
+    const forfeit = endKey.startsWith('forfeit');
+    const grace = !forfeit ? (isHost ? 0 : 4000) : isHost ? 10000 : 14000;
+    setForfeitDeadline(forfeit ? Date.now() + grace : null);
     const tm = window.setTimeout(() => void backend.endRound(room.code).catch((e: unknown) => console.warn('endRound failed', e)), grace);
     return () => window.clearTimeout(tm);
-  }, [room, isHost]);
+  }, [room.status, room.code, endKey, isHost]);
+  // A one-second tick while a forfeit countdown is showing.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    if (forfeitDeadline === null) return;
+    const iv = window.setInterval(() => forceTick((n) => n + 1), 1000);
+    return () => window.clearInterval(iv);
+  }, [forfeitDeadline]);
+  const forfeitText = forfeitDeadline !== null && roundEnd.forfeit ? `Waiting for ${roundEnd.absent.map((p) => p.name).join(', ')} to reconnect (${Math.max(0, Math.ceil((forfeitDeadline - Date.now()) / 1000))} s)` : '';
 
   const endRound = () => {
     void backend.endRound(room.code, true).catch(() => undefined);
@@ -542,7 +558,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
             </span>
           ))}
         </div>
-        <div className="hud-mid">{rangeMode ? 'RANGE TEST' : `${alive.length} alive`}</div>
+        <div className="hud-mid">{rangeMode ? 'RANGE TEST' : forfeitText || `${alive.length} alive`}</div>
         <div className="row">
           {isHost && playing && (
             <button className="hud-btn" onClick={endRound}>

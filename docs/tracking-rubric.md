@@ -133,6 +133,7 @@ The demo is everyone against everyone: 3 lives, no respawn, last standing wins. 
 - [ ] **Must**: When an enrolled player's phone drops, the lobby names them ("Waiting for Pia's phone to reconnect") and marks them in the list, instead of claiming it needs more players. <!-- R6.19 e2e:lobby-reconnect -->
 - [ ] **Should**: When neither the share sheet nor the clipboard works, the lobby shows the code to read out instead of doing nothing. <!-- R6.20 auto:test:share fallback -->
 - [ ] **Should**: The Hit confidence field stops at 0.7 with a note, so a host cannot make every shot UNCLEAR for a round; the sound pill says the iPhone mute switch keeps sounds off. <!-- R6.21 manual -->
+- [ ] **Must**: A phone that silently lost its network is noticed within a minute through a 20 s heartbeat, not only when Firebase's own socket timeout fires; host migration and the forfeit use the same rule, and the HUD counts the forfeit down by name. <!-- R6.22 auto:test:heartbeat presence -->
 
 ## 7. Using the app without bugs (robustness)
 

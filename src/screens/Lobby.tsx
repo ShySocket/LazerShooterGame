@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { isPresent } from '../net/backend';
 import { backend, MIN_PLAYERS } from '../net';
 import { HIT_CONFIDENCE_NOTE, lobbyHint, MUTE_SWITCH_NOTE, OFFLINE_TEXT, shareFallback } from '../ui/advice';
 import { useConnection } from '../hooks/useConnection';
@@ -26,7 +27,8 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
   useEffect(() => setSettings(room.settings), [room.settings]);
 
   const players = Object.values(room.players).sort((a, b) => a.joinedAt - b.joinedAt);
-  const connected = players.filter((p) => p.connected);
+  const nowMs = backend.now();
+  const connected = players.filter((p) => isPresent(p, nowMs));
   const enrolled = connected.filter((p) => p.enrolled && room.profiles[p.id]);
   // Profiles made by an older build lack the outfit, use another face model, or carry damaged embeddings
   // that could never match. They must re-enroll rather than play as an unhittable target.
@@ -59,7 +61,7 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
   }, [room.profiles, enrolledIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const notEnrolled = connected.filter((p) => !p.enrolled);
-  const disconnectedEnrolled = players.filter((p) => !p.connected && p.enrolled);
+  const disconnectedEnrolled = players.filter((p) => !isPresent(p, nowMs) && p.enrolled);
   const canStart = isHost && enrolled.length >= MIN_PLAYERS && notEnrolled.length === 0 && conflicts.length === 0 && stale.length === 0;
   const startHint = lobbyHint({
     disconnectedEnrolled: disconnectedEnrolled.map((p) => p.name),
@@ -132,14 +134,14 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
       <h3>Players ({connected.length})</h3>
       <ul className="players">
         {players.map((p) => (
-          <li key={p.id} className={p.connected ? '' : 'dim'}>
+          <li key={p.id} className={isPresent(p, nowMs) ? '' : 'dim'}>
             <span className="dot" style={{ background: p.color }} />
             <span className="name">
               {p.name}
               {p.id === room.hostId && <small> host</small>}
               {p.id === pid && <small> you</small>}
             </span>
-            <span className={`tag ${p.enrolled ? 'ok' : 'todo'}`}>{!p.connected ? 'reconnecting…' : p.enrolled ? 'enrolled' : 'enrolling'}</span>
+            <span className={`tag ${p.enrolled ? 'ok' : 'todo'}`}>{!isPresent(p, nowMs) ? 'reconnecting…' : p.enrolled ? 'enrolled' : 'enrolling'}</span>
           </li>
         ))}
       </ul>

@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { Database } from 'firebase/database';
 import { FirebaseBackend } from '../src/net/firebase';
-import { applyHit, claimHostPatch, decideRoundEnd, endRoundPatch, evaluateHit, newPlayer, pickColor, pickNextHost, randomCode } from '../src/net/backend';
+import { applyHit, claimHostPatch, decideRoundEnd, endRoundPatch, evaluateHit, isPresent, newPlayer, pickColor, pickNextHost, randomCode } from '../src/net/backend';
+import { NET_CALIB } from '../src/vision/calibration';
 import { DEFAULT_SETTINGS, PLAYER_COLORS, type Player, type Room } from '../src/types';
 import { FakeDb } from './net/fakeDb';
 
@@ -59,13 +60,16 @@ test('room codes use four letters without I and O, and colours stay distinct for
   assert.equal(new Set(PLAYER_COLORS).size, PLAYER_COLORS.length);
 });
 
+const NOW = 1000;
+const strip = (e: ReturnType<typeof decideRoundEnd>) => ({ decided: e.decided, winnerId: e.winnerId, forfeit: e.forfeit, absent: e.absent.map((p) => p.id) });
+
 test('decideRoundEnd: outright when one player is left alive, by forfeit when the others have dropped off, never with fewer than two contenders', () => {
-  assert.deepEqual(decideRoundEnd(map(seed('a'), seed('b'))), { decided: false, winnerId: null, forfeit: false });
-  assert.deepEqual(decideRoundEnd(map(seed('a'), seed('b', { status: 'out' }))), { decided: true, winnerId: 'a', forfeit: false });
-  assert.deepEqual(decideRoundEnd(map(seed('a', { status: 'out' }), seed('b', { status: 'out' }))), { decided: true, winnerId: null, forfeit: false });
-  assert.deepEqual(decideRoundEnd(map(seed('a'), seed('b', { connected: false }), seed('c', { connected: false }))), { decided: true, winnerId: 'a', forfeit: true });
-  assert.deepEqual(decideRoundEnd(map(seed('a'), seed('b', { enrolled: false, status: 'out' }))), { decided: false, winnerId: null, forfeit: false });
-  assert.deepEqual(decideRoundEnd(null), { decided: false, winnerId: null, forfeit: false });
+  assert.deepEqual(strip(decideRoundEnd(map(seed('a'), seed('b')), NOW)), { decided: false, winnerId: null, forfeit: false, absent: [] });
+  assert.deepEqual(strip(decideRoundEnd(map(seed('a'), seed('b', { status: 'out' })), NOW)), { decided: true, winnerId: 'a', forfeit: false, absent: [] });
+  assert.deepEqual(strip(decideRoundEnd(map(seed('a', { status: 'out' }), seed('b', { status: 'out' })), NOW)), { decided: true, winnerId: null, forfeit: false, absent: [] });
+  assert.deepEqual(strip(decideRoundEnd(map(seed('a'), seed('b', { connected: false }), seed('c', { connected: false })), NOW)), { decided: true, winnerId: 'a', forfeit: true, absent: ['b', 'c'] });
+  assert.deepEqual(strip(decideRoundEnd(map(seed('a'), seed('b', { enrolled: false, status: 'out' })), NOW)), { decided: false, winnerId: null, forfeit: false, absent: [] });
+  assert.deepEqual(strip(decideRoundEnd(null, NOW)), { decided: false, winnerId: null, forfeit: false, absent: [] });
   const meta = { status: 'playing' as const };
   assert.equal(endRoundPatch(meta, map(seed('a'), seed('b')), 7), null);
   assert.deepEqual(endRoundPatch(meta, map(seed('a'), seed('b')), 7, true), { status: 'ended', endedAt: 7, winnerId: null });
@@ -73,13 +77,29 @@ test('decideRoundEnd: outright when one player is left alive, by forfeit when th
   assert.equal(endRoundPatch({ status: 'ended' }, map(seed('a'), seed('b', { status: 'out' })), 7, true), null);
 });
 
-test('pickNextHost prefers the earliest-joined connected enrolled player; claimHostPatch leaves a connected host alone', () => {
+test('heartbeat presence: a player whose heartbeat is stale counts as gone within a minute, whatever Firebase says', () => {
+  assert.equal(isPresent(seed('a'), NOW), true, 'a fresh player');
+  assert.equal(isPresent({ connected: true }, NOW), true, 'an old record without a heartbeat is trusted');
+  assert.equal(isPresent({ connected: true, seenAt: NOW - NET_CALIB.presenceStaleMs + 1 }, NOW), true);
+  assert.equal(isPresent({ connected: true, seenAt: NOW - NET_CALIB.presenceStaleMs - 1 }, NOW), false, 'stale heartbeat');
+  assert.equal(isPresent({ connected: false, seenAt: NOW }, NOW), false, 'Firebase says gone');
+  // A stale survivor forfeits like a disconnected one, and is named as the one being waited for.
+  const later = NOW + NET_CALIB.presenceStaleMs + 5000;
+  const e = decideRoundEnd(map(seed('a', { seenAt: later }), seed('b', { seenAt: NOW })), later);
+  assert.deepEqual(strip(e), { decided: true, winnerId: 'a', forfeit: true, absent: ['b'] });
+  assert.ok(NET_CALIB.presenceStaleMs <= 60000 && NET_CALIB.heartbeatMs * 2 < NET_CALIB.presenceStaleMs, 'two missed beats mean gone');
+});
+
+test('pickNextHost prefers the earliest-joined present enrolled player; claimHostPatch leaves a present host alone', () => {
   const players = map(seed('h', { connected: false, joinedAt: 1 }), seed('late', { joinedAt: 30 }), seed('early', { joinedAt: 10 }), seed('guest', { joinedAt: 5, enrolled: false }));
-  assert.equal(pickNextHost(players), 'early');
-  assert.equal(pickNextHost(map(seed('x', { connected: false }))), null);
-  assert.equal(claimHostPatch({ hostId: 'h' }, players), 'early');
-  assert.equal(claimHostPatch({ hostId: 'early' }, players), null, 'the host is connected');
-  assert.equal(claimHostPatch({ hostId: 'h' }, map(seed('h', { connected: false }))), null, 'nobody to take over');
+  assert.equal(pickNextHost(players, NOW), 'early');
+  assert.equal(pickNextHost(map(seed('x', { connected: false })), NOW), null);
+  assert.equal(claimHostPatch({ hostId: 'h' }, players, NOW), 'early');
+  assert.equal(claimHostPatch({ hostId: 'early' }, players, NOW), null, 'the host is present');
+  assert.equal(claimHostPatch({ hostId: 'h' }, map(seed('h', { connected: false })), NOW), null, 'nobody to take over');
+  // A host whose heartbeat went stale is replaced even though Firebase still says connected.
+  const stale = map(seed('h', { joinedAt: 1, seenAt: NOW - NET_CALIB.presenceStaleMs - 1 }), seed('early', { joinedAt: 10, seenAt: NOW }));
+  assert.equal(claimHostPatch({ hostId: 'h' }, stale, NOW), 'early');
 });
 
 test('the round end is written once: several phones ending the same round agree on one winner', async () => {

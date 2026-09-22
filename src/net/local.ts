@@ -142,7 +142,7 @@ export class LocalBackend implements RoomBackend {
 
   async claimHost(code: string): Promise<string | null> {
     const room = this.rooms.get(code);
-    const next = claimHostPatch(room, room?.players);
+    const next = claimHostPatch(room, room?.players, this.now());
     if (!room || !next) return null;
     room.hostId = next;
     this.emit(code);
