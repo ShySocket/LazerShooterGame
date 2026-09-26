@@ -87,9 +87,23 @@ function evaluate(dir: string) {
       }
       for (const f of faces) str.push(best(c(f.embedding)));
     }
+    // Co-present people: each person's live frames against every other clip person's scan (same light, same room).
+    const other: number[] = [];
+    const margins: number[] = [];
+    for (const p of cl.people) {
+      const ownProf = p.profile.map(c);
+      for (const l of p.live) {
+        const v = c(l.e);
+        const mine = Math.max(...ownProf.map((q) => dot(v, q)));
+        let rival = -1;
+        for (const q of cl.people) if (q !== p) rival = Math.max(rival, ...q.profile.map((x) => dot(v, c(x))));
+        other.push(rival);
+        margins.push(mine - rival);
+      }
+    }
     const s99 = pct(str, 99);
     const smax = pct(str, 100);
-    clip = `clip frame p5 ${pct(own, 5).toFixed(2)} p50 ${pct(own, 50).toFixed(2)} | track mean p5 ${pct(meanOwn, 5).toFixed(2)} | strangers p99 ${s99.toFixed(2)} max ${smax.toFixed(2)} | mean-frames above stranger max ${Math.round((100 * meanOwn.filter((x) => x > smax).length) / meanOwn.length)}%`;
+    clip = `clip frame p5 ${pct(own, 5).toFixed(2)} p50 ${pct(own, 50).toFixed(2)} | track mean p5 ${pct(meanOwn, 5).toFixed(2)} | strangers p99 ${s99.toFixed(2)} max ${smax.toFixed(2)} | mean-frames above stranger max ${Math.round((100 * meanOwn.filter((x) => x > smax).length) / meanOwn.length)}% | other person max ${pct(other, 100).toFixed(2)} | own-minus-rival p5 ${pct(margins, 5).toFixed(2)} (${Math.round((100 * margins.filter((x) => x <= 0).length) / margins.length)}% ≤ 0)`;
   }
   return { items: items.length, gen: gen.length, imp: imp.length, eer: eer.e, eerT: eer.t, tar1, clip };
 }

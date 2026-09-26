@@ -95,6 +95,16 @@ async function probeCanvas(canvas: HTMLCanvasElement): Promise<ProbeImage> {
   });
 }
 
+/** One camera frame from an image file, as the camera gives it (not squared, like the game's frame pass). */
+export async function probeFrame(src: string): Promise<ProbeImage> {
+  const img = await loadImage(src);
+  const c = document.createElement('canvas');
+  c.width = img.naturalWidth;
+  c.height = img.naturalHeight;
+  c.getContext('2d')!.drawImage(img, 0, 0);
+  return probeCanvas(c);
+}
+
 export async function probeImage(src: string): Promise<ProbeImage> {
   const img = await loadImage(src);
   return probeCanvas(squareCanvas(img, img.naturalWidth, img.naturalHeight));
@@ -126,7 +136,8 @@ export async function probeVideo(src: string, fps = 5, maxFrames = 400): Promise
   // A blob URL: a fixture served without byte ranges cannot seek, and every frame would be the first.
   const blob = await (await fetch(src)).blob();
   const url = URL.createObjectURL(blob);
-  const v = await loadVideo(url);
+  // Headless Chrome has few media players: release each clip's before the next (see the end).
+  const v = await loadVideo(url).catch(() => new Promise((r) => setTimeout(r, 1000)).then(() => loadVideo(url)));
   const c = document.createElement('canvas');
   c.width = v.videoWidth;
   c.height = v.videoHeight;
@@ -137,6 +148,8 @@ export async function probeVideo(src: string, fps = 5, maxFrames = 400): Promise
     ctx.drawImage(v, 0, 0);
     out.push({ ...(await probeCanvas(c)), t: v.currentTime });
   }
+  v.removeAttribute('src');
+  v.load();
   URL.revokeObjectURL(url);
   return out;
 }
@@ -154,5 +167,6 @@ export function installProbe(): void {
     },
     probeImage,
     probeVideo,
+    probeFrame,
   };
 }

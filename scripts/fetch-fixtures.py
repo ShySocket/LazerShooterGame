@@ -136,10 +136,15 @@ def clips(sources):
         if not os.path.exists(out):
             # Stream only the needed seconds from a transcode: the originals are large and rate-limited.
             orig = ii['url'].split('?')[0]
-            base = orig.replace('/wikipedia/commons/', '/wikipedia/commons/transcoded/', 1) + '/' + orig.rsplit('/', 1)[1]
-            for url in [base + '.480p.vp9.webm', base + '.360p.vp9.webm', base + '.480p.webm', orig]:
+            dv = api({'action': 'query', 'titles': title, 'prop': 'videoinfo', 'viprop': 'derivatives'})
+            ders = next(iter(dv['query']['pages'].values())).get('videoinfo', [{}])[0].get('derivatives', [])
+            by = {x.get('transcodekey'): x['src'].split('?')[0] for x in ders if x.get('transcodekey')}
+            urls = [by[k] for k in ('480p.vp9.webm', '360p.vp9.webm', '480p.webm', '360p.webm', '240p.vp9.webm') if k in by] + [orig]
+            for url in urls:
                 r = subprocess.run(['ffmpeg', '-v', 'error', '-y', '-user_agent', UA, '-ss', str(start), '-t', str(dur), '-i', url,
-                                    '-vf', 'scale=640:-2,fps=15', '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', out])
+                                    '-vf', 'scale=640:-2,fps=15', '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', out], capture_output=True, text=True)
+                if r.returncode != 0:
+                    print(f'  {name}: {url.rsplit(".", 3)[-3:]}: {r.stderr.strip().splitlines()[-1][:120] if r.stderr.strip() else r.returncode}', flush=True)
                 if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 10000:
                     break
                 time.sleep(30)

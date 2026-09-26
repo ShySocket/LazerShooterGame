@@ -9,7 +9,7 @@
  * is the one that recurs across their photos; every other face is a stranger. Reports same-person
  * and different-person centred similarity against FACE_CALIB. Results: .rubric/realcheck/.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { chromium, type Page } from '@playwright/test';
@@ -54,8 +54,24 @@ async function openProbe(): Promise<Page> {
   return page;
 }
 
-const probeVideo = (page: Page, src: string, fps: number) =>
-  page.evaluate(([s, f]) => (window as unknown as { __lzReal: { probeVideo(s: string, f: number): Promise<(ProbeImage & { t: number })[]> } }).__lzReal.probeVideo(s, f), [src, fps] as const);
+/**
+ * A clip's frames at `fps`, each probed as a camera frame. ffmpeg extracts them once into
+ * fixtures/real/frames/<clip>/ (decoding video inside headless Chrome ran out of media players).
+ */
+async function probeVideo(page: Page, src: string, fps: number): Promise<(ProbeImage & { t: number })[]> {
+  const clip = src.split('/').pop()!.replace(/\.mp4$/, '');
+  const dir = join(FIX, 'frames', `${clip}@${fps}`);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+    execFileSync('ffmpeg', ['-v', 'error', '-i', join(FIX, 'clips', `${clip}.mp4`), '-vf', `fps=${fps}`, '-q:v', '2', join(dir, '%04d.jpg')]);
+  }
+  const out: (ProbeImage & { t: number })[] = [];
+  for (const [i, f] of readdirSync(dir).filter((x) => x.endsWith('.jpg')).sort().entries()) {
+    const r = await page.evaluate((s) => (window as unknown as { __lzReal: { probeFrame(s: string): Promise<ProbeImage> } }).__lzReal.probeFrame(s), `/__fixtures/frames/${clip}@${fps}/${f}`);
+    out.push({ ...r, t: i / fps });
+  }
+  return out;
+}
 
 const probe = (page: Page, src: string) =>
   page.evaluate((s) => (window as unknown as { __lzReal: { probeImage(s: string): Promise<ProbeImage> } }).__lzReal.probeImage(s), src);
@@ -233,16 +249,30 @@ async function clips(page: Page) {
   const people: { name: string; profile: number[][]; live: { t: number; px: number; yaw: number; e: number[] }[] }[] = [];
   for (const file of names) {
     const frames = await probeVideo(page, `/__fixtures/clips/${file}`, 5);
-    const main = frames
-      .map((f) => ({ t: f.t, face: [...f.faces].filter((x) => x.embedding.length).sort((a, b) => b.px - a.px)[0] }))
-      .filter((x) => x.face && x.face.px >= MIN_FACE_PX && x.face.yaw <= MAX_YAW_DEG);
-    const enrol = main.filter((x) => x.t < ENROL_S);
-    // Spread the eight samples over the enrolment window.
-    const step = Math.max(1, Math.floor(enrol.length / 8));
-    const profile = enrol.filter((_, i) => i % step === 0).slice(0, 8).map((x) => x.face.embedding);
-    const live = main.filter((x) => x.t >= ENROL_S + 1).map((x) => ({ t: x.t, px: Math.round(x.face.px), yaw: Math.round(x.face.yaw), e: x.face.embedding }));
-    people.push({ name: file.replace(/\.mp4$/, ''), profile, live });
-    console.log(`${file}: ${frames.length} frames, ${main.length} usable faces, profile ${profile.length}, live ${live.length}`);
+    // Follow each face by position (people in an interview stay put): one identity per seat.
+    type Seat = { cx: number; cy: number; faces: { t: number; face: ProbeImage['faces'][number] }[] };
+    const seats: Seat[] = [];
+    for (const f of frames) {
+      for (const face of f.faces.filter((x) => x.embedding.length && x.px >= MIN_FACE_PX && x.yaw <= MAX_YAW_DEG)) {
+        const cx = face.box[0] + face.box[2] / 2;
+        const cy = face.box[1] + face.box[3] / 2;
+        let seat = seats.find((s) => Math.hypot(s.cx - cx, s.cy - cy) < Math.max(0.08, face.box[3]));
+        if (!seat) seats.push((seat = { cx, cy, faces: [] }));
+        seat.cx = 0.8 * seat.cx + 0.2 * cx;
+        seat.cy = 0.8 * seat.cy + 0.2 * cy;
+        seat.faces.push({ t: f.t, face });
+      }
+    }
+    seats.filter((s) => s.faces.length >= 30).forEach((seat, k) => {
+      const enrol = seat.faces.filter((x) => x.t < ENROL_S);
+      // Spread the eight samples over the enrolment window.
+      const step = Math.max(1, Math.floor(enrol.length / 8));
+      const profile = enrol.filter((_, i) => i % step === 0).slice(0, 8).map((x) => x.face.embedding);
+      const live = seat.faces.filter((x) => x.t >= ENROL_S + 1).map((x) => ({ t: x.t, px: Math.round(x.face.px), yaw: Math.round(x.face.yaw), e: x.face.embedding }));
+      if (profile.length < 3 || live.length < 10) return;
+      people.push({ name: `${file.replace(/\.mp4$/, '')}#${k}`, profile, live });
+      console.log(`${file} seat ${k}: ${seat.faces.length} faces, profile ${profile.length}, live ${live.length}`);
+    });
   }
   const best = (e: number[], profile: number[][]) => Math.max(0, ...profile.map((f) => centredSimilarity(e, f)));
   const genuine: number[] = [];
