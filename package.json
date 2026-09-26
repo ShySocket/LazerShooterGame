@@ -18,7 +18,8 @@
     "rubric": "node scripts/rubric.mjs",
     "e2e": "playwright test",
     "realcheck": "node --import ./tests/register.mjs scripts/realcheck.ts",
-    "fixtures": "python3 scripts/fetch-fixtures.py"
+    "fixtures": "python3 scripts/fetch-fixtures.py",
+    "feedback:pull": "node --import ./tests/register.mjs scripts/feedback-pull.ts"
   },
   "dependencies": {
     "@vladmandic/human": "^3.3.6",

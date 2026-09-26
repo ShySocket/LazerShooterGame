@@ -1,6 +1,6 @@
 import { test, expect, chromium } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { closeAll, openPhone, tapFire } from './helpers';
 
@@ -55,6 +55,17 @@ test('[practice-solo] one phone: capture a target, aim at her, the verdict is ri
     const logged = await me.page.evaluate(() => (window as unknown as { __lz: { backend: { feedback: { sample: { label?: { kind: string } } }[] } } }).__lz.backend.feedback.map((f) => f.sample.label?.kind));
     expect(logged.length).toBeGreaterThan(0);
     expect(logged.every((k) => k === 'player')).toBe(true);
+    // Two shots deliberately labelled "Not a player" while she is in frame: seed data for
+    // npm run feedback:pull, whose wrong-shot listing must name them.
+    await me.page.getByLabel('Expected range test target').selectOption({ label: 'Not a player / empty space' });
+    for (let i = 0; i < 2; i++) {
+      await me.page.waitForTimeout(3500);
+      await tapFire(me);
+    }
+    await me.page.waitForTimeout(2500);
+    const seed = await me.page.evaluate(() => (window as unknown as { __lz: { backend: { feedback: unknown[] } } }).__lz.backend.feedback);
+    mkdirSync(join(ROOT, '.rubric', 'feedback'), { recursive: true });
+    writeFileSync(join(ROOT, '.rubric', 'feedback', 'seed-practice.json'), JSON.stringify(seed));
   } finally {
     await closeAll([me]);
     await browser.close();
