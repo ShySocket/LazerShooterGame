@@ -479,3 +479,18 @@ The 100-seed table on `main` after PR #4: pan-crossing 82 % of possible shots, c
 | misses in 330 shots (318 to 320 possible) | 61 | 63 | 50 |
 
 All but the dropouts are deliberate refusals: the cover rule, the torso rule and the overlap rule are what keep occlusion seed 60 and its relatives at zero wrong hits. Moving the cover check to a motion-predicted box would stop refusing when a person who was in front a moment ago is predicted to have moved, which is exactly the geometry of the occlusion wrong hit; nominating from the outer box was already tried and rejected (LESSONS). No tracking change was made; the bound in `tests/sim.test.ts` (pan-crossing >= 35 %) stands far below the measured 82 %.
+
+## 2026-09-26: real footage (npm run realcheck)
+
+Until today every identity number came from the simulator or the bench's one 3D-rendered person. `npm run fixtures` now downloads public-domain and CC photos of 28 people and interview clips from Wikimedia Commons (git-ignored, `fixtures/real/SOURCES.md`), and `npm run realcheck` runs the game's own models and crops on them in Chrome (`?realcheck` probe, faces / clips / shoot stages, exits 1 on any wrong hit or wrong lock).
+
+| cause found | fix | evidence |
+| --- | --- | --- |
+| Real faces of different people reach 0.66 to 0.75 centred similarity (visually confirmed pairs), above `accept`; the clothing audit only acted when the outfit named another player, so a look-alike non-player in other clothes resolved to the player | `OUTFIT_VETO`: a well-covered outfit sample that contradicts a player's scanned outfit rules them out on that body for 4 s, lock label and hit both | new sim scenario `lookalike-stranger`: 34 wrong hits and 53 wrong-lock frames in 30 seeds before, 0 after; sim:full clean |
+| The simulator's strangers were far less alike than real ones (99th percentile 0.38 vs 0.53) | `STRANGER_SIM_SD` 0.165 → 0.225 | sim:full still clean, hit rates unchanged |
+| MobileNet-Swish separated people in one session poorly (own frames p5 0.25, own-minus-rival p5 0.14) | InsightFace GhostNet (strides 1), FACE_MEAN re-measured, `FACE_CALIB` 0.30/0.62, sim same-person levels raised | own frames p5 0.49, rival margin p5 0.26, photo wrong-accepts 22 → 0; `scripts/compare-face-models.ts` |
+| The bench judged a frame against the camera window at processing time, not capture time | window log by draw time | exact oracle, no loosening |
+
+Shooting on real group photos (bench, standing groups, 12 shots at each of 2 people per photo): about 88 of 124 on-target shots land, 0 wrong. Misses are ~90% the torso rule (dot on the outer box but off the observed torso, or a neighbour covering it), by design; the rest are bodies the detector did not find. Open: one of 11 full runs (2376 shots) showed 1 wrong hit and 4 wrong-lock frames before tracing existed and has not recurred in 8 traced runs; any recurrence now writes `.rubric/realcheck/shoot-fail-*.json`.
+
+Still missing: head-turn clips for the scan check (Wikimedia returns 429 for most video), and more same-session identities than the 3 in the talker clips.
