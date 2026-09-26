@@ -360,6 +360,7 @@ async function shoot(page: Page) {
   const pick = groups.filter((_, i) => i % Math.max(1, Math.floor(groups.length / 12)) === 0).slice(0, 12);
   const rows: Record<string, unknown>[] = [];
   const total = { shots: 0, correct: 0, wrong: 0, unclear: 0, miss: 0, offTarget: 0, wrongLockFrames: 0 };
+  const missCauses: Record<string, number> = {};
   for (const photo of pick) {
     for (let target = 0; target < 2; target++) {
       await page.goto(`http://localhost:${PORT}/?bench&auto=drift&photo=${encodeURIComponent(`/__fixtures/stills/${photo}`)}&target=${target}`);
@@ -371,13 +372,26 @@ async function shoot(page: Page) {
       }
       const people = await page.evaluate(() => (window as unknown as { __bench?: { people(): unknown[] } }).__bench?.people().length ?? 0);
       if (!stats || people < 2) continue;
-      rows.push({ photo, target, people, ...stats });
+      const causes = await page.evaluate(() => (window as unknown as { __bench: { raw(): { shots: { outcome: string; cause?: string }[] } } }).__bench.raw().shots.filter((x) => x.outcome === 'miss').map((x) => x.cause ?? 'unknown'));
+      for (const c of causes) missCauses[c] = (missCauses[c] ?? 0) + 1;
+      rows.push({ photo, target, people, ...stats, missCauses: causes });
+      if (stats.wrong > 0 || stats.wrongLockFrames > 0) {
+        // Keep everything needed to explain it: who was enrolled where, every shot, the frame trace.
+        const dump = await page.evaluate(() => {
+          const b = (window as unknown as { __bench: { people(): unknown[]; raw(): { shots: unknown[]; trace: unknown[] } } }).__bench;
+          return { people: b.people().map((p) => { const { profile: _p, ...rest } = p as { profile: unknown }; return rest; }), shots: b.raw().shots, trace: b.raw().trace };
+        });
+        const file = join(OUT, `shoot-fail-${photo.replace(/[/.]/g, '_')}-t${target}-${Date.now()}.json`);
+        writeFileSync(file, JSON.stringify({ photo, target, ...dump }, null, 1));
+        console.log('  saved', file);
+      }
       for (const k of Object.keys(total) as (keyof typeof total)[]) total[k] += stats[k] ?? 0;
       console.log(`${photo} target ${target}: ${people} people, shots ${stats.shots} correct ${stats.correct} wrong ${stats.wrong} unclear ${stats.unclear} miss ${stats.miss} off ${stats.offTarget} wrongLock ${stats.wrongLockFrames} period ${stats.periodMs} ms`);
     }
   }
   console.log(`\nshoot: ${rows.length} runs, ${total.shots} shots: correct ${total.correct}, wrong ${total.wrong}, unclear ${total.unclear}, miss ${total.miss}, off-target ${total.offTarget}, wrong-lock frames ${total.wrongLockFrames}`);
-  writeFileSync(join(OUT, 'shoot.json'), JSON.stringify({ total, rows }, null, 1));
+  console.log('miss causes:', JSON.stringify(missCauses));
+  writeFileSync(join(OUT, 'shoot.json'), JSON.stringify({ total, missCauses, rows }, null, 1));
   return total;
 }
 
