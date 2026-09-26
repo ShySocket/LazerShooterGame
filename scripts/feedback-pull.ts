@@ -25,10 +25,12 @@ function fetchLog(): unknown {
     const out = execFileSync('npx', ['-y', 'firebase-tools', 'database:get', '/feedback', '--project', 'lazer-shooter', '--instance', 'lazer-shooter-default-rtdb'], { encoding: 'utf8', maxBuffer: 512 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
     return JSON.parse(out);
   } catch (e) {
-    const msg = String((e as { stderr?: string }).stderr ?? e);
-    if (/login|auth|credential|401|403/i.test(msg)) {
+    // firebase-tools prints its own errors on stdout; npm's install warnings fill stderr.
+    const err = e as { stdout?: string; stderr?: string };
+    const msg = `${err.stdout ?? ''}\n${err.stderr ?? String(e)}`.split('\n').filter((l) => !l.startsWith('npm warn')).join('\n');
+    if (/login|authenticate|credential|401|403/i.test(msg)) {
       console.error('The feedback log is readable only with the project owner\'s login. Run this once, approve in the browser, then run npm run feedback:pull again:\n\n  npx firebase-tools login\n');
-    } else console.error(msg.slice(0, 2000));
+    } else console.error(msg.trim().slice(-2000));
     process.exit(2);
   }
 }
