@@ -304,6 +304,46 @@ async function clips(page: Page) {
   return summary;
 }
 
+// ---- shoot ---------------------------------------------------------------------------------------
+
+/**
+ * Real group photos through the tracking bench (src/bench): the real models and the real pipeline
+ * on several real people in one frame, a drifting virtual camera, a shot every 1.3 s aimed at each
+ * person in turn. The bench enrols everyone from the photo itself, so identity is easy here; what is
+ * tested is who is under the dot among real, overlapping bodies. Wrong must be 0.
+ */
+async function shoot(page: Page) {
+  const raw = JSON.parse(readFileSync(join(OUT, 'faces.json'), 'utf8')).raw as Record<string, { faces: { px: number; yaw: number }[]; bodies: number }>;
+  // Game-like scenes: at least two people with a detected body (seated rows behind tables are refused
+  // by design, a hit needs an observed torso) and two faces large enough to enrol.
+  const groups = Object.entries(raw)
+    .filter(([, r]) => r.bodies >= 2 && r.faces.filter((f) => f.px >= 60 && f.yaw <= MAX_YAW_DEG).length >= 2)
+    .map(([k]) => k)
+    .sort();
+  const pick = groups.filter((_, i) => i % Math.max(1, Math.floor(groups.length / 12)) === 0).slice(0, 12);
+  const rows: Record<string, unknown>[] = [];
+  const total = { shots: 0, correct: 0, wrong: 0, unclear: 0, miss: 0, offTarget: 0, wrongLockFrames: 0 };
+  for (const photo of pick) {
+    for (let target = 0; target < 2; target++) {
+      await page.goto(`http://localhost:${PORT}/?bench&auto=drift&photo=${encodeURIComponent(`/__fixtures/stills/${photo}`)}&target=${target}`);
+      let stats: Record<string, number> | null = null;
+      for (let i = 0; i < 90; i++) {
+        await page.waitForTimeout(500);
+        stats = await page.evaluate(() => (window as unknown as { __bench?: { stats(): Record<string, number> } }).__bench?.stats() ?? null);
+        if (stats && stats.shots >= 12) break;
+      }
+      const people = await page.evaluate(() => (window as unknown as { __bench?: { people(): unknown[] } }).__bench?.people().length ?? 0);
+      if (!stats || people < 2) continue;
+      rows.push({ photo, target, people, ...stats });
+      for (const k of Object.keys(total) as (keyof typeof total)[]) total[k] += stats[k] ?? 0;
+      console.log(`${photo} target ${target}: ${people} people, shots ${stats.shots} correct ${stats.correct} wrong ${stats.wrong} unclear ${stats.unclear} miss ${stats.miss} off ${stats.offTarget} wrongLock ${stats.wrongLockFrames} period ${stats.periodMs} ms`);
+    }
+  }
+  console.log(`\nshoot: ${rows.length} runs, ${total.shots} shots: correct ${total.correct}, wrong ${total.wrong}, unclear ${total.unclear}, miss ${total.miss}, off-target ${total.offTarget}, wrong-lock frames ${total.wrongLockFrames}`);
+  writeFileSync(join(OUT, 'shoot.json'), JSON.stringify({ total, rows }, null, 1));
+  return total;
+}
+
 async function main() {
   if (!existsSync(FIX)) throw new Error('no fixtures: run python3 scripts/fetch-fixtures.py first');
   mkdirSync(OUT, { recursive: true });
@@ -313,11 +353,18 @@ async function main() {
   try {
     if (want('faces')) result.faces = await faces(page);
     if (want('clips')) result.clips = await clips(page);
+    if (want('shoot')) result.shoot = await shoot(page);
   } finally {
     await page.context().browser()?.close();
     server?.kill();
   }
   writeFileSync(join(OUT, 'summary.json'), JSON.stringify(result, null, 1));
+  // The gate: the outcomes the game must never produce.
+  const shot = result.shoot as { wrong: number; wrongLockFrames: number } | undefined;
+  if (shot && (shot.wrong > 0 || shot.wrongLockFrames > 0)) {
+    console.error(`FAIL: ${shot.wrong} wrong hits, ${shot.wrongLockFrames} wrong-lock frames on real photos`);
+    process.exitCode = 1;
+  }
 }
 
 await main();

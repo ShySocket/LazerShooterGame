@@ -176,14 +176,17 @@ export function Bench() {
   }, []);
 
   // ?bench&auto[=still|drift|range] runs the sample-person check hands-free, for devices that cannot be tapped remotely.
+  // &photo=<url> scans another image instead and &target=<n> aims at its n-th enrolled person (scripts/realcheck.ts shoot).
   const auto = useMemo(() => new URL(location.href).searchParams.get('auto'), []);
+  const autoPhoto = useMemo(() => new URL(location.href).searchParams.get('photo'), []);
+  const autoTarget = useMemo(() => Number(new URL(location.href).searchParams.get('target') ?? 0), []);
   const autoStage = useRef<'idle' | 'loaded' | 'scanned' | 'running'>('idle');
   useEffect(() => {
     if (auto === null || !ready) return;
     if (autoStage.current === 'idle') {
       autoStage.current = 'loaded';
       if (auto === 'still') setMoving(false);
-      void loadImage(import.meta.env.BASE_URL + '_sample.jpg', 'sample person');
+      void loadImage(autoPhoto ?? import.meta.env.BASE_URL + '_sample.jpg', autoPhoto ?? 'sample person');
     } else if (autoStage.current === 'loaded' && photo && people.length === 0) {
       autoStage.current = 'scanned';
       void scan();
@@ -277,7 +280,7 @@ export function Bench() {
       });
     }
     setPeople(found);
-    setTargetId(found[0]?.id ?? '');
+    setTargetId(found[Math.min(autoTarget, found.length - 1)]?.id ?? '');
     setMsg(
       found.length
         ? `Enrolled ${found.length} of ${dets.length} people (${found.filter((p) => p.profile.outfit.front.top.length).length} with an outfit). Pick a target and start.`
