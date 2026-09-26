@@ -16,7 +16,9 @@
     "preview": "vite preview --host",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
     "rubric": "node scripts/rubric.mjs",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "realcheck": "node --import ./tests/register.mjs scripts/realcheck.ts",
+    "fixtures": "python3 scripts/fetch-fixtures.py"
   },
   "dependencies": {
     "@vladmandic/human": "^3.3.6",

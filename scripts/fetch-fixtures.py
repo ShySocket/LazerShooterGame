@@ -30,9 +30,15 @@ PEOPLE = [
 ]
 PER_PERSON = 8
 
-# (name, commons title, start s, duration s, what it is for)
+# (name, commons title, start s, duration s, what it is for). Talkers are single-person interviews:
+# each is one identity seen for many frames, so later frames test the enrolment of earlier ones.
 CLIPS = [
-    ('talker', 'File:Kara Fern - Interview, The.webm', 5, 20, 'one face-on person talking, natural small head turns'),
+    ('talker-cordeiro', 'File:-VariaHistoria 106 - Janaína Martins Cordeiro.webm', 60, 25, 'one person talking face-on'),
+    ('talker-lakhan', 'File:Interview of a Baiga tribe named Lakhan Lal in Hindi Language by Suyash Dwivedi.webm', 30, 25, 'one person talking face-on'),
+    ('talker-pennington', 'File:TUF 18 Finale Media Day with Raquel Pennington.webm', 10, 25, 'one person talking face-on'),
+    ('talker-caruso', 'File:Interview with a Teacher - Glen Caruso.webm', 60, 25, 'one person talking face-on'),
+    ('talker-kende', 'File:Internet Hall of Fame 2014 Michael Kende interview.webm', 20, 25, 'one person talking face-on'),
+    ('talker-cloke', 'File:Interview on extreme weather with physical geographer Hannah Cloke – The Royal Society.webm', 20, 25, 'one person talking face-on'),
     ('dancer', 'File:PM plus size dancer.webm', 0, 20, 'one full-body person turning (front and back views)'),
     ('mirror', 'File:Man walking parallel to mirrors in a hair salon, recording iPhone directed towards the mirrors.webm', 0, 12, 'a person and their mirror images'),
     ('street', 'File:Sabana Grande Caracas. People walking on the Boulevard of Sabana Grande, famous in Caracas, Venezuela.webm', 0, 20, 'strangers walking and crossing'),
@@ -126,17 +132,22 @@ def clips(sources):
         page = next(iter(d['query']['pages'].values()))
         ii = page['imageinfo'][0]
         lic, artist = meta(ii)
-        src = os.path.join(folder, f'{name}.src' + os.path.splitext(ii['url'])[1])
-        download(ii['url'], src)
         out = os.path.join(folder, f'{name}.mp4')
         if not os.path.exists(out):
-            subprocess.run(['ffmpeg', '-v', 'error', '-y', '-ss', str(start), '-t', str(dur), '-i', src,
-                            '-vf', 'scale=640:-2,fps=15', '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', out], check=True)
-        y4m = os.path.join(folder, f'{name}.y4m')
-        if not os.path.exists(y4m):
-            subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', out, '-pix_fmt', 'yuv420p', y4m], check=True)
-        os.remove(src)
-        sources.append((f'clips/{name}.mp4 (+ .y4m), {start}-{start + dur} s: {what}', ii['descriptionurl'], artist, lic))
+            # Stream only the needed seconds from a transcode: the originals are large and rate-limited.
+            orig = ii['url'].split('?')[0]
+            base = orig.replace('/wikipedia/commons/', '/wikipedia/commons/transcoded/', 1) + '/' + orig.rsplit('/', 1)[1]
+            for url in [base + '.480p.vp9.webm', base + '.360p.vp9.webm', base + '.480p.webm', orig]:
+                r = subprocess.run(['ffmpeg', '-v', 'error', '-y', '-user_agent', UA, '-ss', str(start), '-t', str(dur), '-i', url,
+                                    '-vf', 'scale=640:-2,fps=15', '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', out])
+                if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 10000:
+                    break
+                time.sleep(30)
+            else:
+                print(f'{name}: failed', flush=True)
+                continue
+        time.sleep(45)
+        sources.append((f'clips/{name}.mp4, {start}-{start + dur} s: {what}', ii['descriptionurl'], artist, lic))
         print(f'{name}: {lic}', flush=True)
 
 

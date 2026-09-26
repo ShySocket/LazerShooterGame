@@ -12,6 +12,7 @@ import { ReviewDemo } from './feedback/Demo';
 import { feedbackStore } from './feedback/store';
 import { backend } from './net';
 import { installE2E, isE2E } from './e2e/hook';
+import { installProbe } from './realcheck/probe';
 
 // Development only: lets measurement scripts in the browser console reuse the app's vision helpers
 // and the frame profile, and window.__lz reaches the shot-feedback store and backend (local mode
@@ -21,6 +22,8 @@ if (import.meta.env.DEV) {
   (window as unknown as { __lz?: unknown }).__lz = { feedbackStore, backend };
   // ?e2e (dev builds only): the browser test harness enrols synthetic profiles and scripts hits.
   if (isE2E()) installE2E(backend);
+  // ?realcheck (dev builds only): scripts/realcheck.mjs runs the real models on fixture photos and clips.
+  if (new URL(location.href).searchParams.has('realcheck')) installProbe();
 }
 import './styles.css';
 
