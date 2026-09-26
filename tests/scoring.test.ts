@@ -173,6 +173,24 @@ test('clothing evidence: a top alone cannot reach the hit threshold, but does no
   assert.ok(contradicted.alice < 0.1, `matching top with different trousers: ${contradicted.alice}`);
 });
 
+test('a contradicting outfit rules a player out on that body whatever the face says, and a matching one lifts it', async () => {
+  const { outfitVetoed, updateOutfitVeto } = await import('../src/vision/scoring');
+  const hist = (bin: number) => { const h = new Array(51).fill(0); h[bin] = 0.7; h[bin + 1] = 0.3; return h; };
+  const full = { top: hist(0), thighs: hist(24), shins: hist(24), hair: hist(48) };
+  const cands = [{ id: 'alice', profile: { outfit: { front: full, back: full } } as Profile }];
+  const t = track({ alice: 0.9, [UNKNOWN_ID]: 0.1 });
+  updateOutfitVeto(t, { top: hist(12), thighs: hist(36), shins: hist(24), hair: hist(48) }, cands, 1000);
+  assert.ok(outfitVetoed(t, 'alice', 1500));
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 1000), null, 'a face-strong belief cannot hit a body whose outfit is not theirs');
+  assert.ok(!outfitVetoed(t, 'alice', 1000 + 4001), 'the veto expires');
+  // Her own shirt seen alone is no contradiction.
+  const u = track({ alice: 0.9 });
+  updateOutfitVeto(u, { top: hist(0) }, cands, 1000);
+  assert.ok(!outfitVetoed(u, 'alice', 1000));
+  updateOutfitVeto(t, full, cands, 2000);
+  assert.ok(!outfitVetoed(t, 'alice', 2000), 'a matching outfit lifts it');
+});
+
 test('an empty signal map is absent, not a zero vote', () => {
   const faceOnly = combineEvidence({ face: { alice: 1, [UNKNOWN_ID]: 0 }, cloth: null, body: null })!;
   const withEmptyCloth = combineEvidence({ face: { alice: 1, [UNKNOWN_ID]: 0 }, cloth: {}, body: {} })!;

@@ -403,6 +403,14 @@ export const SCENARIOS: Scenario[] = [
     options: { target: 'stranger' },
   },
   {
+    // Real photos (npm run realcheck, 2026-09-26): different people reach 0.66 to 0.75 centred
+    // similarity. Enrolled samples sit at 0.78 to the true face, so 0.85 here reads about 0.66.
+    name: 'lookalike-stranger',
+    expect: 'a non-player whose face reads about 0.66 like a player, in other clothes: never a hit',
+    people: [ME, front('alice', 0.12, 4, 0), { id: 'stranger', player: false, x: 0.5, distance: 3, facing: 'front', topHue: 7, bottomHue: 3, faceLike: { id: 'alice', cos: 0.85 } }],
+    options: { target: 'stranger' },
+  },
+  {
     name: 'mirror',
     expect: 'the shooter in a mirror: never a hit',
     people: [ME, front('alice', 0.12, 4, 0), { id: 'mirror', player: false, copyOf: 'me', x: 0.5, distance: 3, facing: 'front', topHue: 9 }],

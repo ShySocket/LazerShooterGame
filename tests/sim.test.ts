@@ -175,6 +175,15 @@ test('ambiguous verdicts are counted: zero where people stand apart, a small sha
   }
 });
 
+test('a stranger whose face reads like a player\'s but wears other clothes is never hit', async () => {
+  // Real faces of different people reach 0.66 centred similarity (npm run realcheck, 2026-09-26).
+  // Before the outfit veto: 34 wrong hits and 53 wrong-lock frames over 30 seeds.
+  const a = await run('lookalike-stranger');
+  assert.equal(a.correct + a.wrong, 0, describe(a));
+  assert.equal(a.wrongLockFrames, 0, describe(a));
+  assert.equal(a.maybeOnNonPlayer, 0, describe(a));
+});
+
 test('a stranger wearing the same top as a player is never hit, and never wears their name even hedged', async () => {
   const a = await run('same-shirt-stranger');
   assert.equal(a.correct + a.wrong, 0, describe(a));
