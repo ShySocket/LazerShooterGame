@@ -40,6 +40,7 @@ CLIPS = [
     ('talker-kende', 'File:Internet Hall of Fame 2014 Michael Kende interview.webm', 20, 25, 'one person talking face-on'),
     ('talker-cloke', 'File:Interview on extreme weather with physical geographer Hannah Cloke – The Royal Society.webm', 20, 25, 'one person talking face-on'),
     ('dancer', 'File:PM plus size dancer.webm', 0, 20, 'one full-body person turning (front and back views)'),
+    ('headturn', 'File:The President, in 3D.webm', 0, 180, 'a 3D-scanned head turning through every yaw (scan prompts)'),
     ('mirror', 'File:Man walking parallel to mirrors in a hair salon, recording iPhone directed towards the mirrors.webm', 0, 12, 'a person and their mirror images'),
     ('street', 'File:Sabana Grande Caracas. People walking on the Boulevard of Sabana Grande, famous in Caracas, Venezuela.webm', 0, 20, 'strangers walking and crossing'),
 ]
@@ -134,19 +135,27 @@ def clips(sources):
         lic, artist = meta(ii)
         out = os.path.join(folder, f'{name}.mp4')
         if not os.path.exists(out):
-            # Stream only the needed seconds from a transcode: the originals are large and rate-limited.
+            # The transcodes Commons lists for this file, smallest usable first; the original last.
             orig = ii['url'].split('?')[0]
             dv = api({'action': 'query', 'titles': title, 'prop': 'videoinfo', 'viprop': 'derivatives'})
             ders = next(iter(dv['query']['pages'].values())).get('videoinfo', [{}])[0].get('derivatives', [])
             by = {x.get('transcodekey'): x['src'].split('?')[0] for x in ders if x.get('transcodekey')}
             urls = [by[k] for k in ('480p.vp9.webm', '360p.vp9.webm', '480p.webm', '360p.webm', '240p.vp9.webm') if k in by] + [orig]
+            # One plain download of a transcode, then a local trim: seeking over HTTP makes ffmpeg
+            # send many range requests, which Wikimedia's rate limit refuses.
+            src = out + '.src'
             for url in urls:
-                r = subprocess.run(['ffmpeg', '-v', 'error', '-y', '-user_agent', UA, '-ss', str(start), '-t', str(dur), '-i', url,
+                try:
+                    download(url, src)
+                except RuntimeError as e:
+                    print(f'  {name}: {e}', flush=True)
+                    continue
+                r = subprocess.run(['ffmpeg', '-v', 'error', '-y', '-ss', str(start), '-t', str(dur), '-i', src,
                                     '-vf', 'scale=640:-2,fps=15', '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', out], capture_output=True, text=True)
-                if r.returncode != 0:
-                    print(f'  {name}: {url.rsplit(".", 3)[-3:]}: {r.stderr.strip().splitlines()[-1][:120] if r.stderr.strip() else r.returncode}', flush=True)
+                os.remove(src)
                 if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 10000:
                     break
+                print(f'  {name}: ffmpeg: {r.stderr.strip()[-200:]}', flush=True)
                 time.sleep(30)
             else:
                 print(f'{name}: failed', flush=True)
