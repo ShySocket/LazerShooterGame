@@ -10,7 +10,7 @@
  * and different-person centred similarity against FACE_CALIB. Results: .rubric/realcheck/.
  */
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { chromium, type Page } from '@playwright/test';
 import { centredSimilarity } from '../src/vision/embedding.ts';
@@ -63,7 +63,13 @@ async function probeVideo(page: Page, src: string, fps: number): Promise<(ProbeI
   const dir = join(FIX, 'frames', `${clip}@${fps}`);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
-    execFileSync('ffmpeg', ['-v', 'error', '-i', join(FIX, 'clips', `${clip}.mp4`), '-vf', `fps=${fps}`, '-q:v', '2', join(dir, '%04d.jpg')]);
+    try {
+      execFileSync('ffmpeg', ['-v', 'error', '-i', join(FIX, 'clips', `${clip}.mp4`), '-vf', `fps=${fps}`, '-q:v', '2', join(dir, '%04d.jpg')], { stdio: 'pipe' });
+    } catch {
+      rmSync(dir, { recursive: true, force: true });
+      console.log(`${clip}: could not extract frames, skipped`);
+      return [];
+    }
   }
   const out: (ProbeImage & { t: number })[] = [];
   for (const [i, f] of readdirSync(dir).filter((x) => x.endsWith('.jpg')).sort().entries()) {
@@ -241,7 +247,8 @@ const ENROL_S = 6;
  */
 async function clips(page: Page) {
   const dir = join(FIX, 'clips');
-  const names = existsSync(dir) ? readdirSync(dir).filter((f) => f.startsWith('talker-') && f.endsWith('.mp4')).sort() : [];
+  // Stubs under 20 KB are downloads that failed or are still in progress.
+  const names = existsSync(dir) ? readdirSync(dir).filter((f) => f.startsWith('talker-') && f.endsWith('.mp4') && statSync(join(dir, f)).size > 20_000).sort() : [];
   if (names.length < 1) {
     console.log('clips: no talker clips in fixtures/real/clips');
     return null;

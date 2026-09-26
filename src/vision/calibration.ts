@@ -11,18 +11,19 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-09-26.1';
+export const CALIBRATION_VERSION = '2026-09-26.2';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /**
- * Thresholds on the mean-centred cosine (embedding.ts centredSimilarity). Measured on 2026-09-13 over
- * 61 faces through the game's crop pipeline: strangers median -0.03, 90th percentile 0.20, 99th 0.39;
- * a face against a downscaled copy of itself 0.92 at 28 px and 0.99 at 60 px. Raw cosine on this
- * model is unusable as an absolute score (strangers median 0.4, up to 0.8) because every embedding
- * shares one dominant direction. `reject` sits above the stranger 90th percentile, `accept` well
- * above the 99th.
+ * Thresholds on the mean-centred cosine (embedding.ts centredSimilarity) of InsightFace GhostNet
+ * (strides 1), measured with npm run realcheck on 2026-09-26: 28 people's photos (different people
+ * p90 0.17, p99 0.36) and interview clips scanned from their first 6 s (same person, same session:
+ * single frame p5 0.49, median 0.67; the track's running mean p5 0.57, p10 0.60; the other person in
+ * the same room p99 0.43; unenrolled faces p99 0.53). `reject` sits above the different-person 90th
+ * percentile, `accept` at the same-person running mean's 10th percentile. Faces of different people
+ * can still reach 0.69, which is why a contradicting outfit vetoes a face (OUTFIT_VETO).
  */
-export const FACE_CALIB = { reject: 0.25, accept: 0.55 };
+export const FACE_CALIB = { reject: 0.3, accept: 0.62 };
 /** Two centred embeddings this similar are the same person for enrolment sanity checks. */
 export const SAME_PERSON_MIN = 0.35;
 /** Two players whose scans are this alike will be confused at range; the lobby warns. */

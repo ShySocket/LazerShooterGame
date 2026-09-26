@@ -93,8 +93,11 @@ const lerp = (d: number, pts: [number, number][]): number => {
 const pBody = (d: number) => lerp(d, [[2, 0.97], [4, 0.93], [6, 0.86], [8, 0.72], [10, 0.5]]);
 const pFaceBox = (d: number) => lerp(d, [[2, 0.95], [4, 0.8], [6, 0.4], [8, 0.1]]);
 const pCrop = (d: number) => lerp(d, [[2, 0.95], [4, 0.9], [6, 0.7], [8, 0.35], [10, 0.1]]);
-/** Live-vs-enrolment similarity by distance: clean faces measure ~0.5 median, blur at 30 px keeps ~0.7 of it. */
-const simOwn = (d: number) => lerp(d, [[2, 0.55], [4, 0.5], [6, 0.42], [8, 0.36]]);
+/**
+ * Live-vs-enrolment similarity by distance. GhostNet same-session frames measured a 0.67 median at
+ * interview range (npm run realcheck, 2026-09-26); blur at 30 px keeps ~0.7 of it.
+ */
+const simOwn = (d: number) => lerp(d, [[2, 0.67], [4, 0.61], [6, 0.51], [8, 0.44]]);
 
 function unit(v: number[]): number[] {
   const n = Math.hypot(...v) || 1;

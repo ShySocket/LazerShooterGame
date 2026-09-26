@@ -2,8 +2,8 @@
  * The service worker's cache for model files (vite.config.ts), plus retired names to sweep. Kept
  * apart from human.ts so tests and the loader can name the cache without loading the models.
  */
-export const MODELS_CACHE = 'vision-models-v2';
-export const STALE_MODEL_CACHES = ['vision-models'];
+export const MODELS_CACHE = 'vision-models-v3';
+export const STALE_MODEL_CACHES = ['vision-models', 'vision-models-v2'];
 
 /**
  * A load that came back with a required model missing may have been served a bad cached shard:

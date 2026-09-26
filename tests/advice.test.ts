@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { connectState, crashNotice, HIT_CONFIDENCE_NOTE, RANGE_TARGET_NOTE, updateAllowed, verdictAdvice, isStalled, loadProgress, lobbyHint, rejoinFailure, saveError, shareFallback, STALL_TEXT } from '../src/ui/advice';
 import { LOAD_CALIB } from '../src/vision/calibration';
 
-const REQUIRED = ['blazeface', 'facemesh', 'insightface-mobilenet-swish', 'movenet-multipose'];
+const REQUIRED = ['blazeface', 'facemesh', 'insightface-ghostnet-strides1', 'movenet-multipose'];
 
 test('loading text counts the required models and the bytes so far', () => {
   const p = loadProgress(
