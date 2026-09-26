@@ -31,6 +31,24 @@ When the round ends, each player's results screen shows one of their own failed 
 - "I can't tell" and Skip upload nothing. An upload that fails (no signal at the venue) waits on the phone and goes out the next time a results or lobby screen opens.
 - Storage: `feedback/rounds/{CODE-startAt}/{profiles,samples}` in the Realtime Database, write-once and not readable by clients (`database.rules.json`). Local mode keeps samples in memory instead.
 
+## Practice alone
+
+Open the game with `?practice` (the home screen links to it as **Practice alone**) to test the tracking on one phone with nobody else playing. Everything stays on the phone except the shot log:
+
+1. Type a name, tap **Start practice**, and do your own scan (it is the decoy for mirror shots).
+2. In the lobby tap **Add a target**, point the back camera at a friend, a TV or a photo, and tap **Capture**. The largest person in view becomes *Target 1* (twelve frames, face and outfit; the note says if the hips were out of view and only the face was taken). Add as many as you like, then **Start game**.
+3. Range mode and the debug overlay start on. Pick who you aim at (**Aim at**, or *Not a player* for anyone else), fire, and the banner says **HIT Target 1 (right)**, **NO LOCK** or **WRONG: locked X, you aimed at Y**. Shots deal no damage. **What to try** lists the situations worth testing.
+4. Every shot is uploaded at once to the shot feedback log below, labelled with the target you chose (queued when offline). Nothing else to do.
+
+To read the log (the rules let no client read it, so this needs the project owner's login once):
+
+```bash
+npx firebase-tools login
+npm run feedback:pull
+```
+
+`feedback:pull` saves the log under `.rubric/feedback/`, sorts every labelled shot into right hit, wrong hit, wrong hit on a non-player, right refusal and misses by cause, per build, lists every wrong one with its belief, and runs the calibration sweep below over the same shots. `--file export.json` reads a console export instead.
+
 To turn the labels into calibration changes, export the `feedback` node from the Firebase console (Realtime Database, the `feedback` node, Export JSON) or fetch it with a database secret, then:
 
 ```bash
@@ -92,6 +110,8 @@ npm run sim:full
 ```
 
 Runs every scenario over 100 seeds and exits non-zero on any wrong hit or wrong-lock frame, printing the frames leading up to each one. Use it as the gate for tracking or decision changes.
+
+Real footage (`npm run realcheck`) runs the game's own models and crops, in Chrome, on public-domain and Creative Commons photos and interview clips of real people (`npm run fixtures` downloads them from Wikimedia Commons into the git-ignored `fixtures/real/`, with attribution in `fixtures/real/SOURCES.md`): `faces` scores same-person and different-person similarity over 28 people's photos, `clips` enrols each person in an interview from its first 6 s and scores the rest against every profile, `shoot` fires at real group photos through the tracking bench and exits non-zero on any wrong hit or wrong lock. `node --import ./tests/register.mjs scripts/compare-face-models.ts` compares candidate face models (`--face=<model>` runs, models in `fixtures/models/`). `tests/e2e/realvision.spec.ts` and `tests/e2e/practice.spec.ts` play a round and a practice session with the real models on a real clip as the camera.
 
 ### 2d. Tracking bench on a real phone
 

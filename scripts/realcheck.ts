@@ -16,6 +16,7 @@ import { chromium, type Page } from '@playwright/test';
 import { centredSimilarity } from '../src/vision/embedding.ts';
 import { FACE_CALIB, MAX_YAW_DEG, MEAN_ALPHA, MIN_FACE_PX } from '../src/vision/calibration.ts';
 import type { ProbeImage } from '../src/realcheck/probe.ts';
+import { FACE_PROMPTS, holdStep, initialScanState, judgePose, type ScanState } from '../src/vision/scan.ts';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const FIX = join(ROOT, 'fixtures', 'real');
@@ -395,6 +396,56 @@ async function shoot(page: Page) {
   return total;
 }
 
+// ---- scan ----------------------------------------------------------------------------------------
+
+/**
+ * The enrolment face scan against real head movement: every frame's signed yaw and pitch as the
+ * game's crop mesh reads them, then the eight prompts in order the way a player would do them (the
+ * conventions latched by earlier prompts carry over, a prompt needs SCAN_CALIB.holdFrames frames in
+ * a row, and each sample must chain as the same person). Says which prompts each clip can satisfy
+ * and the yaw/pitch range the model actually reports.
+ */
+async function scan(page: Page) {
+  const dir = join(FIX, 'clips');
+  const names = readdirSync(dir).filter((f) => (f.startsWith('talker-') || f === 'headturn.mp4') && statSync(join(dir, f)).size > 20_000).sort();
+  const rows: Record<string, unknown>[] = [];
+  for (const file of names) {
+    const frames = await probeVideo(page, `/__fixtures/clips/${file}`, 10);
+    const series = frames
+      .map((f) => ({ t: f.t, face: [...f.faces].filter((x) => Number.isFinite(x.yawSigned) && x.px >= 48).sort((a, b) => b.px - a.px)[0] }))
+      .filter((x) => x.face);
+    // A clip cannot follow prompts, so ask of each prompt independently: is there a run of
+    // holdFrames frames that satisfies it, with left/right and chin up/down latched as a player's
+    // first turn and first tilt would latch them?
+    const firstTurn = series.find((x) => Math.abs(x.face.yawSigned) >= FACE_PROMPTS[1].yaw![0]);
+    const firstTilt = series.find((x) => Math.abs(x.face.pitch) >= 8);
+    const latched: ScanState = { ...initialScanState(), yawSign: firstTurn ? Math.sign(firstTurn.face.yawSigned) : 0, pitchSign: firstTilt ? Math.sign(firstTilt.face.pitch) : 0 };
+    const done: string[] = [];
+    const missing: string[] = [];
+    for (const prompt of FACE_PROMPTS) {
+      let state = latched;
+      let at: number | null = null;
+      for (const x of series) {
+        const step = holdStep(state, judgePose(prompt, x.face.yawSigned, Number.isFinite(x.face.pitch) ? x.face.pitch : 0, state));
+        state = { ...step.state, yawSign: latched.yawSign, pitchSign: latched.pitchSign };
+        if (step.ready) {
+          at = x.t;
+          break;
+        }
+      }
+      (at === null ? missing : done).push(at === null ? prompt.text : `${prompt.text} @${at.toFixed(1)}s`);
+    }
+    const yaws = series.map((x) => x.face.yawSigned);
+    const pitches = series.map((x) => x.face.pitch).filter(Number.isFinite);
+    const row = { clip: file, faceFrames: series.length, frames: frames.length, yaw: [Math.round(Math.min(...yaws)), Math.round(Math.max(...yaws))], pitch: [Math.round(Math.min(...pitches)), Math.round(Math.max(...pitches))], prompts: `${done.length}/${FACE_PROMPTS.length}`, done, missing };
+    rows.push(row);
+    console.log(`${file}: ${series.length}/${frames.length} frames with a face, yaw ${row.yaw.join('..')}°, pitch ${row.pitch.join('..')}°, prompts ${row.prompts}`);
+    for (const m of missing) console.log('    not reached:', m);
+  }
+  writeFileSync(join(OUT, 'scan.json'), JSON.stringify(rows, null, 1));
+  return rows;
+}
+
 async function main() {
   if (!existsSync(FIX)) throw new Error('no fixtures: run python3 scripts/fetch-fixtures.py first');
   mkdirSync(OUT, { recursive: true });
@@ -405,6 +456,7 @@ async function main() {
     if (want('faces')) result.faces = await faces(page);
     if (want('clips')) result.clips = await clips(page);
     if (want('shoot')) result.shoot = await shoot(page);
+    if (want('scan')) result.scan = await scan(page);
   } finally {
     await page.context().browser()?.close();
     server?.kill();

@@ -16,6 +16,8 @@ export interface ProbeFace {
   px: number;
   score: number;
   yaw: number;
+  /** Signed yaw in degrees from the crop mesh (the scan's readout), NaN when missing. */
+  yawSigned: number;
   /** Signed pitch in degrees from the crop mesh, NaN when missing. */
   pitch: number;
   /** Unit embedding from the zoom crop (the only embedding source in the game), empty when none. */
@@ -82,11 +84,13 @@ async function probeCanvas(canvas: HTMLCanvasElement): Promise<ProbeImage> {
         .filter((x) => x.dist < fb[3])
         .sort((a, b) => a.dist - b.dist)[0]?.c;
       const pitch = own?.face.rotation?.angle?.pitch;
+      const yawRad = own?.face.rotation?.angle?.yaw;
       faces.push({
         box: fb,
         px: fb[3] * canvas.height,
         score: f.score,
         yaw: own ? faceYawDeg(own.face) : NaN,
+        yawSigned: typeof yawRad === 'number' ? (yawRad * 180) / Math.PI : NaN,
         pitch: typeof pitch === 'number' ? (pitch * 180) / Math.PI : NaN,
         embedding: own && isValidEmbedding(own.face.embedding) ? compactEmbedding(own.face.embedding) : [],
       });
