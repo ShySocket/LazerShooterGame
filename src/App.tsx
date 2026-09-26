@@ -12,7 +12,7 @@ import { Profile } from './screens/Profile';
 import { loadHuman } from './vision/human';
 import { applyPendingUpdate, onUpdatePending, updatePending } from './pwa';
 import { recordIncident, wasReloaded } from './diag';
-import { isE2E } from './e2e/hook';
+import { e2eStubsVision, isE2E, isE2EVision } from './e2e/hook';
 import { connectState, rejoinFailure, updateAllowed } from './ui/advice';
 
 function guestPid(): string {
@@ -77,7 +77,7 @@ export default function App() {
   }, [swPending, code, showProfile]);
   // Models are ~24 MB; start fetching while the player is still typing a name.
   useEffect(() => {
-    if (!isE2E()) void loadHuman().catch(() => undefined);
+    if (!e2eStubsVision()) void loadHuman().catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -126,13 +126,13 @@ export default function App() {
   const enter = (c: string, name: string) => {
     writeLastRoom({ code: c, name, t: Date.now() });
     setCode(c);
-    history.replaceState(null, '', `${location.pathname}?room=${c}${isE2E() ? '&e2e' : ''}`);
+    history.replaceState(null, '', `${location.pathname}?room=${c}${isE2E() ? '&e2e' : ''}${isE2EVision() ? '&vision' : ''}`);
   };
   const leave = () => {
     if (code) void backend.leaveRoom(code, pid).catch(() => undefined);
     writeLastRoom(null);
     setCode(null);
-    history.replaceState(null, '', `${location.pathname}${isE2E() ? '?e2e' : ''}`);
+    history.replaceState(null, '', `${location.pathname}${isE2E() ? '?e2e' : ''}${isE2EVision() ? '&vision' : ''}`);
   };
 
   // After a reload, go straight back into the room this phone was in instead of landing on Home.
