@@ -108,7 +108,7 @@ function evaluate(dir: string) {
   return { items: items.length, gen: gen.length, imp: imp.length, eer: eer.e, eerT: eer.t, tar1, clip };
 }
 
-const dirs = [['insightface-mobilenet-swish (shipped)', OUT], ...readdirSync(OUT, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => [d.name, join(OUT, d.name)])];
+const dirs = [['shipped model', OUT], ...readdirSync(OUT, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => [d.name, join(OUT, d.name)])];
 for (const [name, dir] of dirs) {
   if (!existsSync(join(dir, 'embeddings.json'))) continue;
   const r = evaluate(dir);
