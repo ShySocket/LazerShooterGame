@@ -19,8 +19,10 @@ import type { ProbeImage } from '../src/realcheck/probe.ts';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const FIX = join(ROOT, 'fixtures', 'real');
-const OUT = join(ROOT, '.rubric', 'realcheck');
+const OUT = join(ROOT, '.rubric', 'realcheck', ...(process.argv.find((a) => a.startsWith('--face=')) ? [process.argv.find((a) => a.startsWith('--face='))!.slice(7)] : []));
 const PORT = 5198;
+/** --face=<model>: a candidate face model from fixtures/models instead of the shipped one; results go to .rubric/realcheck/<model>/. */
+const MODEL = process.argv.find((a) => a.startsWith('--face='))?.slice(7) ?? '';
 const stages = process.argv.slice(2).filter((a) => !a.startsWith('-'));
 const want = (s: string) => stages.length === 0 || stages.includes(s);
 
@@ -39,12 +41,13 @@ async function openProbe(): Promise<Page> {
   // Fixtures stay out of public/: serve them to the page from disk.
   await page.route('**/__fixtures/**', (route) => {
     const rel = decodeURIComponent(new URL(route.request().url()).pathname.replace(/^\/__fixtures\//, ''));
-    const file = join(FIX, rel);
-    if (!file.startsWith(FIX) || !existsSync(file)) return route.fulfill({ status: 404 });
-    return route.fulfill({ body: readFileSync(file), contentType: file.endsWith('.png') ? 'image/png' : file.endsWith('.mp4') ? 'video/mp4' : 'image/jpeg' });
+    const base = rel.startsWith('models/') ? join(ROOT, 'fixtures') : FIX;
+    const file = join(base, rel);
+    if (!file.startsWith(base) || !existsSync(file)) return route.fulfill({ status: 404 });
+    return route.fulfill({ body: readFileSync(file), contentType: file.endsWith('.png') ? 'image/png' : file.endsWith('.mp4') ? 'video/mp4' : file.endsWith('.json') ? 'application/json' : file.endsWith('.bin') ? 'application/octet-stream' : 'image/jpeg' });
   });
   page.on('pageerror', (e) => console.error('page error:', e.message));
-  await page.goto(`http://localhost:${PORT}/?realcheck`);
+  await page.goto(`http://localhost:${PORT}/?realcheck${MODEL ? `&face=${MODEL}` : ''}`);
   await page.waitForFunction(() => '__lzReal' in window, null, { timeout: 60_000 });
   const version = await page.evaluate(() => (window as unknown as { __lzReal: { ready(): Promise<string> } }).__lzReal.ready());
   console.log('models ready, Human', version);

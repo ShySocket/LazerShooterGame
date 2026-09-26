@@ -35,9 +35,11 @@ const params = new URL(location.href).searchParams;
 const bench = params.has('bench');
 // ?review (dev builds only) opens the shot review card with a synthetic shot, for checking it without a round.
 const review = import.meta.env.DEV && params.has('review');
+// ?realcheck (dev builds only) is driven by scripts/realcheck.ts: the app stays unmounted so its own model loader never touches the probe's models.
+const realcheck = import.meta.env.DEV && params.has('realcheck');
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <ErrorBoundary>{bench ? <Bench /> : review ? <ReviewDemo /> : <App />}</ErrorBoundary>
+    <ErrorBoundary>{realcheck ? null : bench ? <Bench /> : review ? <ReviewDemo /> : <App />}</ErrorBoundary>
   </StrictMode>,
 );

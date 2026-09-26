@@ -1,4 +1,5 @@
-import { compactEmbedding, configurePass, faceYawDeg, getHuman, isValidEmbedding, loadHuman, withHumanSession } from '../vision/human';
+import type { Human } from '@vladmandic/human';
+import { compactEmbedding, configurePass, faceYawDeg, getHuman, humanConfig, isValidEmbedding, loadHuman, withHumanSession } from '../vision/human';
 import { faceRegion, ZoomPass } from '../vision/zoom';
 import { toNBox } from '../vision/geometry';
 
@@ -31,6 +32,19 @@ export interface ProbeImage {
 
 const zoom = new ZoomPass();
 
+let candidateLoad: Promise<Human> | null = null;
+/** The shipped loader insists on the shipped face model; a candidate model is loaded directly. */
+function probeHuman(): Promise<Human> {
+  if (!new URL(location.href).searchParams.get('face')) return loadHuman();
+  candidateLoad ??= (async () => {
+    const h = getHuman();
+    // No warmup: Human's warmup pass crashes with some candidate models, and timing is not measured here.
+    await h.load(humanConfig);
+    return h;
+  })();
+  return candidateLoad;
+}
+
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -54,7 +68,7 @@ function squareCanvas(img: HTMLImageElement | HTMLVideoElement, w: number, h: nu
 }
 
 async function probeCanvas(canvas: HTMLCanvasElement): Promise<ProbeImage> {
-  const human = await loadHuman();
+  const human = await probeHuman();
   const t0 = performance.now();
   return withHumanSession(async () => {
     configurePass(human, 'frame');
@@ -128,10 +142,15 @@ export async function probeVideo(src: string, fps = 5, maxFrames = 400): Promise
 }
 
 export function installProbe(): void {
+  // ?face=<model> swaps the face embedding model for a candidate from fixtures/models (compared by
+  // scripts/realcheck.ts faces/clips). Human caches models per page, so one model per page load.
+  const face = new URL(location.href).searchParams.get('face');
+  if (face) (humanConfig.face as unknown as { insightface: { modelPath: string } }).insightface.modelPath = `/__fixtures/models/${face}.json`;
   (window as unknown as { __lzReal: unknown }).__lzReal = {
     ready: async () => {
-      await loadHuman();
-      return getHuman().version;
+      await probeHuman();
+      const face = getHuman().models.stats().modelStats.filter((m) => m.name.startsWith('insightface') && m.loaded).map((m) => m.name);
+      return `${getHuman().version} ${face.join(',')}`;
     },
     probeImage,
     probeVideo,

@@ -10,3 +10,4 @@ public/_sample.jpg
 test-results/
 playwright-report/
 fixtures/real/
+fixtures/models/
