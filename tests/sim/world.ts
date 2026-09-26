@@ -104,12 +104,14 @@ function randomUnit(rng: Rng): number[] {
   return unit(Array.from({ length: DIM }, () => rng.gauss()));
 }
 /**
- * Spread of the similarity between two unrelated faces. Measured on the real model after mean
- * centring (README, faceMean.ts): median 0, 90th percentile 0.20, 99th 0.39. A normal with this
- * standard deviation puts the 90th at 0.21 and the 99th at 0.38. The sim's vectors bypass the
- * game's centring (DIM is not 512), so their raw cosine plays the part of the centred similarity.
+ * Spread of the similarity between two unrelated faces. First measured on the real model after mean
+ * centring over 61 faces (README, faceMean.ts): 90th percentile 0.20, 99th 0.39. Re-measured on 28
+ * people's real photos (npm run realcheck, 2026-09-26): 90th 0.36 to 0.39, 99th 0.53 to 0.55, pairs up
+ * to 0.75. A normal with this standard deviation puts the 90th at 0.29 and the 99th at 0.52. The
+ * sim's vectors bypass the game's centring (DIM is not 512), so their raw cosine plays the part of
+ * the centred similarity.
  */
-const STRANGER_SIM_SD = 0.165;
+const STRANGER_SIM_SD = 0.225;
 
 /**
  * A new face whose cosine to each earlier face is an independent draw from the stranger
@@ -128,7 +130,7 @@ function unrelatedFace(rng: Rng, refs: number[][]): number[] {
     }
     basis.push(unit(v));
   }
-  const wanted = refs.map(() => Math.max(-0.6, Math.min(0.6, rng.gauss(0, STRANGER_SIM_SD))));
+  const wanted = refs.map(() => Math.max(-0.75, Math.min(0.75, rng.gauss(0, STRANGER_SIM_SD))));
   // dot(e_i, ref_j) is zero for i > j, so the coefficients follow from the references in order.
   const coef: number[] = [];
   for (let j = 0; j < refs.length; j++) {
