@@ -84,12 +84,18 @@ export function faceYawDeg(f: { rotation?: { angle?: { yaw?: number } } | null }
   return typeof yaw === 'number' && Number.isFinite(yaw) ? Math.abs(yaw * 180 / Math.PI) : Infinity;
 }
 
-/** Head angles captured by a face scan. A shorter stored set cannot stand in for a fresh scan. */
+/** Head angles a face scan asks for. */
 export const FACE_SAMPLES = 8;
+/**
+ * Fewest real face samples a usable scan holds. A skipped angle stays missing rather than being
+ * filled with a copy of another frame (review of 2026-10-01: time may relax the pose, never the
+ * sample), so a scan can finish with fewer than FACE_SAMPLES; below this it asks for extra looks.
+ */
+export const FACE_MIN_SAMPLES = 5;
 
 /** A stored face scan is usable only when it comes from this model, is complete, and every vector is intact. */
 export function isCurrentFaceScan(scan: { faceModel?: string; face?: unknown } | null | undefined): boolean {
   return Boolean(
-    scan && scan.faceModel === FACE_MODEL && Array.isArray(scan.face) && scan.face.length >= FACE_SAMPLES && scan.face.every((sample) => isValidEmbedding(sample)),
+    scan && scan.faceModel === FACE_MODEL && Array.isArray(scan.face) && scan.face.length >= FACE_MIN_SAMPLES && scan.face.every((sample) => isValidEmbedding(sample)),
   );
 }

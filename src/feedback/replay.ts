@@ -1,5 +1,5 @@
 import { UNKNOWN_PID, type Pid, type ShotLabel, type ShotSample, type TrackSummary } from './sample';
-import { CLOTHING_AUDIT_MS, CLOTHING_BELIEF_ALPHA, CLOTHING_EVIDENCE, EVIDENCE_WEIGHTS, FACE_BELIEF_ALPHA, FACE_CALIB, FACE_FRESH_MS, IDENTITY_TTL_MS, STRANGER_BASELINE } from '../vision/calibration';
+import { CLOTHING_AUDIT_MS, CLOTHING_BELIEF_ALPHA, CLOTHING_EVIDENCE, EVIDENCE_WEIGHTS, FACE_BELIEF_ALPHA, FACE_CALIB, FACE_FRESH_MS, FACE_ONLY_CALIB, IDENTITY_TTL_MS, OVERLAP_FACE_FRESH_MS, STRANGER_BASELINE } from '../vision/calibration';
 
 /**
  * Offline replay of labelled shot samples. A sample carries the raw similarities every track
@@ -29,6 +29,11 @@ export interface ReplayParams {
   /** While the face is this fresh (and ahead by 0.3), clothing is only audited, not fused. */
   faceFreshMs: number;
   clothingAuditMs: number;
+  /** The bar a face read is judged at for a player whose own outfit does not back it on that body. */
+  faceOnlyReject: number;
+  faceOnlyAccept: number;
+  /** During an overlap or in a crowded frame, the body's latest read must come from a frame this close to the deciding one. */
+  overlapFaceFreshMs: number;
 }
 
 /**
@@ -53,15 +58,27 @@ export const DEFAULT_PARAMS: ReplayParams = {
   hitMargin: null,
   faceFreshMs: FACE_FRESH_MS,
   clothingAuditMs: CLOTHING_AUDIT_MS,
+  faceOnlyReject: FACE_ONLY_CALIB.reject,
+  faceOnlyAccept: FACE_ONLY_CALIB.accept,
+  overlapFaceFreshMs: OVERLAP_FACE_FRESH_MS,
 };
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+
+/** One frame's face read on a body, on its own: who it names and by how much (pipeline.ts applyFace's lastRead). */
+interface FaceRead {
+  t: number;
+  id: Pid;
+  margin: number;
+}
 
 interface BeliefState {
   belief: Record<Pid, number>;
   lastEvidenceT: number;
   lastFaceT: number;
   lastClothT: number;
+  /** The body's latest read; a belief reset does not forget it, as in the game. */
+  read: FaceRead | null;
 }
 
 function top(belief: Record<Pid, number>): { id: Pid; score: number; margin: number } | null {
@@ -70,12 +87,17 @@ function top(belief: Record<Pid, number>): { id: Pid; score: number; margin: num
   return { id: entries[0][0], score: entries[0][1], margin: entries[0][1] - (entries[1]?.[1] ?? 0) };
 }
 
-function faceEvidence(meanSims: Record<Pid, number>, quality: number, p: ReplayParams): Record<Pid, number> {
+/**
+ * Face similarity to evidence. With `corroborated`, a player outside it is judged at the face-only
+ * bar, as scoring.ts faceEvidence does; without it everyone is judged at the normal bar.
+ */
+function faceEvidence(meanSims: Record<Pid, number>, quality: number, p: ReplayParams, corroborated?: Set<Pid>): Record<Pid, number> {
   const ev: Record<Pid, number> = {};
   const weight = 0.6 + 0.4 * clamp01(quality);
   let top = 0;
   for (const [id, s] of Object.entries(meanSims)) {
-    ev[id] = clamp01((s - p.faceReject) / (p.faceAccept - p.faceReject));
+    const [reject, accept] = !corroborated || corroborated.has(id) ? [p.faceReject, p.faceAccept] : [p.faceOnlyReject, p.faceOnlyAccept];
+    ev[id] = clamp01((s - reject) / (accept - reject));
     top = Math.max(top, ev[id]);
   }
   for (const id of Object.keys(ev)) ev[id] *= weight;
@@ -147,12 +169,13 @@ export function replayShot(sample: ShotSample, overrides: Partial<ReplayParams> 
   const trackId = sample.shot.decisionTrackId ?? sample.shot.trackId;
   let decision: BeliefState | null = null;
   let conflict = false;
+  let gate: ShotSample['frames'][number]['tracks'][number] | null = null;
   for (let i = 0; i <= last; i++) {
     const frame = sample.frames[i];
     for (const t of frame.tracks) {
       let s = states.get(t.id);
       if (!s) {
-        s = { belief: {}, lastEvidenceT: -Infinity, lastFaceT: -Infinity, lastClothT: -Infinity };
+        s = { belief: {}, lastEvidenceT: -Infinity, lastFaceT: -Infinity, lastClothT: -Infinity, read: null };
         states.set(t.id, s);
       }
       if (Number.isFinite(s.lastEvidenceT) && frame.t - s.lastEvidenceT > p.identityTtlMs) s.belief = {};
@@ -178,10 +201,14 @@ export function replayShot(sample: ShotSample, overrides: Partial<ReplayParams> 
         const ev = combine(faceEvidence(t.face.meanSims, t.face.quality, p), null, null, p);
         if (ev) update(s, ev, p.faceAlpha, frame.t);
         s.lastFaceT = frame.t;
+        // This frame's read on its own, at the bar the game judged each player's face at.
+        const read = top(faceEvidence(t.face.sims ?? {}, t.face.quality, p, new Set(t.face.corroborated ?? [])));
+        if (read) s.read = { t: frame.t, id: read.id, margin: read.margin };
       }
       if (i === last && t.id === trackId) {
         decision = s;
         conflict = t.conflict;
+        gate = t;
       }
     }
   }
@@ -189,7 +216,17 @@ export function replayShot(sample: ShotSample, overrides: Partial<ReplayParams> 
   const best = top(decision.belief);
   if (!best) return { resolved: null, top: null };
   const eligible = new Set(sample.round.eligible ?? []);
-  const ok = !conflict && eligible.has(best.id) && best.score >= threshold && best.margin >= margin && best.margin > 0;
+  // v2 samples carry the refusals the game applies on top of the belief: an identity not yet
+  // re-earned after a transition, a player the outfit rules out, and an overlap or a crowded frame
+  // where the body's latest read, from a frame within overlapFaceFreshMs of the deciding one, does
+  // not name the same player by the margin on its own (scoring.ts resolveHit). v1 samples lack the
+  // fields and are judged on belief alone.
+  const g = gate as ShotSample['frames'][number]['tracks'][number] | null;
+  const decidedAt = sample.frames[last].t;
+  const r = decision.read;
+  const readNames = Boolean(r && decidedAt - r.t <= p.overlapFaceFreshMs && r.id === best.id && r.margin >= margin);
+  const refused = Boolean(g && (g.unconfirmed || g.reacquiring || g.vetoed?.includes(best.id) || ((g.overlapping || g.ambiguous || g.crowded) && !readNames)));
+  const ok = !conflict && !refused && eligible.has(best.id) && best.score >= threshold && best.margin >= margin && best.margin > 0;
   return { resolved: ok ? best.id : null, top: best };
 }
 
@@ -244,7 +281,7 @@ export function normaliseSample(raw: ShotSample): ShotSample {
       faceAgeMs: t.faceAgeMs ?? null,
       evidenceAgeMs: t.evidenceAgeMs ?? null,
       inSight: Boolean(t.inSight),
-      ...(t.face ? { face: { sims: t.face.sims ?? {}, meanSims: t.face.meanSims ?? {}, quality: t.face.quality ?? 1 } } : {}),
+      ...(t.face ? { face: { sims: t.face.sims ?? {}, meanSims: t.face.meanSims ?? {}, quality: t.face.quality ?? 1, ...(t.face.corroborated ? { corroborated: t.face.corroborated } : {}) } } : {}),
       ...(t.outfit ? { outfit: { match: t.outfit.match ?? {}, ...(t.outfit.body ? { body: t.outfit.body } : {}) } } : {}),
     })),
   }));

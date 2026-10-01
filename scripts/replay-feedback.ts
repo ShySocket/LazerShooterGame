@@ -1,22 +1,30 @@
 import { readFileSync } from 'node:fs';
 import { agreement, asPlayed, collectSamples, evaluate, sweep } from '../src/feedback/replay';
 import type { ShotSample } from '../src/feedback/sample';
+import { readRoundFilters, tuningSamples } from './feedback-source.ts';
 
 /**
  * Replays labelled shot feedback with alternative calibrations.
  *
  *   npm run replay -- feedback.json            a JSON export of the database's `feedback` node (or of the whole database)
  *   npm run replay -- --url "https://<project>-default-rtdb.firebaseio.com/feedback.json?auth=<secret or access token>"
- *   npm run replay -- feedback.json --json     print the sweep rows as JSON instead of a table
+ *   npm run replay -- feedback.json --json     print the sweep rows as JSON instead of a table (alone on stdout)
+ *   npm run replay -- feedback.json --eval 2026-10-08   leave the held-out rounds out (the same --eval as session:report)
+ *   npm run replay -- feedback.json --since 2026-09-26  ignore older rounds
  *
  * Export from the Firebase console (Realtime Database > the `feedback` node > Export JSON), or with
  * the REST API using a database secret or an OAuth access token; client rules deny reads on purpose.
+ * The sweep is what calibration is tuned on, so held-out rounds never enter it.
  */
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const json = args.includes('--json');
+  // With --json, stdout is the sweep rows and nothing else.
+  const info = json ? console.error : console.log;
+  const { since, split } = readRoundFilters(args);
   const url = args.includes('--url') ? args[args.indexOf('--url') + 1] : null;
-  const files = args.filter((a, i) => !a.startsWith('--') && args[i - 1] !== '--url');
+  const valued = new Set(['--url', '--eval', '--since']);
+  const files = args.filter((a, i) => !a.startsWith('--') && !valued.has(args[i - 1]));
   const data: unknown[] = [];
   if (url) {
     const res = await fetch(url);
@@ -25,19 +33,25 @@ async function main(): Promise<void> {
   }
   for (const f of files) data.push(JSON.parse(readFileSync(f, 'utf8')));
   if (data.length === 0) {
-    console.error('usage: npm run replay -- <export.json> | --url <database url>');
+    console.error('usage: npm run replay -- <export.json> | --url <database url> [--eval <date|round key|key prefix>] [--since <date>] [--json]');
     process.exit(2);
   }
-  const samples = data.flatMap(collectSamples);
+  const tuning = tuningSamples(data.flatMap(collectSamples).filter((s) => s.round.startAt >= since), split);
+  const samples = tuning.samples;
   const labelled = samples.filter((s): s is ShotSample & { label: NonNullable<ShotSample['label']> } => Boolean(s.label));
   const rounds = new Set(samples.map((s) => s.round.key));
   const commits = [...new Set(samples.map((s) => s.app.commit))];
   const players = labelled.filter((s) => s.label.kind === 'player').length;
-  console.log(`${samples.length} samples from ${rounds.size} rounds (builds ${commits.join(', ') || 'none'}); ${labelled.length} labelled: ${players} name a player, ${labelled.length - players} say "should not count"`);
-  if (labelled.length === 0) return;
+  info(`${samples.length} samples from ${rounds.size} rounds (builds ${commits.join(', ') || 'none'}); ${labelled.length} labelled: ${players} name a player, ${labelled.length - players} say "should not count"`);
+  if (tuning.note) info(tuning.note);
+  if (labelled.length === 0) {
+    // --json promises JSON on stdout: an empty sweep, not nothing.
+    if (json) console.log('[]');
+    return;
+  }
   const played = evaluate(labelled, {}, asPlayed);
-  console.log(`As played:  correct ${played.correct}  wrong ${played.wrong}  miss ${played.miss}  score ${played.score}`);
-  console.log(`Replay with the defaults agrees with the game's own verdict on ${Math.round(agreement(labelled) * 100)}% of samples`);
+  info(`As played:  correct ${played.correct}  wrong ${played.wrong}  miss ${played.miss}  score ${played.score}`);
+  info(`Replay with the defaults agrees with the game's own verdict on ${Math.round(agreement(labelled) * 100)}% of samples`);
   const rows = sweep(labelled);
   if (json) {
     console.log(JSON.stringify(rows, null, 2));

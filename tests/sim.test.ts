@@ -128,7 +128,8 @@ test('a target who turns their back and then faces the shooter again stays hitta
 
 test('a phone with occasional slow frames still fires and hits instead of refusing shots as stale', async () => {
   const a = await run('hiccups');
-  assert.ok(a.stale <= 1, describe(a));
+  // About 1.4% of shots land on a slow frame (100 seeds: 29-32 of 2200); 2 in these 3 seeds' 67 is noise.
+  assert.ok(a.stale <= 2, describe(a));
   assert.ok(hitRate(a) >= 0.85, describe(a));
   assert.equal(a.wrong, 0, describe(a));
 });
@@ -142,7 +143,9 @@ test('players with look-alike faces are never confused with each other', async (
 /**
  * Seeds that once produced a wrong hit or a wrong lock in a 100-seed sweep (2026-09-13 review). The
  * occlusion ones were instant hits from a frame whose geometry predated the nearer player moving out
- * from under the dot; the stranger ones were single false player-lock frames.
+ * from under the dot; the stranger ones were single false player-lock frames. crossing-lookalike-faces
+ * 63 (2026-10-01): her track hopped onto his body during the crossing with no jump to notice, and a
+ * burst opened on her settled on him 1.1 s later (pipeline.ts outfitReversals and transitionAt).
  */
 const REGRESSION_SEEDS: [string, number][] = [
   ['occlusion', 60],
@@ -150,6 +153,10 @@ const REGRESSION_SEEDS: [string, number][] = [
   ['occlusion', 39],
   ['stranger', 45],
   ['stranger', 61],
+  // 2026-10-01: Bob hidden behind Alice for 2.4 s during a pan; a frame found only his body, her track
+  // took it and showed LOCK alice with the dot on him (tracker.ts Track.partners, HIDDEN_PARTNER_MS).
+  ['pan-crossing-far', 85],
+  ['crossing-lookalike-faces', 63],
 ];
 for (const [name, seed] of REGRESSION_SEEDS) {
   test(`regression: ${name} seed ${seed} has no wrong hit and no wrong lock`, async () => {
@@ -183,6 +190,47 @@ test('a stranger whose face reads like a player\'s but wears other clothes is ne
   assert.equal(a.correct + a.wrong, 0, describe(a));
   assert.equal(a.wrongLockFrames, 0, describe(a));
   assert.equal(a.maybeOnNonPlayer, 0, describe(a));
+});
+
+test('a face-only target (no outfit on file) is never confused with a look-alike stranger, and still takes clear hits', async () => {
+  // Review of 2026-10-01: without an outfit the veto cannot protect a face-only target; FACE_ONLY_CALIB
+  // took the look-alike from 35 wrong hits in 30 seeds to none over 100.
+  const a = await run('lookalike-stranger-faceonly');
+  assert.equal(a.correct + a.wrong, 0, describe(a));
+  assert.equal(a.wrongLockFrames, 0, describe(a));
+  const d = await run('duel-faceonly');
+  assert.equal(d.wrong, 0, describe(d));
+});
+
+test('identity does not ride across a crossing, and a wrongly vetoed player costs refusals, never a wrong hit', async () => {
+  // Review of 2026-10-01: markUncertain resets the face mean and vetoes, and reacquired() needs fresh
+  // evidence; crossing look-alikes (faces 0.66 alike) and a player whose outfit is misread a quarter
+  // of the time measured 0 wrong hits and 0 wrong-lock frames over 100 seeds.
+  for (const name of ['crossing-lookalike-faces', 'vetoed-player', 'lookalike-stranger-slow']) {
+    const a = await run(name);
+    assert.equal(a.wrong, 0, describe(a));
+    assert.equal(a.wrongLockFrames, 0, describe(a));
+  }
+  // Fairness: a misread outfit costs refusals, never the player for good (100 seeds: 77% land; 80%
+  // before 2026-10-01, when a misread veto lifted by a clean read became a reason to withhold a burst
+  // that had no accepted name at the tap, since the game cannot tell it from a hop onto another body).
+  assert.ok(hitRate(await run('vetoed-player')) >= 0.6, 'a wrongly vetoed player is still hit most of the time');
+  const { OUTFIT_VETO, CLOTHING_AUDIT_MS } = await import('../src/vision/calibration');
+  assert.ok(OUTFIT_VETO.holdMs >= 2 * CLOTHING_AUDIT_MS, 'a veto must outlast the clothing audit, or it lapses between samples');
+});
+
+test('a crowd past the detector body cap never produces a wrong hit or lock', async () => {
+  // MoveNet returns six bodies at most; with seven people in view who is left out changes frame to
+  // frame (world.ts detect). 100 seeds on 2026-10-01: 0 wrong, 0 wrong-lock frames, 40% of shots land.
+  // crowd-seven-slow (400 ms per frame, decided more than 400 ms after capture), 100 seeds: 0 wrong,
+  // 0 wrong-lock frames, 39% land; bursts settled in crowded frames hit 15 of 45 with the crowd rule's
+  // read aged in capture time, 1 of 31 when it was aged against the decision clock.
+  for (const name of ['crowd-seven', 'crowd-seven-slow']) {
+    const a = await run(name);
+    assert.equal(a.wrong, 0, describe(a));
+    assert.equal(a.wrongLockFrames, 0, describe(a));
+    assert.ok(a.possible > 0, 'the target is under the dot sometimes');
+  }
 });
 
 test('a stranger wearing the same top as a player is never hit, and never wears their name even hedged', async () => {

@@ -1,13 +1,18 @@
 import type { Player, Profile, Room, RoomMeta, RoomSettings } from '../types';
 import {
+  canBeginPlay,
+  canResetRound,
+  canStartRound,
   claimHostPatch,
+  closeRoundPlayers,
   endRoundPatch,
-  evaluateHit,
+  evaluatePlayersHit,
   newPlayer,
   newRoomMeta,
   pickColor,
   randomCode,
   ROUND_META_RESET,
+  roundOpenFor,
   roundResetFields,
   type EndResult,
   type HitOutcome,
@@ -91,39 +96,51 @@ export class LocalBackend implements RoomBackend {
     this.emit(code);
   }
 
-  async updateMeta(code: string, patch: Partial<RoomMeta>): Promise<void> {
+  async updateMeta(code: string, patch: Pick<RoomMeta, 'settings'>): Promise<void> {
     const room = this.rooms.get(code);
     if (!room) return;
     Object.assign(room, patch);
     this.emit(code);
   }
 
-  private resetPlayers(room: Room, lives: number): void {
-    for (const p of Object.values(room.players)) Object.assign(p, roundResetFields(lives));
+  private resetPlayers(room: Room, lives: number, round: number | null = null): void {
+    for (const p of Object.values(room.players)) Object.assign(p, roundResetFields(lives, round));
   }
 
-  async startRound(code: string, settings: RoomSettings, startAt: number): Promise<void> {
+  /** The status steps keep the Firebase room's preconditions (`canStartRound`, `canBeginPlay`, `canResetRound`). */
+  async startRound(code: string, settings: RoomSettings, startAt: number): Promise<boolean> {
     const room = this.rooms.get(code);
-    if (!room) return;
+    if (!room || !canStartRound(room)) return false;
     room.settings = settings;
-    this.resetPlayers(room, settings.lives);
+    this.resetPlayers(room, settings.lives, startAt);
     Object.assign(room, { status: 'countdown', startAt, endedAt: null, winnerId: null });
     this.emit(code);
+    return true;
   }
 
-  async resetForNewRound(code: string): Promise<void> {
+  async beginPlay(code: string, startAt: number): Promise<boolean> {
     const room = this.rooms.get(code);
-    if (!room) return;
+    if (!room || !canBeginPlay(room, startAt)) return false;
+    room.status = 'playing';
+    this.emit(code);
+    return true;
+  }
+
+  async resetForNewRound(code: string, startAt: number | null): Promise<boolean> {
+    const room = this.rooms.get(code);
+    if (!room || !canResetRound(room, startAt)) return false;
     Object.assign(room, ROUND_META_RESET);
     this.resetPlayers(room, room.settings.lives);
     this.emit(code);
+    return true;
   }
 
-  async registerHit(code: string, shooter: string, target: string): Promise<HitOutcome> {
+  /** The same rule as the Firebase room (`evaluatePlayersHit`); one thread, so the read and the write cannot interleave. */
+  async registerHit(code: string, shooter: string, target: string, score: number, via: string, shotId: string, roundStartAt: number | null): Promise<HitOutcome> {
     const room = this.rooms.get(code);
-    if (!room || room.status !== 'playing') return 'invalid';
-    const r = evaluateHit(room.players, shooter, target, this.now(), room.settings.invulnMs);
-    if (r.players) {
+    if (!room || !roundOpenFor(room, roundStartAt)) return 'invalid';
+    const r = evaluatePlayersHit(room.players, { shooter, target, score, via, shotId, roundStartAt }, this.now(), room.settings.invulnMs);
+    if (r.players && r.record) {
       room.players = r.players;
       this.emit(code);
     }
@@ -136,6 +153,7 @@ export class LocalBackend implements RoomBackend {
     const patch = endRoundPatch(room, room.players, this.now(), force);
     if (!patch) return 'not-decided';
     Object.assign(room, patch);
+    room.players = closeRoundPlayers(room.players);
     this.emit(code);
     return 'ended';
   }

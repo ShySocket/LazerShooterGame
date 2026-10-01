@@ -1,5 +1,5 @@
 import type { Profile } from '../types';
-import { FACE_SAMPLES } from '../vision/embedding';
+import { FACE_MIN_SAMPLES } from '../vision/embedding';
 import { enrolFromCanvases } from '../vision/quickEnrol';
 
 /**
@@ -23,6 +23,6 @@ export async function profileFromImages(urls: string[], fallbackOutfit?: Profile
     canvases.push(c);
   }
   const r = await enrolFromCanvases(canvases, fallbackOutfit);
-  if (r.faces < FACE_SAMPLES) throw new Error(`only ${r.faces} usable faces in ${urls.length} frames`);
+  if (r.faces < FACE_MIN_SAMPLES) throw new Error(`only ${r.faces} usable faces in ${urls.length} frames`);
   return r.profile;
 }

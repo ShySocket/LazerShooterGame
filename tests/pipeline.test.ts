@@ -51,10 +51,10 @@ const PERIOD = 220;
 const body = (box: NBox, hit: NBox, extra: Partial<Detection> = {}): Detection => ({ box, hit, body: { keypoints: [] } as unknown as Detection['body'], ...extra });
 
 /** A pipeline with a scripted clock, plus the ops that hand Bob's face to any crop of a Bob-sized box. */
-function harness() {
+function harness(candidates: Candidate[] = CANDIDATES) {
   const clock = { now: 0 };
   const pipeline = new VisionPipeline<{ tap: number }>(
-    { candidates: CANDIDATES, exclusiveIds: new Set(CANDIDATES.map((c) => c.id)), eligible: new Set(['alice', 'bob']), hitThreshold: 0.5, hitMargin: 0.2 },
+    { candidates, exclusiveIds: new Set(candidates.map((c) => c.id)), eligible: new Set(['alice', 'bob']), hitThreshold: 0.5, hitMargin: 0.2 },
     () => clock.now,
   );
   const cropCalls: number[] = [];
@@ -327,4 +327,179 @@ test('(j) a nomination from motion needs the dot on the moved torso, not merely 
   // reach a dot at 0.48, although the moved outer box does.
   h.clock.now = h.t - PERIOD + 100;
   assert.equal(h.pipeline.fire({ tap: h.clock.now }, [0.29 - 0.02, 0.35, 0.42, 0.3]).kind, 'miss');
+});
+
+test('an outfit sample whose torso cannot be read is not a sample: the audit stays due and nothing counts as checked', async () => {
+  const h = harness();
+  h.ops.sampleOutfit = () => ({ sig: null, props: null });
+  await h.frame([body(BOB_BOX, BOB_HIT)]);
+  await h.frame([body(BOB_BOX, BOB_HIT)]);
+  const out = await h.frame([body(BOB_BOX, BOB_HIT)]);
+  const t = out.tracks[0];
+  assert.equal(t.lastClothingAt, 0);
+  assert.equal(t.lastOutfitReadAt ?? 0, 0);
+});
+
+// ---- Review of 2026-10-01: a face must be corroborated, and nobody may be refused for good ----------
+
+/** A unit vector with cosine `cos` to `u` (64-d, so the 512-d mean-centring does not apply). */
+const withCosine = (u: number[], cos: number, seed: number): number[] => {
+  const n = embedding(seed);
+  const d = n.reduce((s, x, i) => s + x * u[i], 0);
+  const perp = unit(n.map((x, i) => x - d * u[i]));
+  return u.map((x, i) => cos * x + Math.sqrt(1 - cos * cos) * perp[i]);
+};
+
+test('a look-alike stranger whose torso cannot be read is never named: without a readable outfit the face needs the strict bar', async () => {
+  const h = harness();
+  const LOOKALIKE = withCosine(ALICE_FACE, 0.66, 9);
+  h.ops.sampleOutfit = () => ({ sig: null, props: null });
+  h.ops.cropFaces = async (region) => (region[2] > 0.3 ? [{ box: [region[0] + 0.12, 0.26, 0.08, 0.1], embedding: LOOKALIKE, quality: 1 }] : []);
+  for (let i = 0; i < 30; i++) {
+    const out = await h.frame([body(BOB_BOX, BOB_HIT)]);
+    assert.notEqual(out.lock?.kind === 'lock' ? out.lock.id : null, 'alice', `frame ${i}: a face at 0.66 must not name alice uncorroborated`);
+  }
+});
+
+test('a player whose torso cannot be read is still hit once the face clears the strict bar, even after a dropout', async () => {
+  const h = harness();
+  h.ops.sampleOutfit = () => ({ sig: null, props: null });
+  let locked = 0;
+  for (let i = 0; i < 8; i++) if ((await h.frame([body(BOB_BOX, BOB_HIT)])).lock?.kind === 'lock') locked++;
+  assert.ok(locked > 0, 'Bob, face clear, torso hidden, locks');
+  for (let i = 0; i < 4; i++) await h.frame([]);
+  let after = 0;
+  for (let i = 0; i < 15; i++) if ((await h.frame([body(BOB_BOX, BOB_HIT)])).lock?.kind === 'lock') after++;
+  assert.ok(after >= 10, `after a reclaim Bob is locked again within a few frames (${after}/15)`);
+});
+
+test('a player standing half behind someone is re-earned, not refused for as long as the overlap lasts', async () => {
+  const h = harness();
+  h.ops.sampleOutfit = () => ({ sig: { top: [1] }, props: null });
+  // The other person stands to Bob's right and a little behind (IoU about 0.3); the dot stays on Bob's torso.
+  const OTHER: NBox = [0.55, 0.3, 0.3, 0.55];
+  // Bob's face sits clearly on his own box, left of where the other person's box starts.
+  h.ops.cropFaces = async (region) => (region[0] < 0.5 && region[2] > 0.3 ? [{ box: [0.4, 0.26, 0.06, 0.08], embedding: BOB_FACE, quality: 1 }] : []);
+  let locked = 0;
+  for (let i = 0; i < 25; i++) {
+    const out = await h.frame([body(BOB_BOX, BOB_HIT), body(OTHER, [0.6, 0.32, 0.18, 0.3])]);
+    if (out.lock?.kind === 'lock' && out.lock.id === 'bob') locked++;
+  }
+  assert.ok(locked >= 15, `Bob locked in ${locked}/25 frames of a lasting overlap`);
+});
+
+test('while someone may be hidden behind the target, a lock or hit needs evidence read on that frame (pan-crossing-far seed 85)', async () => {
+  // 2026-10-01: Bob went behind Alice and stayed hidden 2.4 s while the phone panned; a frame then
+  // found only his body, her track took it, and with no face or outfit read on that frame her old
+  // belief showed LOCK alice with the dot on him. Here Bob is the target and someone else hides.
+  const h = harness();
+  let faceOn = true;
+  // Bob's face sits on the left of his own box, clear of the other person's box to his right.
+  h.ops.cropFaces = async (region) => (faceOn && region[0] < 0.5 && region[2] > 0.3 ? [{ box: [region[0] + 0.04, 0.26, 0.06, 0.08], embedding: BOB_FACE, quality: 1 }] : []);
+  await h.establishBob(6);
+  const OTHER: NBox = [0.55, 0.3, 0.3, 0.55];
+  for (let i = 0; i < 3; i++) await h.frame([body(BOB_BOX, BOB_HIT), body(OTHER, [0.6, 0.32, 0.18, 0.3])]);
+  // The other person goes behind Bob and is not detected again; the phone pans 1% of the frame a step.
+  const panned = (k: number) => body([BOB_BOX[0] - 0.01 * k, BOB_BOX[1], BOB_BOX[2], BOB_BOX[3]], [BOB_HIT[0] - 0.01 * k, BOB_HIT[1], BOB_HIT[2], BOB_HIT[3]]);
+  let locked = 0;
+  for (let k = 1; k <= 8; k++) {
+    const out = await h.frame([panned(k)]);
+    if (out.lock?.kind === 'lock' && out.lock.id === 'bob') locked++;
+  }
+  assert.ok(locked >= 5, `Bob's face read on each frame keeps him locked (${locked}/8)`);
+  // By now the other person's track has retired and the pan has carried Bob off its last box. A frame
+  // that reads no face cannot say whose body this is.
+  faceOn = false;
+  const out = await h.frame([panned(8)]);
+  assert.notEqual(out.lock?.kind, 'lock', `no LOCK without evidence of the frame's own (got ${JSON.stringify(out.lock)})`);
+  h.clock.now = h.t + 5;
+  const shot = h.pipeline.fire({ tap: h.clock.now }, CROSSHAIR);
+  assert.notEqual(shot.kind, 'instant', 'nor an instant hit from that frame');
+});
+
+// ---- crossing-lookalike-faces seed 63 (2026-10-01): a track that hops onto the crossing partner ----
+
+test('a track whose body\'s outfit flips from ruling a player out to clearly matching them has hopped: a burst opened before cannot land on them', async () => {
+  // Outfits as separate colours: her top and trousers, his top and trousers, the shooter's.
+  const hist = (i: number) => Array.from({ length: 6 }, (_, k) => (k === i ? 1 : 0));
+  const outfit = (top: number, thighs: number) => ({ front: { top: hist(top), thighs: hist(thighs) }, back: { top: hist(top), thighs: hist(thighs) } });
+  const candidates: Candidate[] = [
+    { id: 'me', profile: { faceModel: 'test', face: [ME_FACE], outfit: outfit(4, 5) } },
+    { id: 'alice', profile: { faceModel: 'test', face: [ALICE_FACE], outfit: outfit(0, 2) } },
+    { id: 'bob', profile: { faceModel: 'test', face: [BOB_FACE], outfit: outfit(1, 3) } },
+  ];
+  const h = harness(candidates);
+  // Phase 1, her body under the dot: only her top is readable, 0.65 like hers and 0.35 like his. That
+  // rules him out on this body (OUTFIT_VETO) but names nobody: the belief stays "unknown", so neither
+  // the face hop check nor the burst's expected identity can protect the shot.
+  h.ops.sampleOutfit = () => ({ sig: { top: [0.65, 0.35, 0, 0, 0, 0] }, props: null });
+  h.ops.cropFaces = async () => [];
+  let last;
+  for (let i = 0; i < 6; i++) last = await h.frame([body(BOB_BOX, BOB_HIT)]);
+  const her = last!.tracks[0];
+  assert.equal(Object.entries(her.belief).sort((a, b) => b[1] - a[1])[0][0], '_unknown', `the tap-time belief names nobody: ${JSON.stringify(her.belief)}`);
+  assert.ok(her.outfitVeto?.bob, 'his outfit is ruled out on her body');
+  const { tap } = h.tapStale();
+  // Phase 2: her body is skipped and her track takes his body a third of a box to the left (no jump
+  // to notice). His full outfit and his face are read on it from now on.
+  const HIS_BOX: NBox = [0.26, 0.24, 0.35, 0.61];
+  const HIS_HIT: NBox = [0.34, 0.26, 0.19, 0.35];
+  h.ops.sampleOutfit = () => ({ sig: { top: hist(1), thighs: hist(3) }, props: null });
+  h.ops.cropFaces = async (region) => (region[2] > 0.3 ? [{ box: [region[0] + 0.12, 0.26, 0.08, 0.1], embedding: BOB_FACE, quality: 1 }] : []);
+  let settled: { resolution: { id: string } | null } | null = null;
+  let capturedAt = h.clock.now + 20;
+  for (let i = 0; i < 8 && !settled && h.pipeline.hasPending(); i++) {
+    const out = await h.frame([body(HIS_BOX, HIS_HIT)], capturedAt);
+    assert.equal(out.tracks[0].id, her.id, 'the same track continues onto his body');
+    if (i === 0) assert.ok((out.tracks[0].reacquireAt ?? 0) > tap, 'the outfit flip is an uncertain transition');
+    settled = out.settled;
+    capturedAt = h.t;
+  }
+  assert.equal(settled?.resolution?.id ?? null, null, `a tap on her must not register on him: ${JSON.stringify(settled?.resolution)}`);
+  // Fairness: the hop costs a re-acquisition, not the player. Once re-earned on his own body, a fresh
+  // tap on him lands.
+  let lock;
+  for (let i = 0; i < 4; i++) lock = (await h.frame([body(HIS_BOX, HIS_HIT)])).lock;
+  assert.deepEqual(lock, { kind: 'lock', id: 'bob' }, 'his identity is re-earned on his own body');
+  h.clock.now = h.t - PERIOD + 50;
+  const shot = h.pipeline.fire({ tap: h.clock.now }, CROSSHAIR);
+  assert.equal(shot.kind === 'instant' ? shot.settlement.resolution?.id : shot.kind, 'bob');
+});
+
+test('a crowded frame on a slow phone hits on the face read in that very frame, however long the frame took to decide', async () => {
+  // Six bodies (BODY_CAP) make every frame crowded. Frames come 450 ms apart and each is decided
+  // 420 ms after its capture, more than OVERLAP_FACE_FRESH_MS: the read's age is capture time
+  // against capture time, so Bob's face read in the deciding frame still counts (review of
+  // 2026-10-01: measured against the decision clock, a slow phone refused every shot in a crowd).
+  const h = harness();
+  const bystanders = [0.0, 0.08, 0.16, 0.78, 0.88].map((x) => body([x, 0.3, 0.07, 0.4], [x + 0.01, 0.32, 0.05, 0.15]));
+  const scene = () => [body(BOB_BOX, BOB_HIT), ...bystanders];
+  const slow = 450;
+  const latency = 420;
+  let t = 0;
+  let locked = 0;
+  for (let i = 0; i < 8; i++) {
+    h.clock.now = t + latency;
+    const out = await h.pipeline.processFrame(scene(), t, 1280, 720, CROSSHAIR, h.ops);
+    assert.ok(out?.crowded, 'six bodies: the crowd rule applies');
+    if (out.lock?.kind === 'lock' && out.lock.id === 'bob') locked++;
+    t += slow;
+  }
+  assert.ok(locked >= 5, `Bob, his face read every frame, is locked in a crowd on a slow phone (${locked}/8)`);
+  // A tap one period after the last capture is too old to decide alone: the burst needs a post-tap frame.
+  h.clock.now = t;
+  const r = h.pipeline.fire({ tap: t }, CROSSHAIR);
+  assert.equal(r.kind, 'pending');
+  h.clock.now = t + 20 + latency;
+  const settledOn = await h.pipeline.processFrame(scene(), t + 20, 1280, 720, CROSSHAIR, h.ops);
+  assert.equal(settledOn?.settled?.resolution?.id, 'bob', 'the burst settles on the crowded frame\'s own read');
+  // Without a read in that frame, nor within OVERLAP_FACE_FRESH_MS of it, the crowd rule still refuses.
+  h.ops.cropFaces = async () => [];
+  let lockedBlind = 0;
+  for (let i = 0, u = t + 20 + slow; i < 3; i++, u += slow) {
+    h.clock.now = u + latency;
+    const blind = await h.pipeline.processFrame(scene(), u, 1280, 720, CROSSHAIR, h.ops);
+    if (blind?.lock?.kind === 'lock') lockedBlind++;
+  }
+  assert.equal(lockedBlind, 0, 'a carried belief does not lock in a crowded frame');
 });

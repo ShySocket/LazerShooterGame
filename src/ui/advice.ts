@@ -1,5 +1,7 @@
 import { CAM_CALIB, LOAD_CALIB } from '../vision/calibration';
 import { isTimeout } from '../net/withTimeout';
+import type { HitOutcome } from '../net/backend';
+import { UNKNOWN_ID } from '../types';
 
 /**
  * Player-facing words for the moments an app can leave a phone stuck: what a wait is doing, when it
@@ -120,12 +122,44 @@ export function verdictAdvice(text: string): string {
       return 'The app was interrupted mid-shot. Fire again.';
     case 'NO CONNECTION, SHOT LOST':
       return 'Check the Wi-Fi; hits need the network.';
+    case UNCONFIRMED:
+      return UNCONFIRMED_ADVICE;
+    case NOT_COUNTED:
+      return 'The round was already over when it reached the server.';
     default:
-      return '';
+      return text.endsWith(ALREADY_OUT) ? 'They are out of this round. Aim at someone still playing.' : '';
+  }
+}
+
+/** A hit the server did not answer in time. It may still land (in its own round, once), so it is neither a hit nor lost. */
+export const UNCONFIRMED = 'UNCONFIRMED';
+export const UNCONFIRMED_ADVICE = 'It counts only if it reached the server. Check the Wi-Fi.';
+/** The server refused the hit because its round is over (or was replaced); never shown as a MISS, the shot found its target. */
+export const NOT_COUNTED = 'NOT COUNTED';
+const ALREADY_OUT = ' IS ALREADY OUT';
+
+/**
+ * The banner for the server's answer to a hit the vision accepted. Every refusal says what it was:
+ * a shot that found its target is never reported as a MISS.
+ */
+export function hitVerdict(outcome: HitOutcome, name: string): { text: string; kind: 'good' | 'info' | 'warn' } {
+  switch (outcome) {
+    case 'hit':
+      return { text: `HIT ${name}`, kind: 'good' };
+    case 'eliminated':
+      return { text: `${name} ELIMINATED`, kind: 'good' };
+    case 'invulnerable':
+      return { text: `${name} is shielded`, kind: 'info' };
+    case 'dead':
+      return { text: `${name}${ALREADY_OUT}`, kind: 'info' };
+    default:
+      return { text: NOT_COUNTED, kind: 'warn' };
   }
 }
 
 export const RANGE_TARGET_NOTE = 'Choose who you are aiming at to enable FIRE.';
+/** Under the range panel once a target is chosen: what a range-test shot does. */
+export const RANGE_SHOT_NOTE = 'Shots here deal no damage. Each is logged with your answer; its photo stays on this phone.';
 
 /** A waiting build is applied only when nothing on this phone would be lost by a reload. */
 export function updateAllowed(state: { inRoom: boolean; profileOpen: boolean; inputFocused: boolean }): boolean {
@@ -153,14 +187,33 @@ export const REVIEW_SKIP_ONE = 'Skip this shot';
 export const REVIEW_DONE = 'Done reviewing';
 export const RESET_FAILED = 'Could not reset the room. Check the connection and tap again.';
 
-/** The banner for a hit the server never confirmed: offline or timed out is a lost shot, anything else is refused. */
+/**
+ * Whether a failed hit may still have counted. A timeout: the write is still queued, or already sent
+ * and unanswered. Error('disconnect'): the Realtime Database SDK sent the write, the socket dropped
+ * before the answer, and the SDK cancelled it because it cannot tell whether the server applied it
+ * (PersistentConnection.cancelSentTransactions_); registerHit sends it again with the same shot id.
+ */
+export function hitOutcomeUnknown(e: unknown): boolean {
+  return isTimeout(e) || (e instanceof Error && e.message === 'disconnect');
+}
+
+/**
+ * The banner for a hit the server never answered. An outcome that is not known (`hitOutcomeUnknown`)
+ * is UNCONFIRMED: it counts if it reached, or reaches, the server while its round is playing. Any
+ * other error means the write was refused or never sent: offline is a lost shot for want of a
+ * connection, anything else a lost shot.
+ */
 export function hitFailureText(e: unknown): string {
+  if (hitOutcomeUnknown(e)) return UNCONFIRMED;
   const text = (e instanceof Error ? `${e.name} ${e.message}` : String(e ?? '')).toLowerCase();
-  if (isTimeout(e) || /network|offline|disconnected|unavailable/.test(text)) return 'NO CONNECTION, SHOT LOST';
+  if (/network|offline|disconnected|unavailable/.test(text)) return 'NO CONNECTION, SHOT LOST';
   return 'SHOT LOST';
 }
 
 export const OFFLINE_TEXT = 'OFFLINE. Shots are not counting. Reconnecting…';
+
+/** Shown while the camera sees as many bodies as it can follow (BODY_CAP): hits then need a clear face. */
+export const CROWD_TEXT = 'Too many people in view. Hits need a clear face.';
 
 export type CameraPermission = 'prompt' | 'granted' | 'denied' | 'unknown';
 
@@ -184,7 +237,7 @@ export function cameraRequestPlan(permission: CameraPermission): CameraRequestPl
 /** What a capture got: how many frames gave a face, and whether the outfit could be read. */
 export function practiceCaptureNote(name: string, faces: number, frames: number, outfit: boolean): string {
   const face = faces >= frames / 2 ? `${name} added.` : `${name} added, but only ${faces} of ${frames} frames showed a usable face: capture again closer or in better light if shots on them refuse.`;
-  return outfit ? face : `${face} No outfit: the hips were not in view, so only the face identifies them (step back and capture again to add it).`;
+  return outfit ? face : `${face} Face only: the hips were not in view, so nothing can rule out a look-alike and shots on them land only on a very clear face. Step back and Capture again with their hips in view.`;
 }
 
 /** The things worth trying in a practice session, in the order that teaches the most. */
@@ -200,9 +253,37 @@ export const PRACTICE_CHECKLIST: readonly string[] = [
 
 export const PRACTICE_INTRO = 'Practice: everything stays on this phone. Add targets with the back camera (a friend, a TV, a photo), pick who you aim at, and every shot is logged with that answer so the tracking can be tuned. Shots deal no damage.';
 
-/** The banner after a practice shot: what the game decided against what you said you aimed at. */
-export function practiceVerdict(expected: string, resolved: string | null): { text: string; kind: 'good' | 'warn' | 'bad' } {
-  if (resolved === null) return { text: expected === 'nobody' ? 'NO LOCK (right: not a player)' : `NO LOCK on ${expected}`, kind: expected === 'nobody' ? 'good' : 'warn' };
-  if (resolved === expected) return { text: `HIT ${resolved} (right)`, kind: 'good' };
-  return { text: `WRONG: locked ${resolved}, you aimed at ${expected}`, kind: 'bad' };
+export type PracticeFilter = 'all' | 'good' | 'bad' | 'warn';
+
+/** Totals for the practice review header: right (good), wrong (bad) and no-lock (warn) shots. */
+export function practiceReviewCounts(kinds: (string | undefined)[]): { total: number; good: number; bad: number; warn: number } {
+  return { total: kinds.length, good: kinds.filter((k) => k === 'good').length, bad: kinds.filter((k) => k === 'bad').length, warn: kinds.filter((k) => k === 'warn').length };
+}
+
+/** One practice shot's set-up line: "aimed at Target 1 · 3 m · back · dim · crossing · 420 ms". */
+export function practiceConditionsText(aimed: string, c: { distance?: number; view?: string; lighting?: string; scenario?: string }, resolveMs: number | null): string {
+  const parts = [`aimed at ${aimed}`];
+  if (c.distance !== undefined) parts.push(`${c.distance} m`);
+  for (const v of [c.view, c.lighting, c.scenario]) if (v) parts.push(v);
+  if (resolveMs !== null) parts.push(`${resolveMs} ms`);
+  return parts.join(' · ');
+}
+
+/** Somebody in a range-test verdict: the id decides right or wrong, the name is only what the banner says. */
+export interface RangeParty {
+  id: string;
+  name: string;
+}
+
+/**
+ * The banner after a range-test shot: what the game decided against who you said you aimed at
+ * (`expected.id` UNKNOWN_ID: nobody). Players are compared by id, never by name: nothing stops two
+ * players in a real room from sharing one (review of 2026-10-01).
+ */
+export function practiceVerdict(expected: RangeParty, resolved: RangeParty | null): { text: string; kind: 'good' | 'warn' | 'bad' } {
+  const nobody = expected.id === UNKNOWN_ID;
+  if (resolved === null) return { text: nobody ? 'NO LOCK (right: not a player)' : `NO LOCK on ${expected.name}`, kind: nobody ? 'good' : 'warn' };
+  if (resolved.id === expected.id) return { text: `HIT ${resolved.name} (right)`, kind: 'good' };
+  if (resolved.name === expected.name) return { text: `WRONG: locked the other ${resolved.name}, not the one you aimed at`, kind: 'bad' };
+  return { text: `WRONG: locked ${resolved.name}, you aimed at ${expected.name}`, kind: 'bad' };
 }

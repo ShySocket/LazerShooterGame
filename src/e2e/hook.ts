@@ -58,6 +58,7 @@ export interface E2EHook {
   enroll: (seed: number, twin?: number) => Promise<void>;
   /** Enrol from real frames with the real models (?e2e&vision only); resolves to the face sample count. */
   enrollFromImages: (urls: string[], seed: number) => Promise<number>;
+  /** One hit as a fresh shot (its own shot id) in the round the room is playing now. */
   hit: (shooter: string, target: string) => Promise<string>;
   deleteRoom: (code: string) => Promise<void>;
   /** Outcomes of every FIRE press on this phone this round, oldest first. */
@@ -105,7 +106,10 @@ export function installE2E(backend: RoomBackend): void {
     hit: async (shooter, target) => {
       const c = code();
       if (!c) throw new Error('not in a room');
-      return backend.registerHit(c, shooter, target, 0.9, 'e2e');
+      // Each call is a new tap in the round the room is playing now, as the game's FIRE sends it.
+      const r = await room(c);
+      const shotId = `e2e-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      return backend.registerHit(c, shooter, target, 0.9, 'e2e', shotId, r?.startAt ?? null);
     },
     shots: () => shotLog.all().map((s) => s.outcome),
     endRound: async () => {

@@ -47,6 +47,8 @@ export interface Profile {
   /** Which face descriptor produced the embeddings, so mismatched profiles are ignored rather than misread. */
   faceModel: string;
   face: number[][];
+  /** Head angle and how each scan sample was taken (the selfie samples, in order); absent on older scans. */
+  faceMeta?: { yaw: number; pitch: number; how: string }[];
   outfit: OutfitSides;
   body?: BodyProps | null;
   bodyModel?: string;
@@ -69,6 +71,27 @@ export interface Player {
   lastHitAt: number;
   eliminatedAt?: number | null;
   tags: number;
+  /**
+   * meta.startAt of the round this player is in, written with the lives by startRound and cleared by
+   * endRound and resetForNewRound, all in whole-room transactions. A hit names the round it was fired
+   * in and lands only while both players still carry it (`evaluatePlayersHit`).
+   */
+  round?: number | null;
+  /** The hits that landed on this player this round, keyed by shot id: a shot is applied at most once. */
+  shots?: Record<string, HitRecord> | null;
+}
+
+/** players/{target}/shots/{shotId}: one applied hit, written in the same transaction that took the life. */
+export interface HitRecord {
+  shooter: string;
+  target: string;
+  /** Server time of the shot (the shooter's server-synchronised clock when it sent the hit); the shield is judged by it. */
+  t: number;
+  score: number;
+  via: string;
+  outcome: 'hit' | 'eliminated';
+  /** meta.startAt of the round it landed in. */
+  round: number;
 }
 
 export interface RoomSettings {
@@ -104,6 +127,12 @@ export const DEFAULT_SETTINGS: RoomSettings = {
   hitThreshold: 0.5,
   hitMargin: 0.2,
 };
+
+/**
+ * The shortest shield after a hit, whatever the lobby says: two shooters tagging the same target in
+ * the same instant cost one life, not two. The lobby field stops here and the hit rule clamps to it.
+ */
+export const MIN_INVULN_MS = 500;
 
 /** Twelve colours that stay apart on a phone screen; a thirteenth player gets a random repeat. */
 export const PLAYER_COLORS = [

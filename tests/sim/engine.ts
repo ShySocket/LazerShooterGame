@@ -316,6 +316,17 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
 /** Shooter profile that is never in frame, so a mirror or twin can be tested against it. */
 const ME: PersonSpec = { id: 'me', player: true, x: -5, distance: 3, facing: 'front', topHue: 9 };
 const front = (id: string, x: number, distance: number, topHue: number, extra: Partial<PersonSpec> = {}): PersonSpec => ({ id, player: true, x, distance, facing: 'front', topHue, ...extra });
+/** Seven people in view (two players, five strangers milling about), one more than the pose model returns. */
+const CROWD_SEVEN: PersonSpec[] = [
+  ME,
+  front('alice', 0.42, 4, 0, { vx: 0.015 }),
+  front('bob', 0.62, 4.5, 4, { vx: -0.015 }),
+  { id: 's1', player: false, x: 0.5, distance: 4.2, facing: 'front', topHue: 0, bottomHue: 3, vx: 0.02 },
+  { id: 's2', player: false, x: 0.12, distance: 5, facing: 'side', topHue: 4, vx: 0.01 },
+  { id: 's3', player: false, x: 0.82, distance: 3.6, facing: 'front', topHue: 8, vx: -0.02 },
+  { id: 's4', player: false, x: 0.3, distance: 6, facing: 'back', topHue: 2 },
+  { id: 's5', player: false, x: 0.92, distance: 5.5, facing: 'front', topHue: 6, vx: -0.01 },
+];
 
 export const SCENARIOS: Scenario[] = [
   {
@@ -353,6 +364,14 @@ export const SCENARIOS: Scenario[] = [
     expect: 'the same crossing while the phone pans 15% of the frame each way every 3 s; the aim keeps following',
     people: [ME, front('alice', 0.2, 4, 0, { vx: 0.04 }), front('bob', 0.8, 4.4, 6, { vx: -0.04 })],
     options: { target: 'alice', durationMs: 15000, pan: { amplitude: 0.15, periodS: 3 } },
+  },
+  {
+    // Review of 2026-10-01: the same pan crossing aimed at the farther player. Geometry under 250 ms
+    // old let an instant hit decide while the pan had already moved the other player under the dot.
+    name: 'pan-crossing-far',
+    expect: 'the pan crossing aimed at the farther player: never the nearer one',
+    people: [ME, front('alice', 0.2, 4, 0, { vx: 0.04 }), front('bob', 0.8, 4.4, 6, { vx: -0.04 })],
+    options: { target: 'bob', durationMs: 15000, pan: { amplitude: 0.15, periodS: 3 } },
   },
   {
     name: 'crossing-backs',
@@ -409,6 +428,82 @@ export const SCENARIOS: Scenario[] = [
     expect: 'a non-player whose face reads about 0.66 like a player, in other clothes: never a hit',
     people: [ME, front('alice', 0.12, 4, 0), { id: 'stranger', player: false, x: 0.5, distance: 3, facing: 'front', topHue: 7, bottomHue: 3, faceLike: { id: 'alice', cos: 0.85 } }],
     options: { target: 'stranger' },
+  },
+  {
+    // Review of 2026-10-01: on a slow phone clothing audits come ~1.8 s apart; a veto that lapses on
+    // a clock (2 s) let the look-alike be hit 42 times in 40 seeds.
+    name: 'lookalike-stranger-slow',
+    expect: 'the look-alike stranger on a phone that takes 400 ms per frame: never a hit',
+    people: [ME, front('alice', 0.12, 4, 0), { id: 'stranger', player: false, x: 0.5, distance: 3, facing: 'front', topHue: 7, bottomHue: 3, faceLike: { id: 'alice', cos: 0.85 } }],
+    options: { target: 'stranger', inferenceMs: 400, cropMs: 45 },
+  },
+  {
+    // Review of 2026-10-01: a look-alike whose torso can never be read is never vetoed, so only the
+    // corroboration rule (the face-only bar without the player's own outfit backing it) refuses him.
+    name: 'lookalike-stranger-hidden',
+    expect: 'a non-player whose face reads about 0.66 like a player and whose torso cannot be read: never a hit',
+    people: [ME, front('alice', 0.12, 4, 0), { id: 'stranger', player: false, x: 0.5, distance: 3, facing: 'front', topHue: 7, bottomHue: 3, faceLike: { id: 'alice', cos: 0.85 }, torsoHidden: 1 }],
+    options: { target: 'stranger' },
+  },
+  {
+    // A player crossing a non-player look-alike: no identity, outfit read or learned face may ride over.
+    name: 'crossing-lookalike-stranger',
+    expect: 'a player and a non-player look-alike cross: the stranger is never hit or locked as her',
+    people: [ME, front('alice', 0.2, 4, 0, { vx: 0.06 }), { id: 'stranger', player: false, x: 0.8, distance: 4.2, facing: 'front', topHue: 7, bottomHue: 3, vx: -0.06, faceLike: { id: 'alice', cos: 0.85 } }],
+    options: { target: 'stranger', durationMs: 15000 },
+  },
+  {
+    // Fairness: a player whose hips are never in view faces the face-only bar.
+    name: 'duel-hidden-torso',
+    expect: 'face-on at 3 m with the torso never readable: hits only on a clear face, never wrong',
+    people: [ME, front('alice', 0.5, 3, 0, { torsoHidden: 1 }), front('bob', 0.12, 5, 4)],
+    options: { target: 'alice' },
+  },
+  {
+    // Review of 2026-10-01: an identity must not ride across a crossing onto the wrong body. Two
+    // players whose faces read 0.66 alike cross; the shooter keeps aiming at bob.
+    name: 'crossing-lookalike-faces',
+    expect: 'two players with look-alike faces cross: shots on bob never land on alice',
+    people: [ME, front('alice', 0.2, 4, 0, { vx: 0.06 }), front('bob', 0.8, 4.2, 6, { vx: -0.06, faceLike: { id: 'alice', cos: 0.85 } })],
+    options: { target: 'bob', durationMs: 15000 },
+  },
+  {
+    // The reverse failure of the outfit veto: a real player whose clothing is misread a quarter of the
+    // time gets vetoed on their own body; that must cost a refusal, never a hit on someone else.
+    name: 'vetoed-player',
+    expect: 'a player whose outfit is misread on a quarter of samples: refusals at worst, never a wrong hit',
+    people: [ME, front('alice', 0.5, 3, 0, { outfitGlitch: 0.25 }), front('bob', 0.15, 4, 6)],
+    options: { target: 'alice' },
+  },
+  {
+    // Review of 2026-10-01: a practice target captured without the hips has no outfit, so the
+    // outfit veto cannot protect it; a look-alike stranger must still be refused.
+    name: 'lookalike-stranger-faceonly',
+    expect: 'a face-only target (no outfit enrolled) and a non-player whose face reads about 0.66 like them: never a hit',
+    people: [ME, front('alice', 0.12, 4, 0, { faceOnlyProfile: true }), { id: 'stranger', player: false, x: 0.5, distance: 3, facing: 'front', topHue: 7, bottomHue: 3, faceLike: { id: 'alice', cos: 0.85 } }],
+    options: { target: 'stranger' },
+  },
+  {
+    name: 'duel-faceonly',
+    expect: 'face-on at 3 m against a face-only target: hits only on a clear face, never wrong',
+    people: [ME, front('alice', 0.5, 3, 0, { faceOnlyProfile: true }), front('bob', 0.12, 5, 4)],
+    options: { target: 'alice' },
+  },
+  {
+    // Astra review 2026-10-01: MoveNet returns six bodies at most, so in a crowd somebody is always
+    // missing and who it is changes frame to frame; a stranger in the target's colours stands beside her.
+    name: 'crowd-seven',
+    expect: 'seven people in view (two players, five strangers milling about): never a wrong hit or lock',
+    people: CROWD_SEVEN,
+    options: { target: 'alice' },
+  },
+  {
+    // Review of 2026-10-01: the crowd rule measured the read's age against the decision clock, so a
+    // phone that decides more than 400 ms after the capture refused every crowded shot.
+    name: 'crowd-seven-slow',
+    expect: 'crowd-seven on a phone that takes 400 ms per frame: crowded frames still hit on their own face read, never wrong',
+    people: CROWD_SEVEN,
+    options: { target: 'alice', inferenceMs: 400, cropMs: 45 },
   },
   {
     name: 'mirror',

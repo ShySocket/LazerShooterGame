@@ -43,6 +43,12 @@ test('[practice-solo] one phone: capture a target, aim at her, the verdict is ri
     await me.page.getByRole('button', { name: 'Done' }).click();
     await me.page.getByRole('button', { name: 'Start game' }).click();
     await me.page.getByLabel('Expected range test target').selectOption({ label: 'Target 1' });
+    // The set-up chips go with every shot's label (Astra's session matrix: distance, view, light, scenario).
+    await me.page.getByRole('button', { name: '1.5 m' }).click();
+    await me.page.getByRole('group', { name: 'Light' }).getByRole('button', { name: 'dim' }).click();
+    await me.page.getByRole('group', { name: 'Doing' }).getByRole('button', { name: 'walking' }).click();
+    // Practice fires only once the round runs, so every shot is logged (none are lost in the countdown).
+    await expect(me.page.locator('button.fire')).toBeEnabled({ timeout: 15_000 });
     const verdicts: string[] = [];
     for (let i = 0; i < 30 && !verdicts.some((v) => v.startsWith('HIT Target 1')); i++) {
       await tapFire(me);
@@ -50,11 +56,14 @@ test('[practice-solo] one phone: capture a target, aim at her, the verdict is ri
       const text = await me.page.locator('.banner span').first().textContent().catch(() => null);
       if (text && verdicts.at(-1) !== text) verdicts.push(text);
     }
+    await me.page.screenshot({ path: join(ROOT, '.rubric', 'realcheck', 'practice-range-panel.png') });
     expect(verdicts.filter((v) => v.startsWith('WRONG')), verdicts.join(' | ')).toEqual([]);
     expect(verdicts.some((v) => v.startsWith('HIT Target 1 (right)')), verdicts.join(' | ')).toBe(true);
-    const logged = await me.page.evaluate(() => (window as unknown as { __lz: { backend: { feedback: { sample: { label?: { kind: string } } }[] } } }).__lz.backend.feedback.map((f) => f.sample.label?.kind));
+    const logged = await me.page.evaluate(() => (window as unknown as { __lz: { backend: { feedback: { sample: { v: number; app: { calibration?: string }; label?: { kind: string; distance?: number; view?: string; lighting?: string; scenario?: string; source?: string } } }[] } } }).__lz.backend.feedback.map((f) => ({ ...f.sample.label, v: f.sample.v, calibration: f.sample.app.calibration })));
     expect(logged.length).toBeGreaterThan(0);
-    expect(logged.every((k) => k === 'player')).toBe(true);
+    expect(logged.every((l) => l.kind === 'player')).toBe(true);
+    expect(logged[0]).toMatchObject({ distance: 1.5, view: 'front', lighting: 'dim', scenario: 'walking', source: 'practice', v: 2 });
+    expect(logged[0].calibration).toBeTruthy();
     // Two shots deliberately labelled "Not a player" while she is in frame: seed data for
     // npm run feedback:pull, whose wrong-shot listing must name them.
     await me.page.getByLabel('Expected range test target').selectOption({ label: 'Not a player / empty space' });
@@ -66,6 +75,19 @@ test('[practice-solo] one phone: capture a target, aim at her, the verdict is ri
     const seed = await me.page.evaluate(() => (window as unknown as { __lz: { backend: { feedback: unknown[] } } }).__lz.backend.feedback);
     mkdirSync(join(ROOT, '.rubric', 'feedback'), { recursive: true });
     writeFileSync(join(ROOT, '.rubric', 'feedback', 'seed-practice.json'), JSON.stringify(seed));
+    // The practice review on Results: every shot with its photo (kept on the phone), the verdict and the set-up.
+    await me.page.getByRole('button', { name: 'end round' }).click();
+    const review = me.page.getByRole('region', { name: 'Practice review' });
+    await expect(review).toBeVisible({ timeout: 20_000 });
+    await expect(review.locator('.practice-shot').first()).toBeVisible();
+    await expect(review.locator('.practice-shot img').first()).toBeVisible();
+    await expect(review.getByText(/HIT Target 1 \(right\)/).first()).toBeVisible();
+    await expect(review.getByText(/aimed at Target 1 · 1\.5 m · front · dim · walking/).first()).toBeVisible();
+    await me.page.screenshot({ path: join(ROOT, '.rubric', 'realcheck', 'practice-review.png'), fullPage: true });
+    await review.getByRole('button', { name: 'Wrong' }).click();
+    await expect(review.locator('.practice-shot.bad')).toHaveCount(await review.locator('.practice-shot').count());
+    await review.getByRole('button', { name: 'Delete these photos' }).click();
+    await expect(review).toBeHidden();
   } finally {
     await closeAll([me]);
     await browser.close();

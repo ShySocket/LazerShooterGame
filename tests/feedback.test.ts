@@ -7,7 +7,7 @@ import type { NBox } from '../src/vision/geometry';
 import { ShotRecorder } from '../src/feedback/recorder';
 import { IdMap, pickReviewShot, roundKey, trimSample, type ShotSample } from '../src/feedback/sample';
 import { agreement, asPlayed, collectSamples, evaluate, judge, normaliseSample, replayShot, sweep } from '../src/feedback/replay';
-import { FeedbackStore, MAX_SHOTS_PER_ROUND, MAX_UPLOAD_ATTEMPTS, MemoryBacking } from '../src/feedback/store';
+import { FeedbackStore, MAX_SHOTS_PER_ROUND, MAX_UPLOAD_ATTEMPTS, MemoryBacking, ROUND_TTL_MS } from '../src/feedback/store';
 import { DEFAULT_SETTINGS } from '../src/types';
 
 /**
@@ -43,11 +43,11 @@ const PERIOD = 220;
 const body = (box: NBox): Detection => ({ box, body: { keypoints: [] } as unknown as Detection['body'] });
 
 /** A round of Bob alone, recorded: `frames` drives the pipeline through recorder-wrapped ops. */
-function harness() {
+function harness(candidates = CANDIDATES) {
   const clock = { now: 0 };
   const eligible = new Set(['alice', 'bob']);
   const pipeline = new VisionPipeline<{ shotId: string }>(
-    { candidates: CANDIDATES, exclusiveIds: new Set(CANDIDATES.map((c) => c.id)), eligible, hitThreshold: 0.5, hitMargin: 0.2 },
+    { candidates, exclusiveIds: new Set(candidates.map((c) => c.id)), eligible, hitThreshold: 0.5, hitMargin: 0.2 },
     () => clock.now,
   );
   const recorder = new ShotRecorder();
@@ -63,7 +63,7 @@ function harness() {
     const ops = recorder.wrapOps(raw, dets);
     const out = await pipeline.processFrame(dets, capturedAt, 1280, 720, crosshair, ops);
     assert.ok(out, 'frame abandoned');
-    recorder.frameDone(out, dets, capturedAt, CANDIDATES);
+    recorder.frameDone(out, dets, capturedAt, candidates);
     t = capturedAt + PERIOD;
     return out;
   };
@@ -128,6 +128,22 @@ test('a recorded instant hit names nobody and carries the raw similarities behin
   assert.equal(sample.target?.faceMean?.length, 64);
   assert.deepEqual(sample.target?.outfit, { top: [1], thighs: [1] });
   assert.ok(sample.frames.some((f) => f.tracks[0].outfit?.match[bob]), 'outfit matches recorded');
+  // v2 trace (Astra review): every decision can be explained from the sample alone.
+  const { CALIBRATION_VERSION } = await import('../src/vision/calibration');
+  assert.equal(sample.v, 2);
+  assert.equal(sample.app.calibration, CALIBRATION_VERSION);
+  const final = sample.frames[6];
+  assert.equal(final.bodies, 1);
+  const tr = final.tracks[0];
+  assert.deepEqual(tr.vetoed, [], 'Bob\'s own outfit vetoes nobody');
+  assert.equal(typeof tr.clothingAgeMs, 'number', 'the age of the last outfit read is recorded');
+  assert.equal(tr.unconfirmed, false);
+  assert.equal(tr.reacquiring, false);
+  assert.equal(tr.overlapping, false);
+  assert.equal(tr.crowded, false);
+  assert.equal(faceFrames.every((f) => f.tracks[0].freshFace), true, 'a frame with a face read is marked fresh');
+  assert.ok(sample.frames.some((f) => !f.tracks[0].face && f.tracks[0].freshFace === false), 'a frame without a read is marked as carried');
+  assert.deepEqual(tr.hit, tr.hit.map((v) => Math.round(v * 1000) / 1000), 'the observed hit region is recorded');
 });
 
 test('a tap at empty space is recorded as a miss with no target, and only failed shots with a body are preferred for review', async () => {
@@ -203,6 +219,75 @@ test('a burst records the frames after the tap and the replay reproduces the ver
   const missNone = normaliseSample(JSON.parse(JSON.stringify({ ...none, shot: { ...none.shot, resolvedTo: null } }, (_k, v) => (v === null ? undefined : v))));
   assert.equal(asPlayed(missNone), null);
   assert.equal(replayShot({ ...labelled, frames: labelled.frames.map((f, i) => (i === 1 ? { ...f, tracks: f.tracks.map((t) => ({ ...t, conflict: true })) } : f)) }).resolved, null, 'an identity conflict at decision time refuses the hit');
+  const withGate = (g: Record<string, unknown>) => replayShot({ ...back, shot: { ...back.shot, decidedAtFrame: 2 }, frames: back.frames.map((f, i) => (i === 2 ? { ...f, tracks: f.tracks.map((t) => ({ ...t, ...g })) } : f)) }).resolved;
+  assert.equal(withGate({}), bob, 'the v2 fields absent: judged on belief alone');
+  assert.equal(withGate({ unconfirmed: true }), null, 'an identity not yet re-earned refuses the hit');
+  assert.equal(withGate({ vetoed: [bob] }), null, 'a player the outfit rules out is refused');
+  assert.equal(withGate({ crowded: true }), bob, 'a crowded frame whose own read names the player by the margin may hit');
+  assert.equal(withGate({ overlapping: true }), bob, 'so may an overlap');
+});
+
+test('the replay applies the game\'s overlap/crowd rule: the body\'s latest read, from within 400 ms of the deciding frame, naming the player by the margin', async () => {
+  // Six bodies (BODY_CAP): every frame is crowded. Bob, confident, is cropped every other frame, so a
+  // tap after an uncropped frame hits at once on the read from the frame before (review of 2026-10-01:
+  // the replay refused those because the deciding frame had no read of its own).
+  const bystanders = [0.0, 0.08, 0.16, 0.78, 0.88].map((x) => body([x, 0.3, 0.07, 0.4]));
+  const scene = [body(BOB_BOX), ...bystanders];
+  const h = harness();
+  let carried = false;
+  for (let i = 0; i < 16 && !carried; i++) {
+    const out = await h.frame(scene);
+    assert.ok(out.crowded, 'six bodies: the crowd rule applies');
+    const L = h.pipeline.getLatest()!;
+    carried = out.lock?.kind === 'lock' && L.tracks[0].lastFaceAt < L.t;
+  }
+  assert.ok(carried, 'Bob locked on a crowded frame without a crop of his own');
+  const result = h.tap('c1');
+  assert.equal(result.kind, 'instant');
+  const settlement = result.kind === 'instant' ? result.settlement : null;
+  assert.equal(settlement?.resolution?.id, 'bob');
+  const sample = h.recorder.endShot('c1', { outcome: 'hit', resolvedTo: 'bob', via: 'face', resolveMs: 0, zoom: false, track: settlement!.track, settledBy: 'tap' })!;
+  const ids = new IdMap(['me', 'alice', 'bob']);
+  const bob = ids.pid('bob');
+  const last = sample.frames.length - 1;
+  const decision = sample.frames[last].tracks[0];
+  assert.equal(decision.crowded, true);
+  assert.equal(decision.freshFace, false, 'the deciding frame carried the read from the frame before');
+  assert.ok(sample.frames[last - 1].tracks[0].face, 'the frame before read Bob\'s face');
+  assert.equal(replayShot(sample).resolved, bob, 'the replay lands where the game did');
+  assert.equal(agreement([sample]), 1);
+
+  // The same sample with the read frame edited: the rule's every part refuses on its own.
+  const readFrame = last - 1;
+  const edit = (f: (t: ShotSample['frames'][number]['tracks'][number]) => ShotSample['frames'][number]['tracks'][number], frameAt = readFrame, dt = 0) =>
+    replayShot({ ...sample, frames: sample.frames.map((fr, i) => (i === frameAt ? { ...fr, t: fr.t + dt, tracks: fr.tracks.map((t, j) => (j === 0 ? f(t) : t)) } : fr)) }).resolved;
+  assert.equal(edit((t) => t, last, 200), null, 'a read from more than 400 ms before the deciding frame refuses');
+  assert.equal(edit((t) => t, last, 150), bob, 'one from within 400 ms of it does not');
+  assert.equal(sample.frames[readFrame].tracks[0].face?.corroborated, undefined, 'Bob\'s scan has no trousers: his outfit never backs his face');
+  const withSims = (sims: Record<string, number>, corroborated?: string[]) => (t: ShotSample['frames'][number]['tracks'][number]) => ({ ...t, face: { sims, meanSims: t.face!.meanSims, quality: t.face!.quality, ...(corroborated ? { corroborated } : {}) } });
+  assert.equal(edit(withSims({ [bob]: 0.5, [ids.pid('alice')]: 0.1, [ids.pid('me')]: 0.1 })), null, 'a read that names the stranger refuses');
+  assert.equal(edit(withSims({ [bob]: 0.9, [ids.pid('alice')]: 0.85, [ids.pid('me')]: 0.1 })), null, 'a read without the margin over the runner-up refuses');
+  // The bar each face was judged at is part of the read: 0.8 is a clear read at the normal bar and a
+  // thin one at the face-only bar (FACE_ONLY_CALIB) a face without its outfit's backing gets.
+  const corroboratedRead = withSims({ [bob]: 0.8, [ids.pid('alice')]: 0.1, [ids.pid('me')]: 0.1 }, [bob]);
+  assert.equal(edit(withSims({ [bob]: 0.8, [ids.pid('alice')]: 0.1, [ids.pid('me')]: 0.1 })), null, 'an uncorroborated face at 0.8 does not clear the face-only bar by the margin');
+  assert.equal(edit(corroboratedRead), bob, 'the same face backed by Bob\'s own outfit does');
+  const uncrowded = (t: ShotSample['frames'][number]['tracks'][number]) => ({ ...t, crowded: false });
+  assert.equal(replayShot({ ...sample, frames: sample.frames.map((fr, i) => (i === readFrame ? { ...fr, tracks: fr.tracks.map((t, j) => (j === 0 ? withSims({ [bob]: 0.9, [ids.pid('alice')]: 0.85 })(t) : t)) } : i === last ? { ...fr, tracks: fr.tracks.map((t, j) => (j === 0 ? uncrowded(t) : t)) } : fr)) }).resolved, bob, 'outside a crowd or an overlap the read is not consulted');
+  // A database export drops an empty corroboration list and keeps a full one.
+  const exported = collectSamples({ s: JSON.parse(JSON.stringify({ ...sample, frames: sample.frames.map((fr, i) => (i === readFrame ? { ...fr, tracks: fr.tracks.map((t, j) => (j === 0 ? corroboratedRead(t) : t)) } : fr)) })) })[0];
+  assert.deepEqual(exported.frames[readFrame].tracks[0].face?.corroborated, [bob]);
+
+  // A scan with top and trousers that the body matches: the recorder marks Bob's face as backed.
+  const full = { faceModel: 'test', outfit: { front: { top: [1], thighs: [1] }, back: { top: [1], thighs: [1] } } };
+  const q = harness(CANDIDATES.map((c) => ({ id: c.id, profile: { ...full, face: c.profile.face } })));
+  for (let i = 0; i < 3; i++) await q.frame([body(BOB_BOX)]);
+  q.tap('c2');
+  const backed = q.recorder.endShot('c2', { outcome: 'miss', resolvedTo: null, via: null, resolveMs: 0, zoom: false, track: null, settledBy: 'tap' })!;
+  assert.ok(
+    backed.frames.some((f) => f.tracks[0].face?.corroborated?.includes(bob)),
+    'a face read while the outfit backs it records who it was backed for',
+  );
 });
 
 test('a sample that grows past the upload budget loses its oldest frames first', () => {
@@ -220,6 +305,34 @@ test('a sample that grows past the upload budget loses its oldest frames first',
   assert.equal(trimmed.frames[trimmed.frames.length - 1].t, 11, 'the newest frame survives');
   assert.equal(trimmed.shot.decidedAtFrame, trimmed.frames.length - 1);
   assert.equal(trimSample(big).frames.length, 12, 'a small sample is untouched');
+});
+
+test('practice shots keep their photos for the practice review, apart from the review card', async () => {
+  const store = new FeedbackStore(new MemoryBacking());
+  const now = Date.now();
+  const sample = (id: string): ShotSample => ({
+    v: 2,
+    app: { commit: 'x', faceModel: 'x', bodyModel: 'x', ua: 'x' },
+    round: { key: 'P1', code: 'ABCD', startAt: 1, settings: DEFAULT_SETTINGS, players: 2, shooter: 'p0', eligible: ['p1'] },
+    device: { periodMs: 200, staleMs: 520, burstMs: 500, width: 1280, height: 720 },
+    shot: { id, roundMs: 0, outcome: 'unclear', kind: 'pending', resolvedTo: null, via: null, resolveMs: 0, zoom: false, frameAgeMs: 0, allowanceMs: 0, crosshair: [0, 0, 1, 1], trackId: 1, decidedAtFrame: -1, settledBy: 'frame', decisionTrackId: null, decisionBelief: null },
+    frames: [],
+    target: null,
+    label: { kind: 'player', target: 'p1', answeredAt: now, reviewMs: 0, distance: 3, view: 'back', lighting: 'dim', scenario: 'crossing' },
+  });
+  const photo = new Blob(['jpeg'], { type: 'image/jpeg' });
+  await store.beginRound({ key: 'P1', code: 'ABCD', startAt: now, ids: ['a', 'b'], profiles: {} });
+  for (let i = 0; i < 3; i++) {
+    await store.saveShot({ id: `p${i}`, round: 'P1', outcome: 'unclear', hadTrack: true, roundMs: i, sample: sample(`p${i}`), photo, practice: { verdict: 'NO LOCK on Target 1', kind: 'warn', aimed: 'Target 1', resolved: null, resolveMs: 400 } });
+  }
+  assert.equal((await store.pendingReview())?.shots.length, 0, 'the review card never asks about a practice shot');
+  await store.finishReview('P1');
+  const kept = await store.practiceShots();
+  assert.equal(kept?.shots.length, 3, 'closing the review card keeps the practice photos');
+  assert.equal(kept?.shots[0].photo, photo);
+  assert.equal(kept?.shots[0].sample.label?.view, 'back');
+  await store.clearPractice('P1');
+  assert.equal(await store.practiceShots(), null, 'clearing the practice review deletes its photos');
 });
 
 test('the on-phone store caps failed shots per round, keeps only the newest round, and retries queued uploads', async () => {
@@ -262,4 +375,38 @@ test('the on-phone store caps failed shots per round, keeps only the newest roun
   await store.enqueue({ id: 'u2', round: 'R1', sample: sample('u2'), profiles: null });
   for (let i = 0; i < MAX_UPLOAD_ATTEMPTS; i++) await store.flush(async () => { throw new Error('refused'); });
   assert.deepEqual(await store.queued(), [], 'an upload refused every time is not kept forever');
+});
+
+test('range-test photos never outlive ROUND_TTL_MS: the store drops expired rounds, reviewed or not, when the app starts', async () => {
+  const backing = new MemoryBacking();
+  const store = new FeedbackStore(backing);
+  const now = Date.now();
+  const startAt = now - ROUND_TTL_MS + 60_000;
+  const sample = { v: 2, round: { key: 'OLD', startAt }, shot: { id: 'x', roundMs: 0 }, frames: [] } as unknown as ShotSample;
+  const photo = new Blob(['jpeg'], { type: 'image/jpeg' });
+  // A real room's range test: other players' crosshair frames, then the review card answered.
+  await store.beginRound({ key: 'OLD', code: 'ABCD', startAt, ids: ['a', 'b'], profiles: {} });
+  for (let i = 0; i < 3; i++) await store.saveShot({ id: `r${i}`, round: 'OLD', outcome: 'hit', hadTrack: true, roundMs: i, sample, photo, practice: { verdict: 'HIT Sam (right)', kind: 'good', aimed: 'Sam', resolved: 'Sam', resolveMs: 0 } });
+  await store.finishReview('OLD');
+  await store.enqueue({ id: 'q1', round: 'OLD', sample, profiles: null });
+  assert.equal((await backing.all('shots')).length, 3, 'the practice photos outlast the review card');
+
+  // Two minutes later the round has passed the TTL; the phone never starts another one, so only
+  // the app starting again (a new store over the same IndexedDB) can find it.
+  const realNow = Date.now;
+  Date.now = () => now + 120_000;
+  try {
+    assert.equal(await store.pendingReview(), null, 'a reviewed round is never asked about again');
+    const reopened = new FeedbackStore(backing);
+    assert.equal((await reopened.queued()).length, 1, 'queued labelled samples are not photos: they stay for the next upload');
+    assert.deepEqual(await backing.all('shots'), [], 'every photo of the expired round is gone');
+    assert.deepEqual(await backing.all('rounds'), [], 'and so is the round');
+    // A round within the TTL survives the start-up prune.
+    await reopened.beginRound({ key: 'NEW', code: 'ABCD', startAt: now, ids: ['a', 'b'], profiles: {} });
+    await reopened.saveShot({ id: 'n0', round: 'NEW', outcome: 'hit', hadTrack: true, roundMs: 0, sample, photo, practice: { verdict: 'HIT Sam (right)', kind: 'good', aimed: 'Sam', resolved: 'Sam', resolveMs: 0 } });
+    const again = new FeedbackStore(backing);
+    assert.equal((await again.practiceShots())?.shots.length, 1, 'a fresh round keeps its practice photos');
+  } finally {
+    Date.now = realNow;
+  }
 });

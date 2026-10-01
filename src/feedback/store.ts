@@ -2,9 +2,11 @@ import type { ProfilesSnapshot, ShotSample } from './sample';
 
 /**
  * On-phone storage for shot feedback. Photos and unlabelled samples live here between the round and
- * the results screen (IndexedDB, so a reload on the way does not lose them), and uploads that failed
- * for lack of a connection wait here for the next chance. Nothing in this store leaves the phone
- * except a sample the shooter explicitly labelled, and photos never do.
+ * the results screen, practice photos until their review is cleared (IndexedDB, so a reload on the
+ * way does not lose them), and never longer than ROUND_TTL_MS: older rounds go, photos included, when
+ * the store opens at app start. Uploads that failed for lack of a connection wait here for the next
+ * chance. Nothing in this store leaves the phone except a sample the shooter explicitly labelled,
+ * and photos never do.
  */
 export interface StoredRound {
   key: string;
@@ -25,6 +27,11 @@ export interface StoredShot {
   roundMs: number;
   sample: ShotSample;
   photo: Blob | null;
+  /**
+   * Practice shots: kept for the on-phone practice review, never shown on the review card (their label
+   * was given at the tap). Names are the phone's own labels and stay here; only the sample was uploaded.
+   */
+  practice?: { verdict: string; kind: 'good' | 'warn' | 'bad'; aimed: string; resolved: string | null; resolveMs: number };
 }
 
 export interface QueuedUpload {
@@ -37,13 +44,15 @@ export interface QueuedUpload {
 
 /** Failed shots kept per round; the oldest go first once the cap is reached. */
 export const MAX_SHOTS_PER_ROUND = 40;
+/** Practice shots kept per round with their photos (about 50 kB each), for the practice review. */
+export const MAX_PRACTICE_SHOTS = 150;
 /**
  * A queued upload refused this many times is dropped: either it already went through (its key is
  * write-once) or the database rules were never published, and the queue is not a permanent archive.
  */
 export const MAX_UPLOAD_ATTEMPTS = 12;
-/** A round nobody reviewed within this long is dropped with its photos; nobody reviews yesterday's shots. */
-const ROUND_TTL_MS = 6 * 3600 * 1000;
+/** A round older than this is dropped with its photos, reviewed or not; nobody reviews yesterday's shots. */
+export const ROUND_TTL_MS = 6 * 3600 * 1000;
 const DB_NAME = 'lz-feedback';
 const DB_VERSION = 1;
 type StoreName = 'rounds' | 'shots' | 'queue';
@@ -118,7 +127,23 @@ export class FeedbackStore {
   private backing: Promise<Backing>;
 
   constructor(backing?: Backing) {
-    this.backing = backing ? Promise.resolve(backing) : FeedbackStore.openBacking();
+    // Opening the store (at app start, for the app's own instance) first drops every expired round:
+    // a reviewed round's practice photos are reached by no other cleanup unless another round starts
+    // (review of 2026-10-01). Every operation waits for it.
+    this.backing = (backing ? Promise.resolve(backing) : FeedbackStore.openBacking()).then(async (b) => {
+      try {
+        await FeedbackStore.pruneExpired(b);
+      } catch (e) {
+        console.warn('feedback store prune', e);
+      }
+      return b;
+    });
+  }
+
+  /** Drop every round older than ROUND_TTL_MS, whatever its review state, with all its shots and photos. */
+  private static async pruneExpired(b: Backing): Promise<void> {
+    const now = Date.now();
+    for (const r of await b.all<StoredRound>('rounds')) if (now - r.startAt > ROUND_TTL_MS) await FeedbackStore.dropRound(b, r.key);
   }
 
   private static async openBacking(): Promise<Backing> {
@@ -147,36 +172,52 @@ export class FeedbackStore {
    */
   beginRound(round: Omit<StoredRound, 'reviewed'>): Promise<void> {
     return this.safe(undefined, async (b) => {
-      for (const r of await b.all<StoredRound>('rounds')) if (r.key !== round.key) await this.dropRound(b, r.key);
+      for (const r of await b.all<StoredRound>('rounds')) if (r.key !== round.key) await FeedbackStore.dropRound(b, r.key);
       const existing = await b.get<StoredRound>('rounds', round.key);
       await b.put('rounds', { ...round, reviewed: existing?.reviewed ?? false });
     });
   }
 
-  private async dropRound(b: Backing, key: string): Promise<void> {
+  private static async dropRound(b: Backing, key: string): Promise<void> {
     for (const s of await b.all<StoredShot>('shots')) if (s.round === key) await b.delete('shots', s.id);
     await b.delete('rounds', key);
   }
 
   saveShot(shot: StoredShot): Promise<void> {
     return this.safe(undefined, async (b) => {
-      const same = (await b.all<StoredShot>('shots')).filter((s) => s.round === shot.round).sort((x, y) => x.roundMs - y.roundMs);
-      while (same.length >= MAX_SHOTS_PER_ROUND) await b.delete('shots', same.shift()!.id);
+      const kind = Boolean(shot.practice);
+      const same = (await b.all<StoredShot>('shots')).filter((s) => s.round === shot.round && Boolean(s.practice) === kind).sort((x, y) => x.roundMs - y.roundMs);
+      while (same.length >= (kind ? MAX_PRACTICE_SHOTS : MAX_SHOTS_PER_ROUND)) await b.delete('shots', same.shift()!.id);
       await b.put('shots', shot);
+    });
+  }
+
+  /** The newest round's practice shots, oldest first, with their photos; null when there are none. */
+  practiceShots(): Promise<{ round: StoredRound; shots: StoredShot[] } | null> {
+    return this.safe(null, async (b) => {
+      await FeedbackStore.pruneExpired(b);
+      const round = (await b.all<StoredRound>('rounds')).sort((x, y) => y.startAt - x.startAt)[0];
+      if (!round) return null;
+      const shots = (await b.all<StoredShot>('shots')).filter((s) => s.round === round.key && s.practice).sort((x, y) => x.roundMs - y.roundMs);
+      return shots.length ? { round, shots } : null;
+    });
+  }
+
+  /** The shooter cleared the practice review: its photos go. */
+  clearPractice(key: string): Promise<void> {
+    return this.safe(undefined, async (b) => {
+      for (const s of await b.all<StoredShot>('shots')) if (s.round === key && s.practice) await b.delete('shots', s.id);
     });
   }
 
   /** The newest round on this phone that has not been reviewed yet, with its stored shots. */
   pendingReview(): Promise<{ round: StoredRound; shots: StoredShot[] } | null> {
     return this.safe(null, async (b) => {
+      await FeedbackStore.pruneExpired(b);
       const rounds = (await b.all<StoredRound>('rounds')).filter((r) => !r.reviewed).sort((x, y) => y.startAt - x.startAt);
       const round = rounds[0];
       if (!round) return null;
-      if (Date.now() - round.startAt > ROUND_TTL_MS) {
-        await this.dropRound(b, round.key);
-        return null;
-      }
-      const shots = (await b.all<StoredShot>('shots')).filter((s) => s.round === round.key).sort((x, y) => x.roundMs - y.roundMs);
+      const shots = (await b.all<StoredShot>('shots')).filter((s) => s.round === round.key && !s.practice).sort((x, y) => x.roundMs - y.roundMs);
       return { round, shots };
     });
   }
@@ -185,10 +226,10 @@ export class FeedbackStore {
     return this.safe(undefined, (b) => b.delete('shots', id));
   }
 
-  /** The round's review is over: drop every photo it still holds. */
+  /** The round's review card is over: drop every photo it still holds (practice shots wait for their own review). */
   finishReview(key: string): Promise<void> {
     return this.safe(undefined, async (b) => {
-      for (const s of await b.all<StoredShot>('shots')) if (s.round === key) await b.delete('shots', s.id);
+      for (const s of await b.all<StoredShot>('shots')) if (s.round === key && !s.practice) await b.delete('shots', s.id);
       const round = await b.get<StoredRound>('rounds', key);
       if (round) await b.put('rounds', { ...round, reviewed: true });
     });

@@ -74,8 +74,8 @@ test('[real-vision-round] real models on a real clip: the person in front of the
     await joinAs(other, code);
     // The shooter never appears in frame: a synthetic profile is only a decoy candidate.
     await shooter.page.evaluate(() => window.__lzE2E.enroll(1));
-    expect(await target.page.evaluate((u) => window.__lzE2E.enrollFromImages(u, 2), frames(TARGET_CLIP))).toBe(8);
-    expect(await other.page.evaluate((u) => window.__lzE2E.enrollFromImages(u, 3), frames(OTHER_CLIP))).toBe(8);
+    expect(await target.page.evaluate((u) => window.__lzE2E.enrollFromImages(u, 2), frames(TARGET_CLIP))).toBeGreaterThanOrEqual(5);
+    expect(await other.page.evaluate((u) => window.__lzE2E.enrollFromImages(u, 3), frames(OTHER_CLIP))).toBeGreaterThanOrEqual(5);
     await expect(shooter.page.getByRole('button', { name: 'Start game' })).toBeEnabled({ timeout: 30_000 });
     await shooter.page.getByRole('button', { name: 'Start game' }).click();
     await waitForRoom(shooter, (r) => r.status === 'playing', 'the round to start', 30_000);

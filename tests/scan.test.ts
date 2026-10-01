@@ -194,11 +194,12 @@ test('patience: after six seconds the best right-way frame stands in for the pro
 });
 
 test('the face stage completes for a person who only turns one way, by patience and Skip, and never compares faces', async () => {
-  const { faceStageStep, initialFaceStage, skipFaceAngle } = await import('../src/vision/scan');
+  const { faceStageStep, initialFaceStage, skipFaceAngle, faceStageDone } = await import('../src/vision/scan');
+  const { FACE_MIN_SAMPLES } = await import('../src/vision/embedding');
   // A talker: small turns to one side only, chin only up. Different embedding every frame (no similarity gate may refuse it).
   let st = initialFaceStage(0);
   let skips = 0;
-  for (let t = 0; t < 120_000 && st.samples.length < FACE_SAMPLES; t += 100) {
+  for (let t = 0; t < 120_000 && !faceStageDone(st, FACE_SAMPLES, FACE_MIN_SAMPLES); t += 100) {
     const yaw = 10 * Math.sin(t / 900) - 8;
     const pitch = 6 + 4 * Math.sin(t / 1300);
     let r = faceStageStep(st, { t, faces: 1, box: [0.4, 0.3, 0.2, 0.25], blocked: '', yaw, pitch, embedding: [Math.sin(t), Math.cos(t)] });
@@ -211,8 +212,35 @@ test('the face stage completes for a person who only turns one way, by patience 
     }
     st = r.stage;
   }
-  assert.equal(st.samples.length, FACE_SAMPLES, 'all eight angles end up taken');
+  assert.ok(faceStageDone(st, FACE_SAMPLES, FACE_MIN_SAMPLES), 'the scan finishes');
   assert.ok(skips >= 1 && skips <= 4, `skips only for the moves never made: ${skips}`);
+  assert.equal(st.samples.length + st.skipped >= FACE_SAMPLES, true);
+  assert.ok(st.samples.length >= FACE_MIN_SAMPLES, 'at least the minimum of real samples');
+  assert.ok(st.samples.every((x) => Math.abs(x.yaw) <= SCAN_CALIB.enrolYawMax), 'no template beyond what a round matches');
+});
+
+test('a skipped angle stays missing: no template stands in for it, and extra looks reach the minimum', async () => {
+  const { faceStageStep, initialFaceStage, skipFaceAngle, faceStageDone, needsExtra } = await import('../src/vision/scan');
+  const { FACE_MIN_SAMPLES } = await import('../src/vision/embedding');
+  let st = initialFaceStage(0);
+  const obs = (t: number, yaw: number) => ({ t, faces: 1, box: [0.4, 0.3, 0.2, 0.25] as NBox, blocked: '', yaw, pitch: 0, embedding: [t, 1] });
+  let t = SCAN_CALIB.settleMs;
+  for (let i = 0; i < SCAN_CALIB.holdFrames; i++, t += 100) st = faceStageStep(st, obs(t, 2)).stage;
+  assert.equal(st.samples.length, 1, 'straight ahead taken');
+  // Skip the other seven prompts.
+  for (let i = 0; i < FACE_SAMPLES - 1; i++) st = skipFaceAngle(st, (t += 100))!.stage;
+  assert.equal(st.samples.length, 1, 'skips add no sample');
+  assert.equal(st.skipped, FACE_SAMPLES - 1);
+  assert.ok(needsExtra(st, FACE_SAMPLES, FACE_MIN_SAMPLES), 'too few real samples: extra looks');
+  assert.equal(skipFaceAngle(st, t), null, 'extra looks cannot be skipped');
+  // Extra looks at changing angles fill up to the minimum.
+  for (let yaw = 8; !faceStageDone(st, FACE_SAMPLES, FACE_MIN_SAMPLES) && t < 60_000; yaw += 6) {
+    t += SCAN_CALIB.settleMs;
+    for (let i = 0; i < SCAN_CALIB.holdFrames; i++, t += 100) st = faceStageStep(st, obs(t, yaw)).stage;
+  }
+  assert.ok(faceStageDone(st, FACE_SAMPLES, FACE_MIN_SAMPLES));
+  assert.equal(st.samples.length, FACE_MIN_SAMPLES);
+  assert.ok(st.samples.slice(1).every((x) => x.how === 'extra'));
 });
 
 test('two faces in frame never give a sample, and the hint says why', async () => {

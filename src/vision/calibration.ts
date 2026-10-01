@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-10-01.1';
+export const CALIBRATION_VERSION = '2026-10-01.7';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /**
@@ -24,6 +24,15 @@ export const CALIBRATION_VERSION = '2026-10-01.1';
  * can still reach 0.69, which is why a contradicting outfit vetoes a face (OUTFIT_VETO).
  */
 export const FACE_CALIB = { reject: 0.3, accept: 0.62 };
+/**
+ * Face thresholds for a candidate enrolled without any outfit (a practice target captured without
+ * the hips in view): the outfit veto cannot rule a look-alike stranger out for them, so the face
+ * alone must clear a stricter bar. On the sim's lookalike-stranger-faceonly scenario (a stranger at
+ * about 0.66, the real different-person tail; 100 seeds): FACE_CALIB gave 35 wrong hits in 30 seeds,
+ * 0.55/0.85 gave 4, 0.55/0.90 gives 0 while a face-only duel at 3 m still lands 27% (97% with an
+ * outfit). Face alone cannot tell a look-alike apart, so practice capture asks for the hips in view.
+ */
+export const FACE_ONLY_CALIB = { reject: 0.6, accept: 0.95 };
 /**
  * Two players whose scans are this alike will be confused at range; the lobby warns. GhostNet: the
  * closest pair of samples between two different people's scans measured 0.42 at most (6 people,
@@ -45,7 +54,7 @@ export const MAX_YAW_DEG = 45;
  * on the first turned sample; the same for chin up and down. The person scanned is the one face in
  * frame (several faces give no sample); face similarity is not used during the scan, because with
  * GhostNet the same person can score below other people at other angles (realcheck scan, 2026-10-01).
- * Enrolment keeps samples up to `enrolYawMax`; matching in a round still uses MAX_YAW_DEG.
+ * Enrolment keeps samples only up to `enrolYawMax`, the same MAX_YAW_DEG a round matches with.
  */
 export const SCAN_CALIB = {
   straightYaw: [0, 15] as [number, number],
@@ -58,7 +67,8 @@ export const SCAN_CALIB = {
   minFaceScore: 0.7,
   /** A magnified crop must overlap the detected face box this much (IoU) to be the same face. */
   minCropOverlap: 0.25,
-  enrolYawMax: 60,
+  /** Templates beyond what a round ever matches (MAX_YAW_DEG) would only add chances for a look-alike to match. */
+  enrolYawMax: MAX_YAW_DEG,
   /**
    * No prompt may dead-end. After `promptPatienceMs` on one prompt the best frame seen counts if it
    * went at least `patienceFraction` of the way to the band in the right direction (phones read a
@@ -191,6 +201,16 @@ export const FACE_CUE_FRESH_MS = 1000;
  * is where a swapped identity would otherwise go unnoticed until its face or outfit is checked.
  */
 export const CROSSING_IOU = 0.25;
+/**
+ * A person last seen overlapping a track who then stops being detected is presumed hidden behind (or
+ * in front of) that body, not gone: in any frame the detector may find only them and hand the track
+ * their body. Until they are seen apart from it again, or this long after the two were last seen
+ * overlapping, the track needs evidence read on each frame's own body to lock or hit (tracker.ts
+ * Track.partners). Measured on the sim (2026-10-01): a partner stayed hidden 2.4 s before the
+ * detector handed the track their body (pan-crossing-far seed 85); the hit-rate cost on the crossing
+ * scenarios is the same from 2.5 s to 6 s.
+ */
+export const HIDDEN_PARTNER_MS = 4000;
 /** Below this height ratio a detection cannot continue a track at all. */
 export const HEIGHT_MATCH_MIN = 0.6;
 /** Below this ratio the match is kept but the identity waits for fresh evidence. */
@@ -246,9 +266,50 @@ export const CLOTHING_CONTRADICTION = { top: 0.75, current: 0.2 };
  * look-alike stranger. Players play in the outfit they scanned: a sample covering at least the top
  * (`minCoverage`) whose match to a player's outfit is at most `maxSim` (a contradicting garment caps
  * the match at REGION_CONTRADICTION_CAP) rules that player out on this body for `holdMs`, whatever
- * the face says. A later sample matching at `clearSim` or better lifts it.
+ * the face says. A later sample matching at `clearSim` or better over at least `clearCoverage` of the
+ * outfit lifts it at once (a matching shirt alone cannot lift a veto the trousers caused); a readable
+ * sample in between lets it lapse `holdMs` after that sample; without readable samples it never
+ * lapses (scoring.ts outfitVetoed). holdMs measured on the sim (2026-10-01): it must outlast the
+ * clothing audit spacing on every phone (1 s gave 1653 wrong hits on lookalike-stranger; 2 s ran out
+ * between audits at 460 ms per frame, 42 wrong hits on the slow-phone look-alike).
  */
-export const OUTFIT_VETO = { maxSim: 0.4, minCoverage: 0.45, holdMs: 4000, clearSim: 0.6 };
+export const OUTFIT_VETO = { maxSim: 0.4, minCoverage: 0.45, holdMs: 4000, clearSim: 0.6, clearCoverage: 0.7 };
+/**
+ * After an uncertain transition (tracker.ts markUncertain: a crossing, a reclaim, a jump, an
+ * ambiguous face) a track re-earns its identity from fresh evidence only: this many independent face
+ * samples taken after it, or clothing samples for a back view (review of 2026-10-01: one agreeing
+ * frame of an old running mean was enough). Whether those faces may name a look-alike is the
+ * corroboration rule below.
+ */
+export const REACQUIRE = { faceSamples: 2, clothingSamples: 2 };
+/**
+ * A face names a player at the normal bar (FACE_CALIB) only while their own outfit corroborates it: a
+ * readable sample covering at least `OUTFIT_VETO.clearCoverage` (top and trousers) matched them at
+ * `clearSim` or better on this body this recently, since its last uncertain transition, and not while
+ * it overlaps someone. Otherwise (torso hidden, legs out of view, an overlap, a different outfit) the
+ * face must clear FACE_ONLY_CALIB, the bar a candidate enrolled without an outfit gets.
+ */
+export const OUTFIT_RECENT_MS = 3000;
+/**
+ * While a body overlaps someone (or its face association is ambiguous) the track may hop between
+ * them without any transition, carrying the belief across; a hit then needs this body's latest face
+ * read to come from a frame captured at most this long before the body's latest frame and, on its
+ * own, to name the same player clearly (crossing-lookalike-faces seed 4, 2026-10-01: a belief
+ * carried from the crossing partner hit him while she was under the dot). Capture time against
+ * capture time: on a slow phone the decision comes more than this long after the capture, so the
+ * decision clock would refuse even a read from the deciding frame itself.
+ */
+export const OVERLAP_FACE_FRESH_MS = 400;
+/** A single-frame face naming another player than the track believes, by this lead over the rest, is a hop onto another body. */
+export const HOP_READ_MARGIN = 0.2;
+/**
+ * MoveNet MultiPose returns at most this many bodies (human.ts body.maxDetected). A frame at the cap
+ * may be missing a seventh person, who can stand inside a detected body's box or take its track
+ * when the six returned change from frame to frame; a hit then needs this body's own face read, from
+ * a frame within OVERLAP_FACE_FRESH_MS of its latest one, as during an overlap, and the HUD says why
+ * ("Too many people in view").
+ */
+export const BODY_CAP = 6;
 /** Belief step per clothing frame (one reference period). */
 export const CLOTHING_BELIEF_ALPHA = 0.35;
 /** A track whose face has not been seen for this long is carried by its clothing. */

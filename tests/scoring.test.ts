@@ -55,6 +55,30 @@ test('identity evidence expires even while the body remains visible', () => {
   assert.equal(resolveHit(t, eligible, 0.5, 0.2, 1750)?.id, 'alice');
 });
 
+test('at the detector body cap a hit needs this body\'s own fresh face read naming the same player', () => {
+  const t = track({ alice: 0.95, [UNKNOWN_ID]: 0.01 });
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 150)?.id, 'alice', 'an uncrowded frame resolves on the belief');
+  t.crowded = true;
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 150), null, 'a crowded frame refuses a carried belief');
+  // Reads come from the frame the body was last seen in (pipeline.ts applyFace stamps the capture time).
+  t.lastSeen = 140;
+  t.lastRead = { at: 140, id: 'bob', margin: 0.5 };
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 150), null, 'a fresh read naming somebody else refuses');
+  t.lastRead = { at: 140, id: 'alice', margin: 0.1 };
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 150), null, 'a fresh read without the margin refuses');
+  t.lastRead = { at: 140, id: 'alice', margin: 0.5 };
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 150)?.id, 'alice', 'a fresh clear read on this body resolves');
+  // Freshness is capture time against capture time: a slow phone decides 450 ms after the frame the
+  // read came from, and that read is still this frame's own.
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 140 + 450)?.id, 'alice', 'a slow decision on the read\'s own frame resolves');
+  t.lastSeen = 140 + 401;
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 140 + 450), null, 'a read from a frame more than OVERLAP_FACE_FRESH_MS before the body\'s latest frame refuses');
+  t.lastSeen = 140 + 400;
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 140 + 450)?.id, 'alice', 'a read from a frame within OVERLAP_FACE_FRESH_MS of it resolves');
+  t.lastSeen = 130;
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 150), null, 'a read stamped after the body\'s latest frame is not this body\'s');
+});
+
 test('a discontinuous face resets the old person instead of lending them confidence', () => {
   const t = track({ alice: 0.95, bob: 0.01 });
   t.faceMean = [1, 0];
@@ -182,7 +206,21 @@ test('a contradicting outfit rules a player out on that body whatever the face s
   updateOutfitVeto(t, { top: hist(12), thighs: hist(36), shins: hist(24), hair: hist(48) }, cands, 1000);
   assert.ok(outfitVetoed(t, 'alice', 1500));
   assert.equal(resolveHit(t, eligible, 0.5, 0.2, 1000), null, 'a face-strong belief cannot hit a body whose outfit is not theirs');
-  assert.ok(!outfitVetoed(t, 'alice', 1000 + 4001), 'the veto expires');
+  assert.ok(outfitVetoed(t, 'alice', 1000 + 60_000), 'without a readable sample since, time alone never lifts it');
+  // A readable sample in between (neither a contradiction nor a clear match) lets it lapse after the hold.
+  // Every region about half like hers: no region contradicts (top and thighs >= 0.4), overall ~0.47.
+  const half = (bin: number, other: number) => { const h = new Array(51).fill(0); h[bin] = 0.5; h[other] = 0.5; return h; };
+  const between = { top: half(0, 30), thighs: half(24, 40), shins: half(24, 40), hair: half(48, 10) };
+  const eased = track({ alice: 0.9 });
+  updateOutfitVeto(eased, { top: hist(12), thighs: hist(36), shins: hist(24), hair: hist(48) }, cands, 1000);
+  updateOutfitVeto(eased, between, cands, 1500);
+  assert.ok(outfitVetoed(eased, 'alice', 1500 + 3000), 'still within the hold after the easing sample');
+  assert.ok(!outfitVetoed(eased, 'alice', 1500 + 4001), 'eased and past the hold');
+  // A new contradiction re-arms it; a matching shirt alone cannot lift a veto the trousers caused.
+  updateOutfitVeto(eased, { top: hist(12), thighs: hist(36), shins: hist(24), hair: hist(48) }, cands, 6000);
+  assert.ok(outfitVetoed(eased, 'alice', 6000 + 60_000), 're-armed: time alone never lifts it again');
+  updateOutfitVeto(eased, { top: hist(0) }, cands, 70_000);
+  assert.ok(outfitVetoed(eased, 'alice', 70_000), 'her shirt alone (coverage 0.45) does not clear it');
   // Her own shirt seen alone is no contradiction.
   const u = track({ alice: 0.9 });
   updateOutfitVeto(u, { top: hist(0) }, cands, 1000);
@@ -209,4 +247,19 @@ test('a suspended identity is confirmed only by evidence that agrees with it', (
   updateBelief(u, { alice: 1, bob: 0, [UNKNOWN_ID]: 0 }, 0.45, 320);
   assert.equal(u.unconfirmed, false);
   assert.equal(resolveHit(u, eligible, 0.5, 0.2, 330)?.id, 'alice');
+});
+
+test('a wrongly vetoed real player still claims her name, so a look-alike elsewhere cannot take it unopposed', async () => {
+  // Review of 2026-10-01: letting a vetoed name skip its claim handed it to the look-alike (318 wrong
+  // hits over 40 seeds in the reviewer's sim); the one-body-per-player conflict must stand.
+  const { updateOutfitVeto } = await import('../src/vision/scoring');
+  const hist = (bin: number) => { const h = new Array(51).fill(0); h[bin] = 0.7; h[bin + 1] = 0.3; return h; };
+  const full = { top: hist(0), thighs: hist(24), shins: hist(24), hair: hist(48) };
+  const realAlice = track({ alice: 0.95, [UNKNOWN_ID]: 0.05 });
+  const lookalike = track({ alice: 0.8, [UNKNOWN_ID]: 0.2 });
+  updateOutfitVeto(realAlice, { top: hist(12), thighs: hist(36), shins: hist(24), hair: hist(48) }, [{ id: 'alice', profile: { outfit: { front: full, back: full } } as Profile }], 1000);
+  assignIdentities([realAlice, lookalike], eligible);
+  assert.equal(lookalike.identityConflict, true, 'the weaker claim on her name is a conflict');
+  assert.equal(resolveHit(lookalike, eligible, 0.5, 0.2, 1000), null);
+  assert.equal(resolveHit(realAlice, eligible, 0.5, 0.2, 1000), null, 'the misread veto only costs her a refusal');
 });

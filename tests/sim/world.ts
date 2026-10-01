@@ -6,6 +6,7 @@ import type { NBox } from '../../src/vision/geometry';
 import { hitRegion, type Detection } from '../../src/vision/tracker';
 import type { FaceObservation, OutfitObservation } from '../../src/vision/pipeline';
 import { Rng } from './rng';
+import { BODY_CAP } from '../../src/vision/calibration';
 
 /**
  * A synthetic laser-tag scene. People have a true appearance (face vector, outfit histogram, body
@@ -54,6 +55,12 @@ export interface PersonSpec {
   faceLike?: { id: string; cos: number };
   /** Optional: this person wears exactly the same outfit (top, trousers, hair) as another id. */
   outfitOf?: string;
+  /** Optional: enrolled with the face only (a practice target captured without the hips in view). */
+  faceOnlyProfile?: boolean;
+  /** Optional: share of clothing samples that read a wrong garment colour (a bad crop, a light change). */
+  outfitGlitch?: number;
+  /** Optional: share of clothing samples whose torso cannot be read at all (hips hidden, side-on): sig null. */
+  torsoHidden?: number;
   /** Changes of behaviour during the round, applied once the scene clock passes `at` seconds. */
   script?: { at: number; facing?: Facing; vx?: number; vd?: number }[];
 }
@@ -227,7 +234,9 @@ export function buildScene(rng: Rng, specs: PersonSpec[], selfId = 'me'): Scene 
   const profiles: Record<string, Profile> = {};
   for (const p of people) {
     if (!p.player) continue;
-    profiles[p.id] = { faceModel: FACE_MODEL, face: p.faceSamples, outfit: { front: p.outfitFront, back: p.outfitBack }, body: p.props, bodyModel: BODY_MODEL };
+    profiles[p.id] = p.faceOnlyProfile
+      ? { faceModel: FACE_MODEL, face: p.faceSamples, outfit: { front: { top: [] }, back: { top: [] } }, body: null, bodyModel: BODY_MODEL }
+      : { faceModel: FACE_MODEL, face: p.faceSamples, outfit: { front: p.outfitFront, back: p.outfitBack }, body: p.props, bodyModel: BODY_MODEL };
   }
   return { people, profiles, selfId, time: 0, panX: 0 };
 }
@@ -363,6 +372,12 @@ export function detect(rng: Rng, scene: Scene, model: DetectorModel): { bodies: 
     bodies.push(ghost);
     owner.set(ghost, null);
   }
+  // MoveNet MultiPose returns its best BODY_CAP poses: in a crowd, who is left out changes frame to frame.
+  if (bodies.length > BODY_CAP) {
+    const kept = new Set(bodies.slice().sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, BODY_CAP));
+    for (const b of bodies) if (!kept.has(b)) owner.delete(b);
+    return { bodies: bodies.filter((b) => kept.has(b)), faces, owner };
+  }
   return { bodies, faces, owner };
 }
 
@@ -402,6 +417,10 @@ export function sampleOutfit(rng: Rng, p: Person | null): OutfitObservation | nu
     headShoulder: p.props.headShoulder + rng.gauss(0, 0.03),
   };
   // Legs and hair are seen less reliably than the top: about a third of samples miss them.
+  // Hips behind cover or out of frame: the sampler cannot read a torso, so nothing is compared.
+  if (p.torsoHidden && rng.chance(p.torsoHidden)) return { sig: null, props: null };
+  // A glitched sample reads some other colour entirely: the case that can veto a real player.
+  if (p.outfitGlitch && rng.chance(p.outfitGlitch)) return { sig: { top: perturb(rng, topHistogram((Math.floor(rng.next() * 11) + 1 + Math.round(p.topHue)) % 12, 2), lighting), thighs: perturb(rng, topHistogram(Math.floor(rng.next() * 12), 2), lighting) }, props: null };
   const sig: OutfitSig = { top: perturb(rng, p.top, lighting) };
   if (rng.chance(0.7)) sig.thighs = perturb(rng, p.bottom, lighting);
   if (rng.chance(0.55)) sig.shins = perturb(rng, p.bottom, lighting + 0.05);

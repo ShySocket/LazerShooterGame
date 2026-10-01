@@ -1,7 +1,7 @@
 import { UNKNOWN_ID, type BodyProps, type OutfitSig } from '../types';
 import { clothingDue, cropBudget } from './schedule';
-import { CLOTHING_AUDIT_MS, CLOTHING_BELIEF_ALPHA, CLOTHING_CONTRADICTION, FACE_BELIEF_ALPHA, FACE_FRESH_MIN_MARGIN, FACE_FRESH_MS, FACE_REFRESH_MIN_LEAD, FACE_REFRESH_MS, FACE_VIA_TIMEOUT_MS, MATURE_TRACK_OBSERVATIONS, TORSO_COVER_FRACTION, LIVE_FACE_ENROLLED_MIN, LIVE_FACE_MIN, LIVE_FACE_MIN_BELIEF, LIVE_FACE_MIN_QUALITY, LIVE_FACE_MIN_TRACK_SAMPLES, LIVE_FACE_NOVELTY, LIVE_FACE_RUNNER_UP, LIVE_FACES_PER_PLAYER } from './calibration';
-import { containsPoint, faceOwner, resetIdentity, trackGapMs, Tracker, type Detection, type Track } from './tracker';
+import { CLOTHING_AUDIT_MS, CLOTHING_BELIEF_ALPHA, CLOTHING_CONTRADICTION, FACE_BELIEF_ALPHA, FACE_FRESH_MIN_MARGIN, FACE_FRESH_MS, FACE_REFRESH_MIN_LEAD, FACE_REFRESH_MS, FACE_VIA_TIMEOUT_MS, MATURE_TRACK_OBSERVATIONS, TORSO_COVER_FRACTION, LIVE_FACE_ENROLLED_MIN, LIVE_FACE_MIN, LIVE_FACE_MIN_BELIEF, LIVE_FACE_MIN_QUALITY, LIVE_FACE_MIN_TRACK_SAMPLES, LIVE_FACE_NOVELTY, LIVE_FACE_RUNNER_UP, LIVE_FACES_PER_PLAYER, HOP_READ_MARGIN, BODY_CAP } from './calibration';
+import { containsPoint, faceOwner, markUncertain, resetIdentity, trackGapMs, Tracker, type Detection, type Track } from './tracker';
 import { crosshairCentre, indexInSight, intersectArea, type NBox } from './geometry';
 import {
   assignIdentities,
@@ -11,7 +11,10 @@ import {
   combineEvidence,
   faceEvidence,
   IDENTITY_TTL_MS,
+  outfitReversals,
+  outfitSupports,
   outfitVetoed,
+  reacquired,
   resolveHit,
   topBelief,
   updateBelief,
@@ -98,6 +101,8 @@ export interface FrameOutcome<C> {
   /** A pending shot decided by this frame. */
   settled: ShotSettlement<C> | null;
   periodMs: number;
+  /** The detector returned its full BODY_CAP bodies: someone may be missing, hits need a fresh face. */
+  crowded: boolean;
 }
 
 interface PendingShot<C> {
@@ -189,8 +194,12 @@ export class VisionPipeline<C = unknown> {
     return candidates;
   }
 
-  private learnFace(id: string, emb: number[], ranked: [string, number][], quality: number, track: Track): void {
+  private learnFace(id: string, emb: number[], ranked: [string, number][], quality: number, track: Track, now: number): void {
     if (id === UNKNOWN_ID || quality < LIVE_FACE_MIN_QUALITY) return;
+    // Only a face the game would act on is learned: their own outfit backs it on this body, nothing
+    // vetoes them, and the identity is settled. A look-alike's face learned into a player's gallery
+    // would later match himself and clear any bar (review of 2026-10-01).
+    if (!outfitSupports(track, id, now) || outfitVetoed(track, id, now) || track.unconfirmed || track.identityConflict || !reacquired(track)) return;
     const enrolled = this.config.candidates.find((c) => c.id === id);
     if (!enrolled) return;
     if (ranked[0][1] < LIVE_FACE_MIN || (ranked[1]?.[1] ?? 0) > LIVE_FACE_RUNNER_UP) return;
@@ -234,12 +243,24 @@ export class VisionPipeline<C = unknown> {
   private applyFace(t: Track, emb: number[], quality: number, now: number): void {
     const candidates = this.galleries();
     const current = topBelief(t);
-    const raw = faceEvidence(emb, candidates, centredSimilarity, FACE_CALIB, quality);
+    // A face names a player at the normal bar only when their own outfit backs it on this body; any
+    // other face must clear the face-only bar (scoring.ts outfitSupports, OUTFIT_RECENT_MS).
+    const corroborated = (id: string) => outfitSupports(t, id, now);
+    const raw = faceEvidence(emb, candidates, centredSimilarity, FACE_CALIB, quality, corroborated);
     const ranked = Object.entries(raw).sort((a, b) => b[1] - a[1]);
-    if (current && ranked[0] && ranked[0][0] !== current.id && ranked[0][1] >= 0.8 && (raw[current.id] ?? 0) < 0.2) resetIdentity(t);
-    if (ranked[0]) this.learnFace(ranked[0][0], emb, ranked, quality, t);
+    if (ranked[0]) t.lastRead = { at: now, id: ranked[0][0], margin: ranked[0][1] - (ranked[1]?.[1] ?? 0) };
+    // A face that strongly names someone else is a hop signal too: a burst opened before it must not
+    // land on the new identity (transitionAt; review of the seed 63 fix, 2026-10-01).
+    if (current && ranked[0] && ranked[0][0] !== current.id && ranked[0][1] >= 0.8 && (raw[current.id] ?? 0) < 0.2) {
+      resetIdentity(t);
+      t.transitionAt = now;
+    }
+    // This frame's face clearly names another player than the track believes: the track may have hopped
+    // onto another body with no jump to notice (two people in one spot, a pan). Start the identity over.
+    else if (current && current.id !== UNKNOWN_ID && ranked[0] && ranked[0][0] !== current.id && ranked[0][0] !== UNKNOWN_ID && ranked[0][1] - (ranked[1]?.[1] ?? 0) >= HOP_READ_MARGIN) markUncertain(t, now);
+    if (ranked[0]) this.learnFace(ranked[0][0], emb, ranked, quality, t, now);
     const mean = updateFaceMean(t, emb, now);
-    const fe = faceEvidence(mean, candidates, centredSimilarity, FACE_CALIB, quality);
+    const fe = faceEvidence(mean, candidates, centredSimilarity, FACE_CALIB, quality, corroborated);
     const ev = combineEvidence({ face: fe, cloth: null, body: null });
     // The running mean already smooths frame noise, so the belief may follow it quickly.
     if (ev) updateBelief(t, ev, FACE_BELIEF_ALPHA, now);
@@ -259,6 +280,9 @@ export class VisionPipeline<C = unknown> {
 
     const gapMs = trackGapMs(this.period.ms());
     const tracks = this.tracker.update(dets, now, undefined, gapMs);
+    // At the detector's cap somebody may be missing from this frame: see BODY_CAP.
+    const crowded = dets.filter((d) => d.body).length >= BODY_CAP;
+    for (const t of tracks) t.crowded = crowded;
     // People the detector skipped this frame but who were here a moment ago: they still occupy their spot.
     const coasting = this.tracker.live().filter((t) => t.lastSeen !== now && now - t.lastSeen <= gapMs && !t.identityConflict).map(snapshotTrack);
     const sampleClothing = ops.sampleOutfit && clothingDue(this.period.ms(), this.lastClothingAt, now);
@@ -278,10 +302,25 @@ export class VisionPipeline<C = unknown> {
         if (covered) return;
         const obs = ops.sampleOutfit!(d);
         if (!obs) return;
+        // An unreadable torso is not a sample: the audit stays due and nothing counts as checked.
+        if (!obs.sig) return;
+        // A body does not change clothes. This sample clearly matching a player whom this track's own
+        // reads ruled out moments ago means the track now sits on somebody else's body: a hop with no
+        // jump to notice, whatever the belief says (crossing-lookalike-faces seed 63, 2026-10-01: the
+        // partner's track had retired behind her, her body was skipped for a frame, her track took
+        // his face-only detection half a box away, and the next frame's outfit read turned the belief
+        // to him before the face hop check ran; a burst opened on her settled on him 1.1 s later). The
+        // identity starts over before this read counts, so it is evidence from the new body, and a
+        // burst opened before it cannot settle on this track. The player the track already believes
+        // is exempt: their own outfit coming back is a misread veto correcting itself.
+        const carried = topBelief(t)?.id;
+        if (outfitReversals(t, obs.sig, candidates, now).some((id) => id !== carried)) markUncertain(t, now);
         t.lastClothingAt = now;
-        if (obs.sig) updateOutfitVeto(t, obs.sig, candidates, now);
+        t.lastOutfitReadAt = now;
+        // A sample read while this body overlaps someone may vet a name but never back one up.
+        updateOutfitVeto(t, obs.sig, candidates, now, !t.overlapping && !t.ambiguous);
         // An unconfirmed identity may not be propped up by its own old belief: it has to earn it back.
-        const ce = obs.sig ? clothingEvidence(obs.sig, candidates, t.unconfirmed ? undefined : t.belief) : null;
+        const ce = clothingEvidence(obs.sig, candidates, t.unconfirmed ? undefined : t.belief);
         const be = obs.props ? bodyEvidence(obs.props, candidates) : null;
         const ev = combineEvidence({ face: null, cloth: ce, body: be });
         if (!ev) return;
@@ -290,10 +329,15 @@ export class VisionPipeline<C = unknown> {
           const ranked = Object.entries(ev).sort((a, b) => b[1] - a[1]);
           const contradicts = top && ranked[0] && ranked[0][0] !== top.id && ranked[0][0] !== UNKNOWN_ID && ranked[0][1] >= CLOTHING_CONTRADICTION.top && (ev[top.id] ?? 0) <= CLOTHING_CONTRADICTION.current;
           // Suspend the identity until fresh evidence rebuilds it; do not swap to the outfit's answer.
-          if (contradicts) resetIdentity(t);
+          // Like a contradicting face, it may be a hop, so no burst opened before it lands on what follows.
+          if (contradicts) {
+            resetIdentity(t);
+            t.transitionAt = now;
+          }
           return;
         }
         updateBelief(t, ev, CLOTHING_BELIEF_ALPHA, now);
+        t.clothingSince = (t.clothingSince ?? 0) + 1;
         if (t.via !== 'face' || now - t.lastFaceAt > FACE_VIA_TIMEOUT_MS) t.via = 'clothing';
       }
     });
@@ -364,6 +408,8 @@ export class VisionPipeline<C = unknown> {
 
     if (!ops.isCurrent() || this.epoch !== generation) return null;
     // Missing tracks cannot reserve an identity. Published beliefs stay fixed until a frame completes.
+    // Tracks that have gathered fresh evidence since their last uncertain transition are settled again.
+    for (const t of tracks) if (t.reacquireAt && reacquired(t)) t.reacquireAt = 0;
     assignIdentities(tracks, exclusiveIds);
     this.latest = { dets, tracks: tracks.map(snapshotTrack), coasting, width, height, t: now };
     const decisionAt = this.clock();
@@ -378,6 +424,13 @@ export class VisionPipeline<C = unknown> {
       let r = canConfirmShot(p, t, now, decisionAt, stale) && t ? resolveHit(t, eligible, hitThreshold, hitMargin, decisionAt) : null;
       // A burst that started on one accepted identity must not quietly land on another.
       if (r && p.expectedId && r.id !== p.expectedId) r = null;
+      // A burst that started on no accepted identity must not land on whoever an uncertain transition
+      // after the tap put on the track: it may now be somebody else's body. This stays true after the
+      // new body re-earns an identity, which is why it reads transitionAt and not reacquireAt (cleared
+      // on re-earning, so the old check could never refuse anything resolveHit had not already
+      // refused; crossing-lookalike-faces seed 63, 2026-10-01: a 1.1 s burst on her settled on him).
+      // With an accepted identity at the tap, the rule above already holds the burst to it.
+      if (r && t && !p.expectedId && (t.transitionAt ?? 0) > p.startedAt) r = null;
       p.framesLeft--;
       p.zoom ||= zoomed;
       // A frame in which the detector skipped the target is not the target leaving: the burst keeps
@@ -409,7 +462,7 @@ export class VisionPipeline<C = unknown> {
         else lock = { kind: 'unknown' };
       }
     }
-    return { dets, tracks, inSight, lock, settled, periodMs: this.period.ms() };
+    return { dets, tracks, inSight, lock, settled, periodMs: this.period.ms(), crowded };
   }
 
   /**
@@ -441,6 +494,14 @@ export class VisionPipeline<C = unknown> {
     // Somebody seen a moment ago still covering the dot makes the aim ambiguous, whoever is detected now.
     if (best && coveredByOther(L.coasting, best.id, cx, cy)) best = null;
     let coasted = false;
+    const moved = (b: NBox, t: Track): NBox => {
+      const age = now - t.lastSeen;
+      // Velocity plus bounded acceleration, the same shift the tracker predicts with.
+      const ax = Math.max(-b[2] * 0.5, Math.min(b[2] * 0.5, 0.5 * t.ax * age * age));
+      const ay = Math.max(-b[3] * 0.5, Math.min(b[3] * 0.5, 0.5 * t.ay * age * age));
+      return [b[0] + t.vx * age + ax, b[1] + t.vy * age + ay, b[2], b[3]];
+    };
+    const moving = (t: Track) => t.vx !== 0 || t.vy !== 0;
     if (!best && idx === -1) {
       // The pose model skipped the person under the dot for a frame. The burst below must see them
       // again in a fresh frame before anything counts, so this can only delay a verdict, never invent one.
@@ -456,14 +517,6 @@ export class VisionPipeline<C = unknown> {
       // the detector found them in that frame or skipped them. They are only nominated: the burst
       // still has to see them under the dot in a frame captured after the tap, so this can turn a
       // premature miss into a wait, never into a hit from prediction.
-      const moved = (b: NBox, t: Track): NBox => {
-        const age = now - t.lastSeen;
-        // Velocity plus bounded acceleration, the same shift the tracker predicts with.
-        const ax = Math.max(-b[2] * 0.5, Math.min(b[2] * 0.5, 0.5 * t.ax * age * age));
-        const ay = Math.max(-b[3] * 0.5, Math.min(b[3] * 0.5, 0.5 * t.ay * age * age));
-        return [b[0] + t.vx * age + ax, b[1] + t.vy * age + ay, b[2], b[3]];
-      };
-      const moving = (t: Track) => t.vx !== 0 || t.vy !== 0;
       // The nomination keeps the tap-time rule: the dot has to be on the moved observed torso, not
       // merely inside the moved outer box. Nominating from the outer box was tried (2026-09-14): it
       // lifted the pan-crossing hit rate by nine points and produced a hit on a player nobody was
@@ -490,7 +543,12 @@ export class VisionPipeline<C = unknown> {
       if (!freshFrame(L.t, now, allowanceMs)) return { kind: 'stale', frameAgeMs: Math.round(now - L.t), allowanceMs };
       return { kind: 'miss' };
     }
-    const r = coasted || staleStart ? null : resolveHit(best, eligible, hitThreshold, hitMargin, now);
+    // Geometry younger than GEOMETRY_FRESH_MS may decide alone only if the motion seen since it was
+    // captured still leaves the dot on the same person's torso: on a pan, everybody shifts in those
+    // ~250 ms and the person under the dot then may no longer be (review of 2026-10-01: aiming at the
+    // farther player of a pan crossing gave instant wrong hits). Otherwise the burst decides.
+    const stillUnder = idx >= 0 && !coasted && indexInSight(L.tracks.map((t, i) => moved(L.dets[i].box, t)), crosshair, L.tracks.map((t) => moved(t.hit, t))) === idx;
+    const r = coasted || staleStart || !stillUnder ? null : resolveHit(best, eligible, hitThreshold, hitMargin, now);
     if (r) return { kind: 'instant', settlement: { track: best, resolution: r, elapsedMs: 0, zoomed: false, context } };
     // A burst opened from an old frame is still waiting for the slow frame in flight, so it gets that
     // much longer before it gives up.
