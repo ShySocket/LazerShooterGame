@@ -49,7 +49,8 @@ export function Results({ room, pid, onLeave }: Props) {
       <PracticeReview />
       {isHost ? (
         <>
-          <button className="btn primary big" onClick={() => backend.resetForNewRound(room.code).then(() => setResetNote(''), () => setResetNote(RESET_FAILED))}>
+          {/* Names the round it ends: a tap replayed after another host moved on changes nothing. */}
+          <button className="btn primary big" onClick={() => backend.resetForNewRound(room.code, room.startAt ?? null).then(() => setResetNote(''), () => setResetNote(RESET_FAILED))}>
             Back to lobby
           </button>
           {resetNote && <div className="note bad">{resetNote}</div>}

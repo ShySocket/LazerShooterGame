@@ -12,6 +12,9 @@ import {
 } from 'firebase/database';
 import type { Player, Profile, Room, RoomMeta, RoomSettings } from '../types';
 import {
+  canBeginPlay,
+  canResetRound,
+  canStartRound,
   claimHostPatch,
   closeRoundPlayers,
   endRoundPatch,
@@ -61,6 +64,15 @@ export const REAL_SDK: DbSdk = { ref, get, set, update, onValue, onDisconnect, r
 
 /** Attempts of one transaction the SDK aborted (see `transact`); each abort is quick, so a few cover a busy room. */
 const TRANSACTION_ATTEMPTS = 5;
+/** The SDK's aborts that committed nothing: this client's own overlapping write, and 25 re-runs under contention. */
+const SDK_ABORTS = ['set', 'maxretry'] as const;
+/**
+ * A hit may also be sent again after 'disconnect': the socket dropped after the write was sent, so
+ * the SDK cannot tell whether it landed and cancels it (PersistentConnection.cancelSentTransactions_)
+ * without ever sending it again. The target's shot ledger answers a resent shot as it landed, so the
+ * resend turns that unknown into the real outcome once the phone is back, and never costs a second life.
+ */
+const HIT_RETRIES = [...SDK_ABORTS, 'disconnect'] as const;
 
 export class FirebaseBackend implements RoomBackend {
   readonly mode = 'firebase' as const;
@@ -215,7 +227,7 @@ export class FirebaseBackend implements RoomBackend {
     await this.updatePlayer(code, id, { enrolled: true });
   }
 
-  async updateMeta(code: string, patch: Partial<RoomMeta>): Promise<void> {
+  async updateMeta(code: string, patch: Pick<RoomMeta, 'settings'>): Promise<void> {
     await this.sdk.update(this.sdk.ref(this.db, this.path(code, 'meta')), stripUndefined(patch));
   }
 
@@ -231,14 +243,16 @@ export class FirebaseBackend implements RoomBackend {
    * re-runs under contention. Neither committed anything, so running the transaction again is the
    * same as calling it again: every transaction here decides from the data it reads (a hit is
    * idempotent by its shot id). The e2e suite on the live database found hits failing this way.
+   * `retryOn` widens the list for a transaction that is safe to send again even when the first
+   * attempt may have committed (registerHit and 'disconnect').
    */
-  private async transact<T>(run: () => Promise<T>): Promise<T> {
+  private async transact<T>(run: () => Promise<T>, retryOn: readonly string[] = SDK_ABORTS): Promise<T> {
     for (let attempt = 1; ; attempt++) {
       try {
         return await run();
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
-        if (attempt >= TRANSACTION_ATTEMPTS || (reason !== 'set' && reason !== 'maxretry')) throw e;
+        if (attempt >= TRANSACTION_ATTEMPTS || !retryOn.includes(reason)) throw e;
       }
     }
   }
@@ -263,11 +277,12 @@ export class FirebaseBackend implements RoomBackend {
    * One transaction over the whole room, so a player joining mid-write cannot keep stale lives. Every
    * player is stamped with the round (its startAt) and the last round's shot ledgers go: a shot fired
    * in any other round no longer matches. The hit records of builds before the ledger (`hits`,
-   * `events`) are dropped too.
+   * `events`) are dropped too. Only from the lobby (`canStartRound`): a host's Start buffered while
+   * offline re-runs on the room as it is when it arrives, and must not wipe a round another host started.
    */
-  async startRound(code: string, settings: RoomSettings, startAt: number): Promise<void> {
-    await this.roomTransaction(code, (room) => {
-      if (!room.meta) return; // abort
+  async startRound(code: string, settings: RoomSettings, startAt: number): Promise<boolean> {
+    const res = await this.roomTransaction(code, (room) => {
+      if (!room.meta || !canStartRound(room.meta)) return; // abort
       const { events: _events, hits: _hits, ...rest } = room;
       return {
         ...rest,
@@ -275,14 +290,42 @@ export class FirebaseBackend implements RoomBackend {
         meta: { ...room.meta, settings, status: 'countdown', startAt, endedAt: null, winnerId: null },
       };
     });
+    // A room that is gone commits its null unchanged; only the stored countdown says this call started it.
+    const after = res.committed ? (res.snapshot.val() as RoomNode | null)?.meta : null;
+    return after?.status === 'countdown' && after.startAt === startAt;
   }
 
-  async resetForNewRound(code: string): Promise<void> {
-    await this.roomTransaction(code, (room) => {
-      if (!room.meta) return; // abort
+  /**
+   * One transaction over the meta node (small, and subscribed, so the first attempt runs on the real
+   * value): playing only while this round's countdown is on (`canBeginPlay`). It replaced a blind
+   * update of the status, which a phone asleep or offline at the end of the countdown buffered and
+   * replayed later, reopening a round that had ended or turning a reset lobby into a round with no start.
+   */
+  async beginPlay(code: string, startAt: number): Promise<boolean> {
+    const res = await this.transact(() =>
+      this.sdk.runTransaction(
+        this.sdk.ref(this.db, this.path(code, 'meta')),
+        (meta: RoomMeta | null) => {
+          // No local copy yet: hand the null back so the server rejects it and re-runs on the real meta.
+          if (meta === null) return null;
+          if (!canBeginPlay(meta, startAt)) return; // abort: already playing, ended, or another round
+          return { ...meta, status: 'playing' };
+        },
+        { applyLocally: false },
+      ),
+    );
+    const after = res.committed ? (res.snapshot.val() as RoomMeta | null) : null;
+    return after?.status === 'playing' && after.startAt === startAt;
+  }
+
+  /** Only from the end of the round that started at `startAt` (`canResetRound`); anything else is a stale tap and changes nothing. */
+  async resetForNewRound(code: string, startAt: number | null): Promise<boolean> {
+    const res = await this.roomTransaction(code, (room) => {
+      if (!room.meta || !canResetRound(room.meta, startAt)) return; // abort
       const { events: _events, hits: _hits, ...rest } = room;
       return { ...rest, players: this.resetPlayers(room.players, room.meta.settings.lives), meta: { ...room.meta, ...ROUND_META_RESET } };
     });
+    return res.committed && (res.snapshot.val() as RoomNode | null)?.meta?.status === 'lobby';
   }
 
   async endRound(code: string, force = false): Promise<EndResult> {
@@ -315,9 +358,12 @@ export class FirebaseBackend implements RoomBackend {
    * reaches the server it re-runs on the players as they are then, so a shot from a round that has
    * ended or been replaced is refused there, and a shot already recorded is not applied twice. The
    * players map is a few kB; the whole room carries every profile's face samples (hundreds of kB),
-   * which a transaction would upload on every attempt.
+   * which a transaction would upload on every attempt. The shot's time is taken once, here: a re-run
+   * after another phone's commit, or a write that sat queued while the phone was offline, is judged
+   * against the target's shield at the moment it was fired, not when it finally arrived.
    */
   async registerHit(code: string, shooter: string, target: string, score: number, via: string, shotId: string, roundStartAt: number | null): Promise<HitOutcome> {
+    const at = this.now();
     const req: HitRequest = { shooter, target, score, via, shotId, roundStartAt };
     // Refusing on the subscribed meta is always safe and saves a round trip; only the transaction accepts.
     let meta = this.metaCache.get(code);
@@ -332,13 +378,14 @@ export class FirebaseBackend implements RoomBackend {
         (players: Record<string, Player> | null) => {
           // No local copy yet: hand the null back so the server rejects it and re-runs on the real map.
           if (players === null) return null;
-          const r = evaluatePlayersHit(players, req, this.now(), invulnMs);
+          const r = evaluatePlayersHit(players, req, at, invulnMs);
           outcome = r.outcome;
           if (!r.players || !r.record) return; // abort: refused, or this shot already counted
           return r.players;
         },
         { applyLocally: false },
       ),
+      HIT_RETRIES,
     );
     if (!res.committed) return outcome;
     // A committed write is answered from what the server stored, never from a closure a re-run may have changed.

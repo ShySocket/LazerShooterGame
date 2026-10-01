@@ -106,7 +106,7 @@ test('pickNextHost prefers the earliest-joined present enrolled player; claimHos
 test('the round end is written once: several phones ending the same round agree on one winner', async () => {
   const { backend, code, current, hit } = await makeRoom(1, 'lobby');
   await backend.startRound(code, { ...DEFAULT_SETTINGS, lives: 1, invulnMs: 0 }, backend.now());
-  await backend.updateMeta(code, { status: 'playing' });
+  await backend.beginPlay(code, current().startAt!);
   assert.equal(await backend.endRound(code), 'not-decided');
   assert.equal(current().status, 'playing');
   assert.equal(await hit('p0', 'p1'), 'eliminated');
@@ -147,8 +147,11 @@ async function makeRoom(n: number, status: 'lobby' | 'playing' = 'playing') {
   for (let i = 0; i <= n; i++) await backend.updatePlayer(code, `p${i}`, { enrolled: true });
   let room: Room | null = null;
   const unsubscribe = backend.subscribe(code, (r) => (room = r));
-  if (status === 'playing') await backend.startRound(code, DEFAULT_SETTINGS, backend.now());
-  if (status === 'playing') await backend.updateMeta(code, { status: 'playing' });
+  if (status === 'playing') {
+    const startAt = backend.now();
+    await backend.startRound(code, DEFAULT_SETTINGS, startAt);
+    await backend.beginPlay(code, startAt);
+  }
   const current = (): Room => {
     assert.ok(room, 'room subscribed');
     return room;
@@ -186,7 +189,7 @@ test('joinRoom: a newcomer is admitted in the lobby, refused mid-round, and a re
   assert.equal(Object.keys(current().players).length, 3);
   assert.ok(current().players.p2.connected);
   await backend.startRound(code, DEFAULT_SETTINGS, backend.now());
-  await backend.updateMeta(code, { status: 'playing' });
+  await backend.beginPlay(code, current().startAt!);
   assert.equal(await backend.joinRoom(code, { id: 'p3', name: 'P3' }), 'in-progress');
   assert.equal(current().players.p3, undefined, 'a refused newcomer is not written');
   await backend.leaveRoom(code, 'p1');
@@ -229,7 +232,7 @@ test('registerHit refuses outside a playing round and eliminates on the last lif
   assert.equal(await hit('p1', 'p0', nextShotId(), 0), 'invalid');
   await backend.startRound(code, { ...DEFAULT_SETTINGS, lives: 1, invulnMs: 0 }, backend.now());
   assert.equal(await hit('p1', 'p0'), 'invalid', 'the countdown is not play');
-  await backend.updateMeta(code, { status: 'playing' });
+  await backend.beginPlay(code, current().startAt!);
   assert.equal(await hit('p1', 'p0'), 'eliminated');
   assert.equal(current().players.p0.status, 'out');
   assert.equal(await hit('p0', 'p1'), 'invalid', 'the round is decided');
@@ -240,7 +243,8 @@ test('startRound and resetForNewRound give every player fresh lives, status and 
   assert.equal(await hit('p1', 'p2'), 'hit');
   assert.equal(current().players.p2.lives, 2);
   assert.equal(Object.keys(ledgers(db, code)).length, 1);
-  await backend.resetForNewRound(code);
+  assert.equal(await backend.endRound(code, true), 'ended');
+  await backend.resetForNewRound(code, current().startAt ?? null);
   assert.deepEqual(ledgers(db, code), {}, 'the round\'s hit records go with it');
   assert.ok(Object.values(current().players).every((p) => (p.round ?? null) === null), 'nobody carries a round in the lobby');
   assert.equal(current().status, 'lobby');
@@ -343,7 +347,7 @@ test('invulnMs below 500 is clamped: a shield of 0 still costs one life per inst
 test('a shield set to 0 in a live room: two shooters hitting one target in the same instant cost one life', async () => {
   const { backend, code, current, hit } = await makeRoom(2, 'lobby');
   await backend.startRound(code, { ...DEFAULT_SETTINGS, invulnMs: 0 }, backend.now());
-  await backend.updateMeta(code, { status: 'playing' });
+  await backend.beginPlay(code, current().startAt!);
   const outcomes = await Promise.all([hit('p1', 'p0'), hit('p2', 'p0')]);
   assert.deepEqual(outcomes.sort(), ['hit', 'invulnerable']);
   assert.equal(current().players.p0.lives, 2);
@@ -374,9 +378,9 @@ test("a hit carrying an old round's startAt is refused after a new round starts,
   const { db, backend, code, current, hit } = await makeRoom(2);
   const oldRound = current().startAt!;
   assert.equal(await backend.endRound(code, true), 'ended');
-  await backend.resetForNewRound(code);
+  await backend.resetForNewRound(code, oldRound);
   await backend.startRound(code, DEFAULT_SETTINGS, oldRound + 60000);
-  await backend.updateMeta(code, { status: 'playing' });
+  await backend.beginPlay(code, oldRound + 60000);
   assert.equal(await hit('p1', 'p0', 'late-1', oldRound), 'invalid');
   assert.equal(current().players.p0.lives, 3);
   assert.equal(current().players.p1.tags, 0);
@@ -426,7 +430,7 @@ test('the local backend keeps the same hit rules: its own round only, once per s
   const startAt = local.now();
   await local.startRound(code, { ...DEFAULT_SETTINGS, invulnMs: 0 }, startAt);
   assert.equal(await local.registerHit(code, 'a', 'b', 0.9, 'face', 's1', startAt), 'invalid', 'countdown');
-  await local.updateMeta(code, { status: 'playing' });
+  await local.beginPlay(code, startAt);
   assert.equal(await local.registerHit(code, 'a', 'b', 0.9, 'face', 's1', startAt - 1), 'invalid', 'another round');
   assert.equal(await local.registerHit(code, 'a', 'b', 0.9, 'face', 's1', startAt), 'hit');
   assert.equal(await local.registerHit(code, 'c', 'b', 0.9, 'face', 's2', startAt), 'invulnerable', 'a shield of 0 is 500 ms');
@@ -438,9 +442,117 @@ test('the local backend keeps the same hit rules: its own round only, once per s
   assert.equal((room as Room).players.a.tags, 1);
   // A new round forgets the old shots; its startAt refuses them anyway.
   await local.endRound(code, true);
-  await local.resetForNewRound(code);
+  await local.resetForNewRound(code, startAt);
   await local.startRound(code, DEFAULT_SETTINGS, startAt + 1000);
-  await local.updateMeta(code, { status: 'playing' });
+  await local.beginPlay(code, startAt + 1000);
   assert.equal(await local.registerHit(code, 'a', 'b', 0.9, 'face', 's1', startAt), 'invalid');
   assert.equal(await local.registerHit(code, 'a', 'b', 0.9, 'face', 's1', startAt + 1000), 'hit', 'a fresh round, a fresh record');
+});
+
+// ---- Round status steps: each applies only from the state the phone saw --------------------------
+
+test('the countdown becomes play once, only from its own countdown: a flip replayed by a phone that was away cannot reopen an ended round or start a reset lobby', async () => {
+  const { db, backend, code, current } = await makeRoom(2, 'lobby');
+  const startAt = backend.now();
+  assert.equal(await backend.startRound(code, DEFAULT_SETTINGS, startAt), true);
+  assert.equal(await backend.beginPlay(code, startAt + 1), false, "another round's countdown");
+  assert.equal(current().status, 'countdown');
+  assert.equal(await backend.beginPlay(code, startAt), true);
+  assert.equal(current().status, 'playing');
+  assert.equal(await backend.beginPlay(code, startAt), false, 'every phone may ask; one flips it');
+  // Phone X slept through the end of the countdown. Its flip, buffered until it reconnects, reaches
+  // the server after the round was ended (a forfeit or the host's end): the round stays over.
+  const x = new FirebaseBackend(db.sdk(), {} as Database);
+  assert.equal(await backend.endRound(code, true), 'ended');
+  assert.equal(await x.beginPlay(code, startAt), false);
+  assert.equal(current().status, 'ended', 'the ended round is not reopened');
+  assert.ok(Object.values(current().players).every((p) => (p.round ?? null) === null));
+  // Or after the host already went back to the lobby: no round with no start.
+  assert.equal(await backend.resetForNewRound(code, startAt), true);
+  assert.equal(await x.beginPlay(code, startAt), false);
+  assert.equal(current().status, 'lobby');
+  assert.equal(current().startAt ?? null, null);
+});
+
+test('a Start or Back to lobby replayed after the room moved on changes nothing: a round starts only from the lobby and resets only from its own end', async () => {
+  const { db, backend, code, current, hit } = await makeRoom(2);
+  const round = current().startAt!;
+  assert.equal(await hit('p1', 'p0', 'mid-1'), 'hit');
+  // The old host's taps, buffered while it was offline, arrive mid-round (a new host started it).
+  const oldHost = new FirebaseBackend(db.sdk(), {} as Database);
+  assert.equal(await oldHost.resetForNewRound(code, round), false, 'the round has not ended');
+  assert.equal(await oldHost.startRound(code, DEFAULT_SETTINGS, round - 60000), false, 'not in the lobby');
+  assert.equal(current().status, 'playing');
+  assert.equal(current().startAt, round);
+  assert.equal(current().players.p0.lives, 2, 'the round keeps its lives');
+  assert.ok(Object.values(current().players).every((p) => p.round === round), 'and its round stamps');
+  assert.deepEqual(Object.keys(ledgers(db, code)), ['mid-1'], 'and its shot records');
+  // Ended: Back to lobby from another round's results is stale too; this round's applies, once.
+  assert.equal(await backend.endRound(code, true), 'ended');
+  assert.equal(await oldHost.resetForNewRound(code, round - 60000), false, "another round's results");
+  assert.equal(current().status, 'ended');
+  assert.equal(await backend.resetForNewRound(code, round), true);
+  assert.equal(current().status, 'lobby');
+  assert.equal(await backend.resetForNewRound(code, round), false, 'a second tap is a no-op');
+  // From the lobby a Start applies once: a double tap does not restart the countdown.
+  assert.equal(await backend.startRound(code, DEFAULT_SETTINGS, round + 60000), true);
+  assert.equal(await backend.startRound(code, DEFAULT_SETTINGS, round + 61000), false);
+  assert.equal(current().status, 'countdown');
+  assert.equal(current().startAt, round + 60000);
+});
+
+test('the local backend keeps the same status steps: start from the lobby, play from its own countdown, reset from its own end', async () => {
+  const local = new LocalBackend();
+  const code = await local.createRoom({ id: 'a', name: 'A' });
+  await local.joinRoom(code, { id: 'b', name: 'B' });
+  for (const id of ['a', 'b']) await local.updatePlayer(code, id, { enrolled: true });
+  let room: Room | null = null;
+  local.subscribe(code, (r) => (room = r));
+  assert.equal(await local.beginPlay(code, 5), false, 'no countdown');
+  assert.equal(await local.startRound(code, DEFAULT_SETTINGS, 5), true);
+  assert.equal(await local.startRound(code, DEFAULT_SETTINGS, 6), false);
+  assert.equal(await local.resetForNewRound(code, 5), false, 'not ended');
+  assert.equal(await local.beginPlay(code, 6), false);
+  assert.equal(await local.beginPlay(code, 5), true);
+  assert.equal(await local.beginPlay(code, 5), false);
+  assert.equal(await local.endRound(code, true), 'ended');
+  assert.equal(await local.beginPlay(code, 5), false, 'an ended round is not reopened');
+  assert.equal(await local.resetForNewRound(code, 4), false);
+  assert.equal(await local.resetForNewRound(code, 5), true);
+  assert.equal(await local.beginPlay(code, 5), false, 'nor a lobby started');
+  await new Promise((r) => setTimeout(r, 0));
+  assert.ok(room, 'room subscribed');
+  assert.equal((room as Room).status, 'lobby');
+  assert.equal((room as Room).startAt, null);
+});
+
+test("a hit that reaches the server late is judged at the shot: two shooters tagging one target in the same instant cost one life, however slow the second phone's network", async () => {
+  const { db, backend, code, current } = await makeRoom(2, 'lobby');
+  // The shortest shield (500 ms); the second phone's write takes longer than that to reach the server.
+  await backend.startRound(code, { ...DEFAULT_SETTINGS, invulnMs: 0 }, backend.now());
+  const round = current().startAt!;
+  await backend.beginPlay(code, round);
+  const slow = new FirebaseBackend(db.sdk({ latencyMs: MIN_INVULN_MS + 100 }), {} as Database);
+  const outcomes = await Promise.all([
+    slow.registerHit(code, 'p2', 'p0', 0.9, 'face', 'slow-1', round),
+    backend.registerHit(code, 'p1', 'p0', 0.9, 'face', 'fast-1', round),
+  ]);
+  assert.deepEqual(outcomes, ['invulnerable', 'hit']);
+  assert.ok(db.retries >= 1, "the slow write was re-run after the fast one's commit");
+  assert.equal(db.readAt(['rooms', code, 'players', 'p0', 'lives']), 2, 'one life for one instant');
+  assert.deepEqual(Object.keys(ledgers(db, code)), ['fast-1']);
+});
+
+test("a hit whose answer is lost to a dropped connection is sent again and answered from the target's ledger: its real outcome, one life", async () => {
+  // The SDK rejects a sent transaction with Error('disconnect') when the socket drops before the
+  // answer, whether or not the server applied it, and never sends it again by itself.
+  const { db, code, current, hit } = await makeRoom(2);
+  db.dropNextAnswer = 'applied';
+  assert.equal(await hit('p1', 'p0', 'drop-1'), 'hit', 'it had landed: answered as it landed');
+  assert.equal(current().players.p0.lives, 2, 'applied once');
+  assert.equal(current().players.p1.tags, 1);
+  db.dropNextAnswer = 'lost';
+  assert.equal(await hit('p1', 'p2', 'drop-2'), 'hit', 'it never arrived: sent again, it lands');
+  assert.equal(current().players.p2.lives, 2);
+  assert.deepEqual(Object.keys(ledgers(db, code)).sort(), ['drop-1', 'drop-2']);
 });

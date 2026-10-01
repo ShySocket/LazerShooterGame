@@ -85,7 +85,7 @@ export interface Player {
 export interface HitRecord {
   shooter: string;
   target: string;
-  /** Server time the hit was applied. */
+  /** Server time of the shot (the shooter's server-synchronised clock when it sent the hit); the shield is judged by it. */
   t: number;
   score: number;
   via: string;

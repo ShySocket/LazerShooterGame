@@ -8,7 +8,11 @@ import type { DbSdk } from '../../src/net/firebase';
  * read the same snapshot, and a commit that finds the node changed since its read re-runs the
  * function on the fresh value (which is what makes closures inside the function see the last run).
  * Like the SDK, a client's own set or update at, above or below one of its pending transactions
- * aborts that transaction with Error('set'); each sdk() call is one client.
+ * aborts that transaction with Error('set'); each sdk() call is one client. A client made with
+ * `latencyMs` takes that long for each transaction write's round trip, so another client's commit in
+ * that window makes it re-run on the fresh value later. `dropNextAnswer` models the socket dropping
+ * after a transaction write was sent: the SDK rejects it with Error('disconnect') whether or not the
+ * server applied it ('applied') or never saw it ('lost').
  */
 type Path = string[];
 interface FakeRef {
@@ -33,6 +37,8 @@ export class FakeDb {
   /** Every transaction's path, in order, and how many were aborted by their own client's write. */
   transactions: string[] = [];
   aborts = 0;
+  /** The next committing transaction's answer is lost to a dropped socket (see the class comment). */
+  dropNextAnswer: 'applied' | 'lost' | null = null;
   private listeners: { path: Path; cb: (s: Snap) => void }[] = [];
 
   readAt(path: Path): unknown {
@@ -85,7 +91,7 @@ export class FakeDb {
   }
 
   /** The SDK surface, cast for injection into FirebaseBackend. */
-  sdk(): DbSdk {
+  sdk({ latencyMs = 0 }: { latencyMs?: number } = {}): DbSdk {
     const db = this;
     /** This client's transactions in flight; a write of its own that overlaps one aborts it. */
     const pending = new Set<{ path: Path; aborted: boolean }>();
@@ -140,12 +146,17 @@ export class FakeDb {
               throw new Error('set');
             }
             const next = fn(current);
+            // The write's round trip; a commit by anyone else meanwhile makes it stale.
+            if (latencyMs > 0 && next !== undefined) await new Promise((res) => setTimeout(res, latencyMs));
             if (db.version !== before) {
               db.retries++;
               continue;
             }
             if (next === undefined) return { committed: false, snapshot: db.snap(r.path) };
-            db.writeAt(r.path, next);
+            const dropped = db.dropNextAnswer;
+            db.dropNextAnswer = null;
+            if (dropped !== 'lost') db.writeAt(r.path, next);
+            if (dropped) throw new Error('disconnect');
             return { committed: true, snapshot: db.snap(r.path) };
           }
           throw new Error('maxretry');
