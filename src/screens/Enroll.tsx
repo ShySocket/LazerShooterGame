@@ -26,7 +26,6 @@ export function Enroll({ code, pid, me, deep, onLeave }: Props) {
         </span>
       }
       savingText={useDeep ? 'Uploading your outfit for this game.' : 'Uploading your face, outfit, and body signature.'}
-      referenceFace={useDeep ? deep!.face[0] : undefined}
       onCancel={onLeave}
       onDone={async (r) => {
         if (!r.outfit) throw new Error('Outfit scan missing');

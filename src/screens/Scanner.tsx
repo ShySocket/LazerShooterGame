@@ -5,7 +5,7 @@ import { useCamera, type Facing } from '../hooks/useCamera';
 import { useVisionLoop, type VisionFrame } from '../hooks/useVisionLoop';
 import { useHumanStatus } from '../hooks/useHumanStatus';
 import { compactEmbedding, FACE_SAMPLES, faceYawDeg, MAX_YAW_DEG, MIN_FACE_PX, isValidEmbedding } from '../vision/human';
-import { bodySampleDecision, bystanderDecision, faceBigEnough, faceGate, farFacesDone, gateHint, hintFor, SAME_FACE_TEXT, holdStep, initialScanState, judgePose, promptFor, samePerson, SCAN_CALIB, settleDone, smallRoomHint, type Judgement, type ScanState } from '../vision/scan';
+import { bodySampleDecision, bystanderDecision, faceBigEnough, faceGate, faceStageStep, farFacesDone, gateHint, initialFaceStage, promptFor, SCAN_CALIB, settleDone, SKIP_ANGLE_TEXT, skipFaceAngle, smallRoomHint, type FaceStage, type FaceStep } from '../vision/scan';
 import { useWakeLock } from '../hooks/useWakeLock';
 import { saveError } from '../ui/advice';
 import { averageOutfits, averageProps, bodyProportions, FrameSampler, outfitRegions, outfitSignature } from '../vision/clothing';
@@ -51,8 +51,6 @@ interface Props {
   header?: ReactNode;
   /** Text while the result is being saved. */
   savingText?: string;
-  /** A known face sample of this player, so far samples taken during the body scan are verified as theirs. */
-  referenceFace?: number[];
   onDone: (r: ScanResult) => Promise<void>;
   onCancel?: () => void;
 }
@@ -61,7 +59,7 @@ type Stage = 'face' | 'bodyMode' | 'bodyFront' | 'bodyBack' | 'saving' | 'error'
 type BodyMode = 'helper' | 'prop';
 
 /** Camera-driven capture of face angles, outfit colours, and body ratios. Which parts run is up to the caller. */
-export function Scanner({ face, body, outfit, header, savingText, referenceFace, onDone, onCancel }: Props) {
+export function Scanner({ face, body, outfit, header, savingText, onDone, onCancel }: Props) {
   const { ready: humanReady, status, failed: humanFailed, retry: retryModels, reportFailure } = useHumanStatus();
   const first: Stage = face ? 'face' : 'bodyMode';
   const [stage, setStageState] = useState<Stage>(first);
@@ -81,7 +79,9 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const faces = useRef<number[][]>([]);
   const farFaces = useRef<number[][]>([]);
-  const scan = useRef<ScanState>(initialScanState());
+  /** The face stage's state (scan.ts faceStageStep): prompts, samples, patience. */
+  const faceStage = useRef<FaceStage>(initialFaceStage(performance.now()));
+  const [skippable, setSkippable] = useState(false);
   const [angles, setAngles] = useState<{ yaw: number; pitch: number } | null>(null);
   const lastFarFace = useRef(0);
   const outfits = useRef<OutfitSig[]>([]);
@@ -159,7 +159,8 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
     window.clearInterval(countdownTimer.current);
     faces.current = [];
     farFaces.current = [];
-    scan.current = initialScanState();
+    faceStage.current = initialFaceStage(performance.now());
+    setSkippable(false);
     setAngles(null);
     outfits.current = [];
     props.current = [];
@@ -217,6 +218,27 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
     go('bodyFront');
   };
 
+  /** Apply one face-stage step: the hint, the Skip button, and a taken sample. */
+  const applyFaceStep = (r: FaceStep) => {
+    faceStage.current = r.stage;
+    if (r.skippable !== skippable) setSkippable(r.skippable);
+    if (!r.accepted) return setHint(r.hint);
+    faces.current = r.stage.samples.map((x) => x.embedding);
+    sfx.tick();
+    setHint('');
+    if (faces.current.length >= FACE_SAMPLES) {
+      if (body) go('bodyMode');
+      else void finish(null);
+    } else setFaceIdx(faces.current.length);
+  };
+
+  /** Skip this angle: the face's last frame stands in for it. */
+  const skipAngle = () => {
+    const r = skipFaceAngle(faceStage.current, performance.now());
+    if (!r) return setHint('Keep your face in view, then tap Skip again.');
+    applyFaceStep(r);
+  };
+
   const onFrame = async (res: Result, human: Human, context: VisionFrame) => {
     const v = videoRef.current;
     const canvas = canvasRef.current;
@@ -232,14 +254,16 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
       drawOverlay(canvas, { dets, tracks: [], vidW: res.width, vidH: res.height }, facing === 'user');
     }
     if (s === 'face') {
-      if (now - stageStart.current < SCAN_CALIB.settleMs) return;
+      // The gates and the crop turn this frame into one observation; scan.ts faceStageStep decides.
+      const obs = { t: now, faces: res.face.length, box: res.face.length === 1 ? toNBox(res.face[0].boxRaw) : null, blocked: '', yaw: 0, pitch: 0, embedding: [] as number[] };
+      if (now < faceStage.current.settleUntil) return applyFaceStep(faceStageStep(faceStage.current, obs));
       const gate = faceGate({ faces: res.face.length, score: res.face[0]?.score });
-      if (gate !== 'ok') return setHint(gateHint(gate));
+      if (gate !== 'ok') return applyFaceStep(faceStageStep(faceStage.current, { ...obs, blocked: gateHint(gate) }));
       const detected = res.face[0];
       // The size gate is measured in full-frame pixels: the face stage detects on a downscaled copy.
       const copyScale = res.width / (v.videoWidth || res.width);
       if (!faceBigEnough(detected.boxRaw[2] * res.width, detected.boxRaw[3] * res.height, SCAN_CALIB.minFacePx, copyScale)) {
-        return setHint('Move closer so your face is clear.');
+        return applyFaceStep(faceStageStep(faceStage.current, { ...obs, blocked: 'Move closer so your face is clear.' }));
       }
       // The embedding, and the head angle, come from a square crop, the same way the game reads faces (see
       // ZoomPass): the full-frame pass only finds boxes, so it cannot judge the angle.
@@ -247,37 +271,13 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
       if (!isCurrent()) return;
       // A magnified crop can include a neighbour. Never take an arbitrary first face.
       const cropGate = faceGate({ faces: 1, cropCount: crops.length, cropOverlap: crops.length === 1 ? iou(crops[0].box, toNBox(detected.boxRaw)) : 0, score: crops[0]?.face.score });
-      if (cropGate !== 'ok') return setHint(gateHint(cropGate));
+      if (cropGate !== 'ok') return applyFaceStep(faceStageStep(faceStage.current, { ...obs, blocked: gateHint(cropGate) }));
       const f = crops[0].face;
-      if (!isValidEmbedding(f.embedding) || !Number.isFinite(faceYawDeg(f))) return setHint('Hold still and face the camera a little more.');
-      const yawSigned = ((f.rotation?.angle?.yaw ?? 0) * 180) / Math.PI;
-      const pitchSigned = ((f.rotation?.angle?.pitch ?? 0) * 180) / Math.PI;
-      setAngles({ yaw: Math.round(yawSigned), pitch: Math.round(pitchSigned) });
-      // The prompt must actually be performed: the head angle has to sit in the requested band, and
-      // stay there for a couple of frames, before the sample counts. The judgement names the one
-      // thing to change; a turn past what enrolment keeps is "turn back", whatever the prompt.
-      const prompt = promptFor(faces.current.length);
-      let judgement: Judgement = judgePose(prompt, yawSigned, pitchSigned, scan.current);
-      if (judgement.ok && Math.abs(yawSigned) > SCAN_CALIB.enrolYawMax) judgement = { ok: false, reason: 'turn-less', latch: {} };
-      const held = holdStep(scan.current, judgement);
-      if (!held.ready) {
-        scan.current = held.state;
-        return setHint(hintFor(prompt, judgement.reason));
-      }
-      // A different face than the earlier samples: keep the hold so the next good frame retries at once.
-      if (!samePerson(f.embedding, faces.current)) {
-        scan.current = { ...scan.current, hold: SCAN_CALIB.holdFrames - 1 };
-        return setHint(SAME_FACE_TEXT);
-      }
-      scan.current = held.state;
-      faces.current.push(compactEmbedding(f.embedding));
-      sfx.tick();
-      stageStart.current = performance.now();
-      setHint('');
-      if (faces.current.length >= FACE_SAMPLES) {
-        if (body) go('bodyMode');
-        else void finish(null);
-      } else setFaceIdx(faces.current.length);
+      if (!isValidEmbedding(f.embedding) || !Number.isFinite(faceYawDeg(f))) return applyFaceStep(faceStageStep(faceStage.current, { ...obs, blocked: 'Hold still and face the camera a little more.' }));
+      const yaw = ((f.rotation?.angle?.yaw ?? 0) * 180) / Math.PI;
+      const pitch = ((f.rotation?.angle?.pitch ?? 0) * 180) / Math.PI;
+      setAngles({ yaw: Math.round(yaw), pitch: Math.round(pitch) });
+      applyFaceStep(faceStageStep(faceStage.current, { ...obs, yaw, pitch, embedding: compactEmbedding(f.embedding) }));
     } else if (s === 'bodyFront' || s === 'bodyBack') {
       const clearSamples = () => {
         outfits.current = [];
@@ -310,8 +310,9 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
           const crops = await zoom.current.run(human, context.frame, faceRegion(fb, res.width / res.height));
           if (!isCurrent()) return;
           const f = crops.length === 1 ? crops[0].face : null;
-          const known = referenceFace ? [referenceFace, ...faces.current] : faces.current;
-          if (f && isValidEmbedding(f.embedding) && f.score >= 0.7 && faceYawDeg(f) <= MAX_YAW_DEG && samePerson(f.embedding, known)) {
+          // Only one body and one face are in frame here (a second person pauses the scan above), so the
+          // face is the player's: no similarity gate, which turned heads and distance would fail anyway.
+          if (f && isValidEmbedding(f.embedding) && f.score >= 0.7 && faceYawDeg(f) <= MAX_YAW_DEG) {
             farFaces.current.push(compactEmbedding(f.embedding));
             // During the far-face wait the player is metres away: a tick per sample and a bar they can see.
             if (outfitDoneAt.current) {
@@ -454,6 +455,11 @@ export function Scanner({ face, body, outfit, header, savingText, referenceFace,
           <p className="readout" aria-label="Measured head angle">
             yaw {angles.yaw}° · pitch {angles.pitch}°
           </p>
+        )}
+        {stage === 'face' && skippable && (
+          <button className="btn" onClick={skipAngle}>
+            {SKIP_ANGLE_TEXT}
+          </button>
         )}
         {stage !== 'bodyMode' && (!camReady || !humanReady) && (
           <p className="hint">

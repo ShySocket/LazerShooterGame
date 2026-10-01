@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { bodySampleDecision, bystanderDecision, FACE_PROMPTS, faceGate, gateHint, SAME_FACE_TEXT, settleDone, smallRoomHint, SMALL_ROOM_TEXT, STEP_BACK_TEXT, faceBigEnough, farFacesDone, hintFor, holdStep, initialScanState, judgePose, promptFor, samePerson, SCAN_CALIB, type ScanState } from '../src/vision/scan';
+import { bodySampleDecision, bystanderDecision, FACE_PROMPTS, faceGate, gateHint, settleDone, smallRoomHint, SMALL_ROOM_TEXT, STEP_BACK_TEXT, faceBigEnough, farFacesDone, hintFor, holdStep, initialScanState, judgePose, promptFor, SCAN_CALIB, type ScanState } from '../src/vision/scan';
 import { iou, type NBox } from '../src/vision/geometry';
 import { FACE_SAMPLES } from '../src/vision/embedding';
 
@@ -107,17 +107,6 @@ test('the hold resets on a failed frame and the sample is taken after the hold',
   assert.equal(s.hold, 0, 'an accepted sample starts the next prompt from zero');
 });
 
-test('same-person chain: a 55-degree sample passes through the 30-degree sample when the frontal one is too different', () => {
-  const frontal = [0];
-  const thirty = [30];
-  const fiftyFive = [55];
-  const sim = (a: number[], b: number[]) => (Math.abs(a[0] - b[0]) <= 30 ? 0.5 : 0.2);
-  assert.equal(samePerson(fiftyFive, [frontal], SCAN_CALIB.samePerson, sim), false, 'against the frontal frame alone it fails');
-  assert.equal(samePerson(fiftyFive, [frontal, thirty], SCAN_CALIB.samePerson, sim), true, 'the adjacent angle vouches for it');
-  assert.equal(samePerson(fiftyFive, [], SCAN_CALIB.samePerson, sim), true, 'the first sample has nothing to match');
-  assert.ok(SCAN_CALIB.samePerson >= 0.25, 'never below FACE_CALIB.reject');
-});
-
 test('minimum face size for enrolment is 48 px, not 64', () => {
   assert.equal(SCAN_CALIB.minFacePx, 48);
   assert.ok(faceBigEnough(50, 70));
@@ -173,8 +162,6 @@ test('low light is named as the fix, not holding still, and each cheap gate has 
   assert.equal(faceGate({ faces: 1, score: 0.9, cropCount: 1, cropOverlap: 0.1 }), 'crop');
   assert.equal(gateHint('crop'), 'Keep just your face in the frame.');
   assert.equal(faceGate({ faces: 1, score: 0.9, cropCount: 1, cropOverlap: 0.6 }), 'ok');
-  assert.match(SAME_FACE_TEXT, /better light/);
-  assert.match(SAME_FACE_TEXT, /Restart scan/);
 });
 
 test('the face size gate is measured in full-frame pixels, so a 720p phone is not held closer', () => {
@@ -184,3 +171,71 @@ test('the face size gate is measured in full-frame pixels, so a 720p phone is no
   assert.ok(!faceBigEnough(30, 40, SCAN_CALIB.minFacePx, 1));
   assert.ok(faceBigEnough(48, 60, SCAN_CALIB.minFacePx, 1));
 });
+
+test('patience: after six seconds the best right-way frame stands in for the prompt; after twelve the angle can be skipped', async () => {
+  const { angleNote, canSkipAngle, patienceAccepts, patienceLatch, promptProgress } = await import('../src/vision/scan');
+  const latched: ScanState = { ...initialScanState(), yawSign: 1 };
+  // Slight left latched as +; slight right wants -.
+  assert.equal(promptProgress(P(2), -9, 0, latched), 9);
+  assert.equal(promptProgress(P(2), 9, 0, latched), -Infinity, 'the wrong way never counts');
+  assert.equal(patienceAccepts(P(2), 9, SCAN_CALIB.promptPatienceMs - 1), false, 'not before the patience runs out');
+  assert.equal(patienceAccepts(P(2), 9, SCAN_CALIB.promptPatienceMs), true, '9 degrees is past half of 12');
+  assert.equal(patienceAccepts(P(2), 4, 60_000), false, 'barely moving never stands in for a turn');
+  assert.equal(patienceAccepts(P(3), 14, SCAN_CALIB.promptPatienceMs), true, 'further: half of 25');
+  assert.equal(patienceAccepts(P(5), 5, SCAN_CALIB.promptPatienceMs), true, 'tilt: half of 8');
+  assert.equal(patienceAccepts(P(0), -20, SCAN_CALIB.promptPatienceMs), true, 'straight: within twice its band');
+  assert.equal(patienceAccepts(P(7), 0, SCAN_CALIB.promptPatienceMs), true, 'the smile has no pose');
+  assert.deepEqual(patienceLatch(P(1), -10, 0, initialScanState()), { yawSign: -1 }, 'a patience sample latches like a normal one');
+  assert.equal(canSkipAngle(SCAN_CALIB.promptSkipMs - 1), false);
+  assert.equal(canSkipAngle(SCAN_CALIB.promptSkipMs), true);
+  assert.equal(angleNote(P(1), 'turn-more', 7.4, 0), 'Now 7°, aim for 12°.');
+  assert.equal(angleNote(P(5), 'tilt-more', 0, -3), 'Now 3°, aim for 8°.');
+  assert.equal(angleNote(P(1), 'turn-less', 50, 0), '');
+});
+
+test('the face stage completes for a person who only turns one way, by patience and Skip, and never compares faces', async () => {
+  const { faceStageStep, initialFaceStage, skipFaceAngle } = await import('../src/vision/scan');
+  // A talker: small turns to one side only, chin only up. Different embedding every frame (no similarity gate may refuse it).
+  let st = initialFaceStage(0);
+  let skips = 0;
+  for (let t = 0; t < 120_000 && st.samples.length < FACE_SAMPLES; t += 100) {
+    const yaw = 10 * Math.sin(t / 900) - 8;
+    const pitch = 6 + 4 * Math.sin(t / 1300);
+    let r = faceStageStep(st, { t, faces: 1, box: [0.4, 0.3, 0.2, 0.25], blocked: '', yaw, pitch, embedding: [Math.sin(t), Math.cos(t)] });
+    if (!r.accepted && r.skippable) {
+      const k = skipFaceAngle(r.stage, t);
+      if (k) {
+        r = k;
+        skips++;
+      }
+    }
+    st = r.stage;
+  }
+  assert.equal(st.samples.length, FACE_SAMPLES, 'all eight angles end up taken');
+  assert.ok(skips >= 1 && skips <= 4, `skips only for the moves never made: ${skips}`);
+});
+
+test('two faces in frame never give a sample, and the hint says why', async () => {
+  const { faceStageStep, initialFaceStage } = await import('../src/vision/scan');
+  let st = initialFaceStage(0);
+  let hint = '';
+  for (let t = 0; t < 30_000; t += 100) {
+    const r = faceStageStep(st, { t, faces: 2, box: null, blocked: gateHint('many-faces'), yaw: 0, pitch: 0, embedding: [] });
+    st = r.stage;
+    hint = r.hint;
+    assert.equal(r.skippable, false, 'nothing to skip with: no frame of the player was ever seen');
+  }
+  assert.equal(st.samples.length, 0);
+  assert.equal(hint, gateHint('many-faces'));
+});
+
+test('a held pose is taken after the hold, and the next prompt waits out the settle', async () => {
+  const { faceStageStep, initialFaceStage } = await import('../src/vision/scan');
+  let st = initialFaceStage(0);
+  const obs = (t: number, yaw: number) => ({ t, faces: 1, box: [0.4, 0.3, 0.2, 0.25] as NBox, blocked: '', yaw, pitch: 0, embedding: [1, 0] });
+  let t = SCAN_CALIB.settleMs;
+  for (let i = 0; i < SCAN_CALIB.holdFrames; i++, t += 100) st = faceStageStep(st, obs(t, 2)).stage;
+  assert.equal(st.samples.length, 1, 'straight ahead taken');
+  assert.equal(faceStageStep(st, obs(t, 20)).accepted, false, 'inside the settle nothing is taken');
+});
+

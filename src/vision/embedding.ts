@@ -5,8 +5,8 @@ import { FACE_MEAN } from './faceMean';
 export const FACE_MODEL = 'insightface-ghostnet-strides1-sq';
 export const FACE_EMBEDDING_SIZE = 512;
 // The thresholds are documented and versioned in calibration.ts; re-exported here for their callers.
-import { FACE_CALIB, FACE_CONFLICT, FULL_QUALITY_FACE_PX, MAX_YAW_DEG, MIN_FACE_PX, SAME_PERSON_MIN } from './calibration';
-export { FACE_CALIB, FACE_CONFLICT, FULL_QUALITY_FACE_PX, MAX_YAW_DEG, MIN_FACE_PX, SAME_PERSON_MIN };
+import { FACE_CALIB, FACE_CONFLICT, FULL_QUALITY_FACE_PX, MAX_YAW_DEG, MIN_FACE_PX } from './calibration';
+export { FACE_CALIB, FACE_CONFLICT, FULL_QUALITY_FACE_PX, MAX_YAW_DEG, MIN_FACE_PX };
 
 /** 0..1 confidence discount for a face of `px` pixels: a 30 px face keeps only ~0.7 of its similarity. */
 export function faceQuality(px: number): number {

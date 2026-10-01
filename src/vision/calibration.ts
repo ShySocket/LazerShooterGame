@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-09-26.2';
+export const CALIBRATION_VERSION = '2026-10-01.1';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /**
@@ -24,9 +24,11 @@ export const CALIBRATION_VERSION = '2026-09-26.2';
  * can still reach 0.69, which is why a contradicting outfit vetoes a face (OUTFIT_VETO).
  */
 export const FACE_CALIB = { reject: 0.3, accept: 0.62 };
-/** Two centred embeddings this similar are the same person for enrolment sanity checks. */
-export const SAME_PERSON_MIN = 0.35;
-/** Two players whose scans are this alike will be confused at range; the lobby warns. */
+/**
+ * Two players whose scans are this alike will be confused at range; the lobby warns. GhostNet: the
+ * closest pair of samples between two different people's scans measured 0.42 at most (6 people,
+ * npm run realcheck clips, 2026-10-01).
+ */
 export const FACE_CONFLICT = 0.45;
 /** Faces smaller than this in the full frame are too blurred for a trustworthy embedding. */
 export const MIN_FACE_PX = 34;
@@ -40,9 +42,9 @@ export const MAX_YAW_DEG = 45;
  * The eight-angle face scan. Bands are absolute yaw in degrees, wide on purpose: the mesh-derived
  * angle underestimates a real turn and a player cannot hold a 17-degree band. Left and right only
  * have to be opposite signs (the mirrored preview and the model's sign convention cancel), latched
- * on the first turned sample; the same for chin up and down. A sample counts as the same person when
- * it is at least `samePerson` similar (centred cosine) to ANY accepted sample, so a turned head
- * chains through the adjacent angle rather than being compared to the frontal frame alone.
+ * on the first turned sample; the same for chin up and down. The person scanned is the one face in
+ * frame (several faces give no sample); face similarity is not used during the scan, because with
+ * GhostNet the same person can score below other people at other angles (realcheck scan, 2026-10-01).
  * Enrolment keeps samples up to `enrolYawMax`; matching in a round still uses MAX_YAW_DEG.
  */
 export const SCAN_CALIB = {
@@ -51,13 +53,20 @@ export const SCAN_CALIB = {
   furtherYaw: [25, 60] as [number, number],
   tiltPitch: [8, 40] as [number, number],
   holdFrames: 2,
-  samePerson: SAME_PERSON_MIN,
   minFacePx: 48,
   /** Detector and crop scores below this mean poor light or a clipped face, not motion. */
   minFaceScore: 0.7,
   /** A magnified crop must overlap the detected face box this much (IoU) to be the same face. */
   minCropOverlap: 0.25,
   enrolYawMax: 60,
+  /**
+   * No prompt may dead-end. After `promptPatienceMs` on one prompt the best frame seen counts if it
+   * went at least `patienceFraction` of the way to the band in the right direction (phones read a
+   * real turn as less than it is); after `promptSkipMs` the player may skip the angle.
+   */
+  promptPatienceMs: 6000,
+  patienceFraction: 0.5,
+  promptSkipMs: 10000,
   /** Pause after an accepted sample before the next one may be taken. */
   settleMs: 400,
   /** The face stage detects on a copy no wider than this; a selfie-distance face is still hundreds of pixels. */
@@ -266,7 +275,8 @@ export const LIVE_FACE_MIN = 0.9;
 export const LIVE_FACE_RUNNER_UP = 0.3;
 export const LIVE_FACE_MIN_QUALITY = 0.8;
 export const LIVE_FACES_PER_PLAYER = 6;
-export const LIVE_FACE_ENROLLED_MIN = 0.43;
+/** A live sample must be this similar to the player's own scan: other people's frames reach 0.50 at the 99.9th percentile on GhostNet (2026-10-01). */
+export const LIVE_FACE_ENROLLED_MIN = 0.5;
 export const LIVE_FACE_MIN_BELIEF = 0.85;
 export const LIVE_FACE_MIN_TRACK_SAMPLES = 3;
 export const LIVE_FACE_NOVELTY = 0.85;
