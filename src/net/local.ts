@@ -1,17 +1,18 @@
 import type { Player, Profile, Room, RoomMeta, RoomSettings } from '../types';
 import {
   claimHostPatch,
+  closeRoundPlayers,
   endRoundPatch,
-  evaluateRoomHit,
+  evaluatePlayersHit,
   newPlayer,
   newRoomMeta,
   pickColor,
   randomCode,
   ROUND_META_RESET,
+  roundOpenFor,
   roundResetFields,
   type EndResult,
   type HitOutcome,
-  type HitRecord,
   type JoinResult,
   type PlayerSeed,
   type RoomBackend,
@@ -23,8 +24,6 @@ export class LocalBackend implements RoomBackend {
   readonly mode = 'local' as const;
   private rooms = new Map<string, Room>();
   private subs = new Map<string, Set<(room: Room | null) => void>>();
-  /** Each room's hits/{shotId} records for the current round, as the Firebase room keeps them. */
-  private hits = new Map<string, Record<string, HitRecord>>();
 
   now(): number {
     return Date.now();
@@ -101,16 +100,15 @@ export class LocalBackend implements RoomBackend {
     this.emit(code);
   }
 
-  private resetPlayers(room: Room, lives: number): void {
-    for (const p of Object.values(room.players)) Object.assign(p, roundResetFields(lives));
+  private resetPlayers(room: Room, lives: number, round: number | null = null): void {
+    for (const p of Object.values(room.players)) Object.assign(p, roundResetFields(lives, round));
   }
 
   async startRound(code: string, settings: RoomSettings, startAt: number): Promise<void> {
     const room = this.rooms.get(code);
     if (!room) return;
     room.settings = settings;
-    this.resetPlayers(room, settings.lives);
-    this.hits.delete(code);
+    this.resetPlayers(room, settings.lives, startAt);
     Object.assign(room, { status: 'countdown', startAt, endedAt: null, winnerId: null });
     this.emit(code);
   }
@@ -120,19 +118,16 @@ export class LocalBackend implements RoomBackend {
     if (!room) return;
     Object.assign(room, ROUND_META_RESET);
     this.resetPlayers(room, room.settings.lives);
-    this.hits.delete(code);
     this.emit(code);
   }
 
-  /** The same rule as the Firebase room (`evaluateRoomHit`); one thread, so the read and the write cannot interleave. */
+  /** The same rule as the Firebase room (`evaluatePlayersHit`); one thread, so the read and the write cannot interleave. */
   async registerHit(code: string, shooter: string, target: string, score: number, via: string, shotId: string, roundStartAt: number | null): Promise<HitOutcome> {
     const room = this.rooms.get(code);
-    if (!room) return 'invalid';
-    const hits = this.hits.get(code) ?? {};
-    const r = evaluateRoomHit(room, room.players, hits, { shooter, target, score, via, shotId, roundStartAt }, this.now());
+    if (!room || !roundOpenFor(room, roundStartAt)) return 'invalid';
+    const r = evaluatePlayersHit(room.players, { shooter, target, score, via, shotId, roundStartAt }, this.now(), room.settings.invulnMs);
     if (r.players && r.record) {
       room.players = r.players;
-      this.hits.set(code, { ...hits, [shotId]: r.record });
       this.emit(code);
     }
     return r.outcome;
@@ -144,6 +139,7 @@ export class LocalBackend implements RoomBackend {
     const patch = endRoundPatch(room, room.players, this.now(), force);
     if (!patch) return 'not-decided';
     Object.assign(room, patch);
+    room.players = closeRoundPlayers(room.players);
     this.emit(code);
     return 'ended';
   }

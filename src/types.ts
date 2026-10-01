@@ -71,6 +71,27 @@ export interface Player {
   lastHitAt: number;
   eliminatedAt?: number | null;
   tags: number;
+  /**
+   * meta.startAt of the round this player is in, written with the lives by startRound and cleared by
+   * endRound and resetForNewRound, all in whole-room transactions. A hit names the round it was fired
+   * in and lands only while both players still carry it (`evaluatePlayersHit`).
+   */
+  round?: number | null;
+  /** The hits that landed on this player this round, keyed by shot id: a shot is applied at most once. */
+  shots?: Record<string, HitRecord> | null;
+}
+
+/** players/{target}/shots/{shotId}: one applied hit, written in the same transaction that took the life. */
+export interface HitRecord {
+  shooter: string;
+  target: string;
+  /** Server time the hit was applied. */
+  t: number;
+  score: number;
+  via: string;
+  outcome: 'hit' | 'eliminated';
+  /** meta.startAt of the round it landed in. */
+  round: number;
 }
 
 export interface RoomSettings {

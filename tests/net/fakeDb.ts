@@ -7,6 +7,8 @@ import type { DbSdk } from '../../src/net/firebase';
  * value read at the start, the commit is deferred to a timer so calls made in the same tick all
  * read the same snapshot, and a commit that finds the node changed since its read re-runs the
  * function on the fresh value (which is what makes closures inside the function see the last run).
+ * Like the SDK, a client's own set or update at, above or below one of its pending transactions
+ * aborts that transaction with Error('set'); each sdk() call is one client.
  */
 type Path = string[];
 interface FakeRef {
@@ -28,6 +30,9 @@ export class FakeDb {
   disconnects: { path: string; action: 'set' | 'cancel'; value?: unknown }[] = [];
   /** How many transaction commits were retried because the node changed under them. */
   retries = 0;
+  /** Every transaction's path, in order, and how many were aborted by their own client's write. */
+  transactions: string[] = [];
+  aborts = 0;
   private listeners: { path: Path; cb: (s: Snap) => void }[] = [];
 
   readAt(path: Path): unknown {
@@ -82,14 +87,24 @@ export class FakeDb {
   /** The SDK surface, cast for injection into FirebaseBackend. */
   sdk(): DbSdk {
     const db = this;
+    /** This client's transactions in flight; a write of its own that overlaps one aborts it. */
+    const pending = new Set<{ path: Path; aborted: boolean }>();
+    const overlaps = (a: Path, b: Path) => a.slice(0, Math.min(a.length, b.length)).join('/') === b.slice(0, Math.min(a.length, b.length)).join('/');
+    const abortOverlapping = (path: Path) => {
+      for (const t of pending) if (overlaps(t.path, path)) t.aborted = true;
+    };
     const api = {
       ref: (_db: unknown, path = ''): FakeRef => ({ path: path.split('/').filter(Boolean) }),
       get: async (r: FakeRef): Promise<Snap> => db.snap(r.path),
-      set: async (r: FakeRef, v: unknown): Promise<void> => db.writeAt(r.path, v),
+      set: async (r: FakeRef, v: unknown): Promise<void> => {
+        abortOverlapping(r.path);
+        db.writeAt(r.path, v);
+      },
       update: async (r: FakeRef, patch: Record<string, unknown>): Promise<void> => {
         const paths: Path[] = [];
         for (const [k, v] of Object.entries(patch)) {
           const p = [...r.path, ...k.split('/').filter(Boolean)];
+          abortOverlapping(p);
           db.writeSilently(p, v);
           paths.push(p);
         }
@@ -112,20 +127,31 @@ export class FakeDb {
         },
       }),
       runTransaction: async (r: FakeRef, fn: (v: unknown) => unknown): Promise<{ committed: boolean; snapshot: Snap }> => {
-        for (let attempt = 0; attempt < 25; attempt++) {
-          const before = db.version;
-          const current = db.readAt(r.path);
-          await new Promise((res) => setTimeout(res, 0));
-          const next = fn(current);
-          if (db.version !== before) {
-            db.retries++;
-            continue;
+        db.transactions.push(r.path.join('/'));
+        const me = { path: r.path, aborted: false };
+        pending.add(me);
+        try {
+          for (let attempt = 0; attempt < 25; attempt++) {
+            const before = db.version;
+            const current = db.readAt(r.path);
+            await new Promise((res) => setTimeout(res, 0));
+            if (me.aborted) {
+              db.aborts++;
+              throw new Error('set');
+            }
+            const next = fn(current);
+            if (db.version !== before) {
+              db.retries++;
+              continue;
+            }
+            if (next === undefined) return { committed: false, snapshot: db.snap(r.path) };
+            db.writeAt(r.path, next);
+            return { committed: true, snapshot: db.snap(r.path) };
           }
-          if (next === undefined) return { committed: false, snapshot: db.snap(r.path) };
-          db.writeAt(r.path, next);
-          return { committed: true, snapshot: db.snap(r.path) };
+          throw new Error('maxretry');
+        } finally {
+          pending.delete(me);
         }
-        throw new Error('transaction never settled');
       },
     };
     return api as unknown as DbSdk;

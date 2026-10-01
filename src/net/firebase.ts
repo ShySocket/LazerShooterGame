@@ -13,8 +13,9 @@ import {
 import type { Player, Profile, Room, RoomMeta, RoomSettings } from '../types';
 import {
   claimHostPatch,
+  closeRoundPlayers,
   endRoundPatch,
-  evaluateRoomHit,
+  evaluatePlayersHit,
   newPlayer,
   newRoomMeta,
   pickColor,
@@ -57,6 +58,9 @@ export interface DbSdk {
 }
 
 export const REAL_SDK: DbSdk = { ref, get, set, update, onValue, onDisconnect, runTransaction };
+
+/** Attempts of one transaction the SDK aborted (see `transact`); each abort is quick, so a few cover a busy room. */
+const TRANSACTION_ATTEMPTS = 5;
 
 export class FirebaseBackend implements RoomBackend {
   readonly mode = 'firebase' as const;
@@ -108,7 +112,7 @@ export class FirebaseBackend implements RoomBackend {
     const now = this.now();
     // One transaction over the players map so two simultaneous joiners cannot pick the same colour,
     // and so a newcomer is turned away while a round is in progress (returning players may rejoin).
-    const res = await this.sdk.runTransaction(
+    const res = await this.transact(() => this.sdk.runTransaction(
       this.sdk.ref(this.db, this.path(code, 'players')),
       (players: Record<string, Player> | null) => {
         // A fresh page has no local copy of the players map and is handed null first. Writing the
@@ -122,7 +126,7 @@ export class FirebaseBackend implements RoomBackend {
         return { ...map, [player.id]: newPlayer(player, pickColor(map), meta.settings.lives, now) };
       },
       { applyLocally: false },
-    );
+    ));
     // The outcome is read from the committed snapshot, never from a closure the transaction may re-run.
     const after = (res.snapshot.val() as Record<string, Player> | null) ?? {};
     const result: JoinResult = after[player.id] ? 'ok' : 'in-progress';
@@ -215,10 +219,28 @@ export class FirebaseBackend implements RoomBackend {
     await this.sdk.update(this.sdk.ref(this.db, this.path(code, 'meta')), stripUndefined(patch));
   }
 
-  private resetPlayers(players: Record<string, Player> | null | undefined, lives: number): Record<string, Player> {
+  private resetPlayers(players: Record<string, Player> | null | undefined, lives: number, round: number | null = null): Record<string, Player> {
     const out: Record<string, Player> = {};
-    for (const [id, p] of Object.entries(players ?? {})) out[id] = { ...p, ...roundResetFields(lives) };
+    for (const [id, p] of Object.entries(players ?? {})) out[id] = { ...p, ...roundResetFields(lives, round) };
     return out;
+  }
+
+  /**
+   * The SDK aborts a pending transaction with Error('set') whenever this client writes at, above or
+   * below its path (the 20 s heartbeat, presence, a player update), and with 'maxretry' after 25
+   * re-runs under contention. Neither committed anything, so running the transaction again is the
+   * same as calling it again: every transaction here decides from the data it reads (a hit is
+   * idempotent by its shot id). The e2e suite on the live database found hits failing this way.
+   */
+  private async transact<T>(run: () => Promise<T>): Promise<T> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await run();
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        if (attempt >= TRANSACTION_ATTEMPTS || (reason !== 'set' && reason !== 'maxretry')) throw e;
+      }
+    }
   }
 
   /**
@@ -228,16 +250,20 @@ export class FirebaseBackend implements RoomBackend {
    * `fn` on the real room. No local optimistic apply, so the UI never sees a half-built room.
    */
   private roomTransaction(code: string, fn: (room: RoomNode) => RoomNode | undefined) {
-    return this.sdk.runTransaction(
-      this.sdk.ref(this.db, this.path(code)),
-      (room: RoomNode | null) => (room?.meta ? fn(room) : (room ?? null)),
-      { applyLocally: false },
+    return this.transact(() =>
+      this.sdk.runTransaction(
+        this.sdk.ref(this.db, this.path(code)),
+        (room: RoomNode | null) => (room?.meta ? fn(room) : (room ?? null)),
+        { applyLocally: false },
+      ),
     );
   }
 
   /**
-   * One transaction over the whole room, so a player joining mid-write cannot keep stale lives. The
-   * last round's hit records go with it: the new startAt already refuses any shot fired before it.
+   * One transaction over the whole room, so a player joining mid-write cannot keep stale lives. Every
+   * player is stamped with the round (its startAt) and the last round's shot ledgers go: a shot fired
+   * in any other round no longer matches. The hit records of builds before the ledger (`hits`,
+   * `events`) are dropped too.
    */
   async startRound(code: string, settings: RoomSettings, startAt: number): Promise<void> {
     await this.roomTransaction(code, (room) => {
@@ -245,7 +271,7 @@ export class FirebaseBackend implements RoomBackend {
       const { events: _events, hits: _hits, ...rest } = room;
       return {
         ...rest,
-        players: this.resetPlayers(room.players, settings.lives),
+        players: this.resetPlayers(room.players, settings.lives, startAt),
         meta: { ...room.meta, settings, status: 'countdown', startAt, endedAt: null, winnerId: null },
       };
     });
@@ -266,7 +292,8 @@ export class FirebaseBackend implements RoomBackend {
       const patch = endRoundPatch(room.meta, room.players, now, force);
       result = !room.meta || room.meta.status !== 'playing' ? 'already' : patch ? 'ended' : 'not-decided';
       if (!patch || !room.meta) return; // abort
-      return { ...room, meta: { ...room.meta, ...patch } };
+      // In the same write the players stop carrying the round, so a hit still on its way is refused.
+      return { ...room, meta: { ...room.meta, ...patch }, players: closeRoundPlayers(room.players) };
     });
     return res.committed ? 'ended' : result;
   }
@@ -282,28 +309,41 @@ export class FirebaseBackend implements RoomBackend {
   }
 
   /**
-   * One transaction over the whole room (`evaluateRoomHit`): the round check, the shot record and the
-   * lives are read and written together. The SDK keeps a transaction queued after the game stops
-   * waiting for it (withTimeout); when it finally reaches the server it re-runs on the room as it is
-   * then, so a shot from a round that has ended or been replaced is refused there, and a shot already
-   * recorded is not applied twice.
+   * One transaction over the players map (`evaluatePlayersHit`): the round check (both players still
+   * carry the shot's round), the target's shot ledger and the lives are read and written together. The
+   * SDK keeps a transaction queued after the game stops waiting for it (withTimeout); when it finally
+   * reaches the server it re-runs on the players as they are then, so a shot from a round that has
+   * ended or been replaced is refused there, and a shot already recorded is not applied twice. The
+   * players map is a few kB; the whole room carries every profile's face samples (hundreds of kB),
+   * which a transaction would upload on every attempt.
    */
   async registerHit(code: string, shooter: string, target: string, score: number, via: string, shotId: string, roundStartAt: number | null): Promise<HitOutcome> {
     const req: HitRequest = { shooter, target, score, via, shotId, roundStartAt };
     // Refusing on the subscribed meta is always safe and saves a round trip; only the transaction accepts.
-    const cached = this.metaCache.get(code);
-    if (cached !== undefined && !roundOpenFor(cached, roundStartAt)) return 'invalid';
+    let meta = this.metaCache.get(code);
+    if (meta === undefined) meta = (await this.sdk.get(this.sdk.ref(this.db, this.path(code, 'meta')))).val() as RoomMeta | null;
+    if (!roundOpenFor(meta, roundStartAt)) return 'invalid';
+    // The shield comes from the round's settings, saved at its start and fixed until the lobby.
+    const invulnMs = meta?.settings?.invulnMs;
     let outcome: HitOutcome = 'invalid';
-    const res = await this.roomTransaction(code, (room) => {
-      const r = evaluateRoomHit(room.meta, room.players, room.hits, req, this.now());
-      outcome = r.outcome;
-      if (!r.players || !r.record) return; // abort: refused, or this shot already counted
-      return { ...room, players: r.players, hits: { ...(room.hits ?? {}), [shotId]: r.record } };
-    });
+    const res = await this.transact(() =>
+      this.sdk.runTransaction(
+        this.sdk.ref(this.db, this.path(code, 'players')),
+        (players: Record<string, Player> | null) => {
+          // No local copy yet: hand the null back so the server rejects it and re-runs on the real map.
+          if (players === null) return null;
+          const r = evaluatePlayersHit(players, req, this.now(), invulnMs);
+          outcome = r.outcome;
+          if (!r.players || !r.record) return; // abort: refused, or this shot already counted
+          return r.players;
+        },
+        { applyLocally: false },
+      ),
+    );
     if (!res.committed) return outcome;
     // A committed write is answered from what the server stored, never from a closure a re-run may have changed.
-    const stored = (res.snapshot.val() as RoomNode | null)?.hits?.[shotId];
-    return stored && stored.shooter === shooter && stored.target === target ? stored.outcome : 'invalid';
+    const stored = (res.snapshot.val() as Record<string, Player> | null)?.[target]?.shots?.[shotId];
+    return stored && stored.shooter === shooter && stored.round === roundStartAt ? stored.outcome : 'invalid';
   }
 
   async submitShotFeedback(round: string, sample: ShotSample, profiles: ProfilesSnapshot | null): Promise<void> {
@@ -326,7 +366,7 @@ interface RoomNode {
   meta?: RoomMeta;
   players?: Record<string, Player>;
   profiles?: Record<string, Profile>;
-  /** One entry per applied hit this round, keyed by shot id; cleared when a round starts or resets. */
+  /** The hit records of builds before players/{id}/shots; dropped at the next round start or reset. */
   hits?: Record<string, HitRecord>;
   /** The hit log written by builds before hits/{shotId}; dropped like hits at the next round. */
   events?: unknown;
