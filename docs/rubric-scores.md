@@ -25,3 +25,4 @@ One line per `npm run rubric` run that was worth keeping (versions are the merge
 | 2026-09-22 15:21 | f81cb9f | 2026-09-22.1 | 3 | 79.1 | 62/72 | 27/37 | 1/8 | evening-hardening: ship (full e2e) |
 | 2026-09-26 22:18 | df241c3 | 2026-09-26.2 | 3 | 79.1 | 64/74 | 28/39 | 1/8 | playable: real footage, GhostNet, outfit veto, practice mode |
 | 2026-10-01 07:10 | 447e73d | 2026-10-01.1 | 3 | 79.5 | 66/76 | 29/40 | 1/8 | scan-works: no dead ends, no face similarity in the scan, thresholds on GhostNet |
+| 2026-10-01 20:05 | 8cf05bb | 2026-10-01.7 | 3 | 80.0 | 72/83 | 32/43 | 1/8 | astra-review gates 8cf05bb |
