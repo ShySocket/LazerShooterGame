@@ -1,5 +1,5 @@
 import type { BodyResult, FaceResult } from '@vladmandic/human';
-import { ACCEL_MAX_SHIFT, ACCEL_MIN_SAMPLES, ASSOCIATION_MARGIN, CENTRE_JUMP_CONFIRM, CONFIRMED_OBSERVATIONS, CROSSING_IOU, FACE_CUE, FACE_CUE_FRESH_MS, LIVE_RIVAL_MIN, LOST_RECLAIM, MATCH_MIN_SCORE, MATCH_WIN_MARGIN, STATIONARY_HYPOTHESIS, TENTATIVE_WIN_MARGIN, HEIGHT_CONFIRM_MIN, HEIGHT_MATCH_MIN, LOST_TRACK_MS, MAX_TRACK_GAP_MS, TRACK_GAP_MS } from './calibration';
+import { ACCEL_MAX_SHIFT, ACCEL_MIN_SAMPLES, ASSOCIATION_MARGIN, CENTRE_JUMP_CONFIRM, CONFIRMED_OBSERVATIONS, CROSSING_IOU, FACE_CUE, FACE_CUE_FRESH_MS, HIDDEN_PARTNER_MS, LIVE_RIVAL_MIN, LOST_RECLAIM, MATCH_MIN_SCORE, MATCH_WIN_MARGIN, STATIONARY_HYPOTHESIS, TENTATIVE_WIN_MARGIN, HEIGHT_CONFIRM_MIN, HEIGHT_MATCH_MIN, LOST_TRACK_MS, MAX_TRACK_GAP_MS, TRACK_GAP_MS } from './calibration';
 import { clampBox, intersectArea, iou, toNBox, type NBox } from './geometry';
 
 export interface Detection {
@@ -60,6 +60,12 @@ export interface Track {
   /** Whether the previous frame had this track overlapping another or ambiguously associated (onset detection). */
   overlapping?: boolean;
   ambiguous?: boolean;
+  /**
+   * Tracks this body was last seen overlapping, with when (HIDDEN_PARTNER_MS). While such a partner is
+   * not detected they may be hidden behind or in front of this body, and the detector may hand this
+   * track their body in any frame; the entry ends once the partner is seen apart from it again.
+   */
+  partners?: Record<number, number>;
   /** Whether the frame this track was last seen in returned the detector's full BODY_CAP bodies (crowd rule). */
   crowded?: boolean;
   via: 'face' | 'clothing' | 'none';
@@ -407,6 +413,8 @@ export class Tracker {
         if (iou(out[i].box, out[j].box) >= CROSSING_IOU) {
           overlap.add(out[i]);
           overlap.add(out[j]);
+          out[i].partners = { ...out[i].partners, [out[j].id]: now };
+          out[j].partners = { ...out[j].partners, [out[i].id]: now };
         }
       }
       // A neighbour lost here a moment ago (within the lost-track window, not just the coasting gap)
@@ -417,10 +425,37 @@ export class Tracker {
         if (iou(out[i].box, c.box) >= CROSSING_IOU) overlap.add(out[i]);
       }
     }
+    // A partner who stopped being detected while overlapping this body is hidden behind or in front
+    // of it, not gone: in any frame the detector may find only them and hand this track their body,
+    // with no jump or size change to notice. The check above compares stale boxes, which a camera pan
+    // carries away from where both people now are, and forgets the partner once their track retires
+    // (pan-crossing-far seed 85, 2026-10-01: Bob was last seen overlapping Alice's track 2.4 s
+    // earlier; in a frame that found only his body her track took it, and with no evidence read on
+    // that frame it showed LOCK alice with the dot on him). So the partner is remembered by track,
+    // and until they are seen apart from this body (or HIDDEN_PARTNER_MS after the two were last
+    // seen overlapping) the identity stands only on evidence read on each frame's own body.
+    const seen = new Map(out.map((t) => [t.id, t]));
+    const hiding = new Set<Track>();
+    for (const t of out) {
+      if (!t.partners) continue;
+      const kept = Object.entries(t.partners).filter(([id, at]) => {
+        const p = seen.get(Number(id));
+        // Seen this frame: overlapping refreshed the entry above; apart, they are not hidden here.
+        if (p) return iou(p.box, t.box) >= CROSSING_IOU;
+        if (now - at > HIDDEN_PARTNER_MS) return false;
+        hiding.add(t);
+        return true;
+      });
+      t.partners = kept.length ? Object.fromEntries(kept) : undefined;
+    }
     for (const t of out) {
       if (overlap.has(t)) {
         if (!t.overlapping) markUncertain(t, now);
         else t.unconfirmed = true;
+      } else if (hiding.has(t)) {
+        // Not a new transition (the overlap that started it already was one): the identity is kept,
+        // and this frame's own face or outfit read confirms it (scoring.ts updateBelief).
+        t.unconfirmed = true;
       }
       t.overlapping = overlap.has(t);
     }

@@ -387,3 +387,32 @@ test('a player standing half behind someone is re-earned, not refused for as lon
   }
   assert.ok(locked >= 15, `Bob locked in ${locked}/25 frames of a lasting overlap`);
 });
+
+test('while someone may be hidden behind the target, a lock or hit needs evidence read on that frame (pan-crossing-far seed 85)', async () => {
+  // 2026-10-01: Bob went behind Alice and stayed hidden 2.4 s while the phone panned; a frame then
+  // found only his body, her track took it, and with no face or outfit read on that frame her old
+  // belief showed LOCK alice with the dot on him. Here Bob is the target and someone else hides.
+  const h = harness();
+  let faceOn = true;
+  // Bob's face sits on the left of his own box, clear of the other person's box to his right.
+  h.ops.cropFaces = async (region) => (faceOn && region[0] < 0.5 && region[2] > 0.3 ? [{ box: [region[0] + 0.04, 0.26, 0.06, 0.08], embedding: BOB_FACE, quality: 1 }] : []);
+  await h.establishBob(6);
+  const OTHER: NBox = [0.55, 0.3, 0.3, 0.55];
+  for (let i = 0; i < 3; i++) await h.frame([body(BOB_BOX, BOB_HIT), body(OTHER, [0.6, 0.32, 0.18, 0.3])]);
+  // The other person goes behind Bob and is not detected again; the phone pans 1% of the frame a step.
+  const panned = (k: number) => body([BOB_BOX[0] - 0.01 * k, BOB_BOX[1], BOB_BOX[2], BOB_BOX[3]], [BOB_HIT[0] - 0.01 * k, BOB_HIT[1], BOB_HIT[2], BOB_HIT[3]]);
+  let locked = 0;
+  for (let k = 1; k <= 8; k++) {
+    const out = await h.frame([panned(k)]);
+    if (out.lock?.kind === 'lock' && out.lock.id === 'bob') locked++;
+  }
+  assert.ok(locked >= 5, `Bob's face read on each frame keeps him locked (${locked}/8)`);
+  // By now the other person's track has retired and the pan has carried Bob off its last box. A frame
+  // that reads no face cannot say whose body this is.
+  faceOn = false;
+  const out = await h.frame([panned(8)]);
+  assert.notEqual(out.lock?.kind, 'lock', `no LOCK without evidence of the frame's own (got ${JSON.stringify(out.lock)})`);
+  h.clock.now = h.t + 5;
+  const shot = h.pipeline.fire({ tap: h.clock.now }, CROSSHAIR);
+  assert.notEqual(shot.kind, 'instant', 'nor an instant hit from that frame');
+});

@@ -151,6 +151,9 @@ const REGRESSION_SEEDS: [string, number][] = [
   ['occlusion', 39],
   ['stranger', 45],
   ['stranger', 61],
+  // 2026-10-01: Bob hidden behind Alice for 2.4 s during a pan; a frame found only his body, her track
+  // took it and showed LOCK alice with the dot on him (tracker.ts Track.partners, HIDDEN_PARTNER_MS).
+  ['pan-crossing-far', 85],
 ];
 for (const [name, seed] of REGRESSION_SEEDS) {
   test(`regression: ${name} seed ${seed} has no wrong hit and no wrong lock`, async () => {

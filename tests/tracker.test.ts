@@ -424,6 +424,60 @@ test('a body moving over a briefly skipped neighbour\'s place comes out unconfir
   assert.equal(resolveHit(onlyA, new Set(['alice', 'bob']), 0.5, 0.2, 550), null);
 });
 
+test('a partner hidden behind a track keeps it unconfirmed every frame through a pan and after the partner\'s track retires', async () => {
+  // pan-crossing-far seed 85 (2026-10-01): Bob went behind Alice and was not detected for 2.4 s while
+  // the phone panned; then a frame found only his body, Alice's track took it, and LOCK alice showed.
+  const { CROSSING_IOU, HIDDEN_PARTNER_MS, LOST_TRACK_MS } = await import('../src/vision/calibration.ts');
+  const { iou } = await import('../src/vision/geometry.ts');
+  const tracker = new Tracker();
+  const [a, b] = tracker.update([detection(0.3, 0.24), detection(0.4, 0.22)], 100);
+  tracker.update([detection(0.3, 0.24), detection(0.38, 0.22)], 320);
+  const bobLastBox = [...b.box] as NBox;
+  /** A frame that reads Alice's face on this body: evidence that agrees, gathered on the frame itself. */
+  const readAlice = (t: number) => {
+    updateFaceMean(a, [1, 0], t);
+    updateBelief(a, { alice: 1 }, 1, t);
+    a.lastRead = { at: t, id: 'alice', margin: 1 };
+  };
+  readAlice(320);
+  // Bob stays behind Alice; the camera pans 3% of the frame a step, then holds still.
+  let x = 0.3;
+  let t = 320;
+  while (t < 320 + HIDDEN_PARTNER_MS - 220) {
+    t += 220;
+    if (t <= 320 + LOST_TRACK_MS + 220) x -= 0.03;
+    const [onlyA] = tracker.update([detection(x, 0.24)], t);
+    assert.equal(onlyA.id, a.id);
+    assert.equal(onlyA.unconfirmed, true, `t=${t}: Bob may be hidden in this box, so the frame has to confirm Alice itself`);
+    assert.equal(resolveHit(onlyA, new Set(['alice', 'bob']), 0.5, 0.2, t + 10), null, `t=${t}: no hit on a frame with no evidence of its own`);
+    readAlice(t);
+    assert.equal(resolveHit(onlyA, new Set(['alice', 'bob']), 0.5, 0.2, t + 10)?.id, 'alice', `t=${t}: a face read on this frame's body confirms her`);
+  }
+  // The stale-box check could not have seen him: his track retired and the pan carried Alice off his last box.
+  assert.equal(tracker.get(b.id), undefined);
+  assert.ok(iou(a.box, bobLastBox) < CROSSING_IOU);
+  // HIDDEN_PARTNER_MS after the two were last seen overlapping, the presumption lapses.
+  t += 440;
+  const [later] = tracker.update([detection(x, 0.24)], t);
+  assert.equal(later.unconfirmed, false);
+  assert.equal(later.partners, undefined);
+});
+
+test('a partner seen apart again is no longer presumed hidden behind the track', () => {
+  const tracker = new Tracker();
+  const [a, b] = tracker.update([detection(0.3, 0.24), detection(0.4, 0.22)], 100);
+  tracker.update([detection(0.3, 0.24), detection(0.42, 0.22)], 320);
+  assert.ok(a.partners?.[b.id] !== undefined, 'seen overlapping: remembered');
+  tracker.update([detection(0.3, 0.24)], 540);
+  // Bob steps out to Alice's right and his own track takes him back: the two are seen apart.
+  const both = tracker.update([detection(0.3, 0.24), detection(0.5, 0.22)], 760);
+  assert.deepEqual(both.map((t) => t.id), [a.id, b.id]);
+  assert.equal(a.partners, undefined);
+  updateBelief(a, { alice: 1 }, 1, 760);
+  const [onlyA] = tracker.update([detection(0.3, 0.24)], 980);
+  assert.equal(onlyA.unconfirmed, false, 'a body the partner was seen apart from is not held unconfirmed');
+});
+
 
 test('a box whose centre jumped more than half its width in one step keeps its identity unconfirmed', () => {
   const tracker = new Tracker();
