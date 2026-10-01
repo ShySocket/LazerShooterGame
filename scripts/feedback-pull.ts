@@ -9,45 +9,17 @@
  * Then: right hits, wrong hits (listed), misses by cause, refusals of non-players, per build, and the
  * calibration sweep of `npm run replay` over the same samples.
  */
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { agreement, asPlayed, collectSamples, evaluate, sweep } from '../src/feedback/replay.ts';
+import { agreement, asPlayed, evaluate, sweep } from '../src/feedback/replay.ts';
 import { summarise } from '../src/feedback/triage.ts';
 import type { ShotSample } from '../src/feedback/sample.ts';
+import { loadFeedback, playSamples } from './feedback-source.ts';
 
-const ROOT = resolve(import.meta.dirname, '..');
 const args = process.argv.slice(2);
 const opt = (name: string) => (args.includes(name) ? args[args.indexOf(name) + 1] : null);
 
-function fetchLog(): unknown {
-  try {
-    const out = execFileSync('npx', ['-y', 'firebase-tools', 'database:get', '/feedback', '--project', 'lazer-shooter', '--instance', 'lazer-shooter-default-rtdb'], { encoding: 'utf8', maxBuffer: 512 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
-    return JSON.parse(out);
-  } catch (e) {
-    // firebase-tools prints its own errors on stdout; npm's install warnings fill stderr.
-    const err = e as { stdout?: string; stderr?: string };
-    const msg = `${err.stdout ?? ''}\n${err.stderr ?? String(e)}`.split('\n').filter((l) => !l.startsWith('npm warn')).join('\n');
-    if (/login|authenticate|credential|401|403/i.test(msg)) {
-      console.error('The feedback log is readable only with the project owner\'s login. Run this once, approve in the browser, then run npm run feedback:pull again:\n\n  npx firebase-tools login\n');
-    } else console.error(msg.trim().slice(-2000));
-    process.exit(2);
-  }
-}
-
-const file = opt('--file');
-const data = file ? JSON.parse(readFileSync(file, 'utf8')) : fetchLog();
-if (!file) {
-  const dir = join(ROOT, '.rubric', 'feedback');
-  mkdirSync(dir, { recursive: true });
-  const out = join(dir, `feedback-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
-  writeFileSync(out, JSON.stringify(data));
-  console.log('saved', out);
-}
-
+const data = loadFeedback(opt('--file'));
 const since = opt('--since') ? Date.parse(opt('--since')!) : 0;
-// Probe and test rounds (TEST-...) are not play.
-const samples = collectSamples(data).filter((s) => !s.round.key.startsWith('TEST-') && s.round.startAt >= since);
+const samples = playSamples(data, since);
 const labelled = samples.filter((s): s is ShotSample & { label: NonNullable<ShotSample['label']> } => Boolean(s.label));
 const pct = (x: number | null) => (x === null ? '-' : `${Math.round(x * 100)}%`);
 
