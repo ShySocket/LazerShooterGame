@@ -306,9 +306,10 @@ test('lock acquisition measures the tracker, not how long the shooter held aim o
   const held = shot(pre.map((t): [number, string | null] => [t, 'lock:p1']));
   assert.deepEqual(lockAcquisition(held), { kind: 'untimed' });
   // Under the dot since before the recording and locking only 1.1 s into it: at least 1.1 s, perhaps
-  // much more, so it is not timed from the first recorded frame (that would understate the slow locks).
+  // much more. Kept as a lower bound (review of 2026-10-01: dropping it hid exactly the slow locks the
+  // p95 target is about), never timed as if the body arrived with the first recorded frame.
   const slow = shot(pre.map((t): [number, string | null] => [t, t < -200 ? 'maybe:p1' : 'lock:p1']));
-  assert.deepEqual(lockAcquisition(slow), { kind: 'untimed' });
+  assert.deepEqual(lockAcquisition(slow), { kind: 'atLeast', ms: 1200 });
   // Under the dot the whole time and never locked: a failure, not left out.
   const never = shot(pre.map((t): [number, string | null] => [t, 'maybe:p1']));
   assert.deepEqual(lockAcquisition(never), { kind: 'never' });
@@ -326,7 +327,12 @@ test('lock acquisition measures the tracker, not how long the shooter held aim o
   // Never under the dot: nothing to time.
   assert.equal(lockAcquisition(shot([[-200, 'lock:p1', 2]])), null);
   const r = summariseRow('all', [snap, held, never] as LabelledSample[]);
-  assert.deepEqual([r.lockMs, r.lockNever, r.lockUntimed], [{ n: 1, p50: 240, p95: 240 }, 1, 1]);
+  assert.deepEqual([r.lockMs, r.lockNever, r.lockUntimed, r.lockAtLeast], [{ n: 1, p50: 240, p95: 240 }, 1, 1, 0]);
+  // A slow lock seen only from the recording's start still counts against the p95, as a lower bound.
+  const withSlow = summariseRow('all', [snap, slow] as LabelledSample[]);
+  assert.equal(withSlow.lockAtLeast, 1);
+  assert.equal(withSlow.lockMs.n, 2);
+  assert.ok((withSlow.lockMs.p95 ?? 0) >= 500, `a 1.2 s lower bound fails the 500 ms target (${JSON.stringify(withSlow.lockMs)})`);
 });
 
 test('a session with no wrong hit in 216 shots bounds the per-shot rate below 1.38% only if the shots are independent', () => {
@@ -371,6 +377,6 @@ test('tables print aligned rows with the bounds and lock counts, and a condition
   const text = formatSection(tapped).join('\n');
   assert.ok(text.startsWith(`== ${UNSPLIT}: 8 labelled shots from 2 rounds`));
   assert.match(text, /legit-shot success 50% \(3\/6, rejections counted\)/);
-  assert.match(text, /lock acquisition p50\/p95 125\/148 ms over 2 shots that locked after their target came under the dot; 2 never locked \(failures\); 1 already under the dot when the recording began/);
+  assert.match(text, /lock acquisition p50\/p95 125\/148 ms over 2 shots that locked after their target came under the dot \(0 of them lower bounds: under the dot when the recording began, so the percentiles are lower bounds when they count\); 2 never locked \(failures\); 1 already locked when the recording began/);
   assert.ok(REPORT_LEGEND.some((l) => /as if every shot were independent/.test(l)));
 });

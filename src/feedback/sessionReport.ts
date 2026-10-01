@@ -69,10 +69,12 @@ export type LockAcquisition =
   /** Under the dot in the recorded frames and never locked on the target there: a failure. */
   | { kind: 'never' }
   /**
-   * Already under the dot in the first recorded frame and locked there or later: it came under the
-   * dot before the recording began, so the time is unknown (left-censored), whether it was already
-   * locked or not. Timing it from the first frame would understate exactly the slow locks.
+   * Already under the dot in the first recorded frame, not locked there, and locked `ms` later: it came
+   * under the dot before the recording began, so `ms` is a lower bound. It is kept: dropping it would
+   * drop exactly the slow locks, and a bound over the target already fails it.
    */
+  | { kind: 'atLeast'; ms: number }
+  /** Already locked in the first recorded frame: it locked before the recording began, the time is unknown. */
   | { kind: 'untimed' };
 
 /**
@@ -95,8 +97,8 @@ export function lockAcquisition(s: ShotSample): LockAcquisition | null {
   if (start < 0) return null;
   const locked = frames.findIndex((f, i) => i >= start && inSight(f) && f.lock === want);
   if (locked < 0) return { kind: 'never' };
-  if (start === 0) return { kind: 'untimed' };
-  return { kind: 'locked', ms: frames[locked].t - frames[start].t };
+  if (start > 0) return { kind: 'locked', ms: frames[locked].t - frames[start].t };
+  return locked === 0 ? { kind: 'untimed' } : { kind: 'atLeast', ms: frames[locked].t - frames[0].t };
 }
 
 /** A user agent cut down to the phone and browser: `iPhone iOS 18.5 Safari 18.5`, `Android 14 Pixel 8 Chrome 140`. */
@@ -183,6 +185,8 @@ export interface ReportRow {
   lockNever: number;
   /** Player-labelled shots whose body was already under the dot in the first recorded frame and locked: time unknown, left out of lockMs. */
   lockUntimed: number;
+  /** Of the lock times, how many are lower bounds (under the dot when the recording began, locked later). */
+  lockAtLeast: number;
 }
 
 /** The round x target group a shot belongs to: shots in one share the person, the outfit and the light. */
@@ -192,7 +196,7 @@ export function summariseRow(key: string, samples: LabelledSample[]): ReportRow 
   const n = { correct: 0, wrongPlayer: 0, unknownFalse: 0, rightRefusal: 0, rejected: 0 };
   const resolve: number[] = [];
   const lock: number[] = [];
-  const lockOther = { never: 0, untimed: 0 };
+  const lockOther = { never: 0, untimed: 0, atLeast: 0 };
   const wrongByTarget = new Map<string, number>();
   let players = 0;
   for (const s of samples) {
@@ -204,7 +208,11 @@ export function summariseRow(key: string, samples: LabelledSample[]): ReportRow 
     if ((o === 'correct' || wrong) && s.shot.resolveMs !== null && Number.isFinite(s.shot.resolveMs)) resolve.push(s.shot.resolveMs);
     const l = lockAcquisition(s);
     if (l?.kind === 'locked') lock.push(l.ms);
-    else if (l) lockOther[l.kind]++;
+    else if (l?.kind === 'atLeast') {
+      // A lower bound among the times: it can only pull the percentiles down, so a p95 over the target fails for certain.
+      lock.push(l.ms);
+      lockOther.atLeast++;
+    } else if (l) lockOther[l.kind]++;
   }
   const accepted = n.correct + n.wrongPlayer + n.unknownFalse;
   const bounds = wrongHitBounds(n.wrongPlayer + n.unknownFalse, samples.length, accepted);
@@ -230,6 +238,7 @@ export function summariseRow(key: string, samples: LabelledSample[]): ReportRow 
     lockMs: latency(lock),
     lockNever: lockOther.never,
     lockUntimed: lockOther.untimed,
+    lockAtLeast: lockOther.atLeast,
   };
 }
 
@@ -426,7 +435,7 @@ export function formatSection(s: ReportSection): string[] {
   const out = [
     `== ${s.name}: ${t.attempts} labelled shots from ${s.rounds} round${s.rounds === 1 ? '' : 's'}`,
     `   legit-shot success ${pct(t.legitSuccess)} (${t.correct}/${t.playerAttempts}, rejections counted); wrong hits ${t.wrongPlayer} on another player + ${t.unknownFalse} on a non-player; ${bounds}`,
-    `   lock acquisition p50/p95 ${ms(t.lockMs)} ms over ${t.lockMs.n} shot${t.lockMs.n === 1 ? '' : 's'} that locked after their target came under the dot; ${t.lockNever} never locked (failures); ${t.lockUntimed} already under the dot when the recording began (time unknown)`,
+    `   lock acquisition p50/p95 ${ms(t.lockMs)} ms over ${t.lockMs.n} shot${t.lockMs.n === 1 ? '' : 's'} that locked after their target came under the dot (${t.lockAtLeast} of them lower bounds: under the dot when the recording began, so the percentiles are lower bounds when they count); ${t.lockNever} never locked (failures); ${t.lockUntimed} already locked when the recording began (time unknown)`,
   ];
   if (s.note) out.push(`   (${s.note})`);
   for (const table of s.tables) out.push('', ...formatTable(table, s.boundsNa !== null));
