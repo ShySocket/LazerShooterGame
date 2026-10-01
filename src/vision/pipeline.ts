@@ -23,6 +23,8 @@ import {
   type Resolution,
 } from './scoring';
 import { centredSimilarity, FACE_CALIB } from './embedding';
+import { profileOutfitMatch } from './clothing';
+import { OUTFIT_VETO } from './calibration';
 import { BURST_FRAMES, burstAllowanceMs, canConfirmShot, FramePeriod, freshFrame, geometryFresh, snapshotTrack, staleAllowanceMs } from './shot';
 
 /** A unit face embedding that already passed validity, confidence, yaw, and size checks. */
@@ -118,6 +120,13 @@ interface PendingShot<C> {
 const EXTRA_CROPS = 1;
 /** The live-enrolment log kept for the shot log and the bench; older entries roll off. */
 const LEARNED_LOG_MAX = 200;
+
+/** EXPERIMENT */
+const namesAnother = (current: Resolution | null, read: Record<string, number>): boolean => {
+  if (!current || current.id === UNKNOWN_ID) return false;
+  const ranked = Object.entries(read).sort((a, b) => b[1] - a[1]);
+  return ranked[0] !== undefined && ranked[0][0] !== current.id && ranked[0][0] !== UNKNOWN_ID && ranked[0][1] - (ranked[1]?.[1] ?? 0) >= HOP_READ_MARGIN;
+};
 
 /** Whether a track other than `id` in the list still covers the point. */
 const coveredByOther = (tracks: Track[], id: number, x: number, y: number): boolean => tracks.some((c) => c.id !== id && containsPoint(c.box, x, y));
@@ -293,6 +302,10 @@ export class VisionPipeline<C = unknown> {
         if (!obs) return;
         // An unreadable torso is not a sample: the audit stays due and nothing counts as checked.
         if (!obs.sig) return;
+        // EXPERIMENT outfit hop
+        const G = globalThis as any;
+        if (G.__hopA && namesAnother(topBelief(t), clothingEvidence(obs.sig, candidates))) markUncertain(t, now);
+        else if (G.__hopB && candidates.some((c) => c.profile.outfit && outfitVetoed(t, c.id, now) && (() => { const m = profileOutfitMatch(obs.sig!, c.profile.outfit!); return m.sim >= OUTFIT_VETO.clearSim && m.coverage >= OUTFIT_VETO.clearCoverage; })())) markUncertain(t, now);
         t.lastClothingAt = now;
         t.lastOutfitReadAt = now;
         // A sample read while this body overlaps someone may vet a name but never back one up.
@@ -401,6 +414,7 @@ export class VisionPipeline<C = unknown> {
       // Nor on a track that went through an uncertain transition after the tap: it may now be
       // somebody else's body (crossing-lookalike-faces seed 63: a 1.1 s burst settled on the partner).
       if (r && t && (t.reacquireAt ?? 0) > p.startedAt) r = null;
+      if (r && (globalThis as any).__hopC && (p as any).excluded?.has(r.id)) r = null;
       p.framesLeft--;
       p.zoom ||= zoomed;
       // A frame in which the detector skipped the target is not the target leaving: the burst keeps
@@ -525,6 +539,7 @@ export class VisionPipeline<C = unknown> {
     const burstMs = this.burstMs() + (staleStart ? allowanceMs : 0);
     const believed = bestBelief(best, eligible, now);
     const shot: PendingShot<C> = { trackId: best.id, startedAt: now, deadline: now + burstMs, framesLeft: BURST_FRAMES, zoom: false, track: best, context, expectedId: believed && believed.score >= hitThreshold ? believed.id : null };
+    (shot as any).excluded = new Set([...eligible].filter((id) => outfitVetoed(best!, id, now)));
     this.pending = shot;
     return { kind: 'pending', token: shot, deadline: shot.deadline, burstMs };
   }
