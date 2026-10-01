@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { binomialCdf, clopperPearsonUpper, formatBound, percentile, wrongHitBounds } from '../src/feedback/stats';
+import { binomialCdf, clopperPearsonUpper, clusterWrongBound, formatBound, formatShootBounds, percentile, shootBounds, wrongHitBounds } from '../src/feedback/stats';
 
 const near = (actual: number | null, expected: number, tol = 1e-9) => {
   assert.ok(actual !== null && Math.abs(actual - expected) <= tol, `expected ${expected}, got ${actual}`);
@@ -60,6 +60,30 @@ test('wrong-hit bounds are per attempt and per accepted hit, null with nothing t
   assert.equal(formatBound(0.013773397590468141), '≤1.38%');
   assert.equal(formatBound(0.39416), '≤39.4%');
   assert.equal(formatBound(null), '-');
+});
+
+test('realcheck shoot: 0 wrong in 216 correlated shots bounds the photo rate below 28.3%, not the shot rate below 1.38%', () => {
+  // The last recorded run (.rubric/realcheck/shoot.json): 18 runs of 12 shots on 9 photos (two targets each), 82 correct, no wrong hit.
+  const runs = Array.from({ length: 18 }, (_, i) => ({ photo: `photo-${Math.floor(i / 2)}`, shots: 12, correct: i < 10 ? 5 : 4, wrong: 0 }));
+  const b = shootBounds(runs);
+  assert.deepEqual([b.perPhoto.clusters, b.perPhoto.failed, b.perRun.clusters, b.perRun.failed], [9, 0, 18, 0]);
+  near(b.perPhoto.upper, 1 - Math.pow(0.05, 1 / 9), 1e-12);
+  near(b.perRun.upper, 1 - Math.pow(0.05, 1 / 18), 1e-12);
+  assert.deepEqual([b.assumingIndependentShots.shots, b.assumingIndependentShots.accepted], [216, 82]);
+  near(b.assumingIndependentShots.wrongPerAttemptUpper, 0.013773397590468141, 1e-12);
+  const lines = formatShootBounds(b);
+  assert.match(lines[1], /^ {2}per photo ≤28\.3% \(0 of 9 photos had a wrong hit\): the independent unit/);
+  assert.match(lines[2], /^ {2}per run {3}≤15\.3% \(0\/18 runs/);
+  assert.match(lines[3], /^ {2}per shot {2}≤1\.38% \(0\/216\) and per accepted hit ≤3\.59% \(0\/82\), only if every shot were independent/);
+  // One wrong hit on a photo fails that photo once, whichever of its runs had it.
+  const one = shootBounds(runs.map((r, i) => (i === 3 ? { ...r, wrong: 2, correct: r.correct - 2 } : r)));
+  assert.deepEqual([one.perPhoto.failed, one.perRun.failed, one.assumingIndependentShots.wrong], [1, 1, 2]);
+  near(one.perPhoto.upper, clopperPearsonUpper(1, 9));
+  // A cluster fails once however many of its shots were wrong; nothing to count bounds nothing.
+  const some = clusterWrongBound([0, 3, 0, 1]);
+  assert.deepEqual([some.clusters, some.failed], [4, 2]);
+  near(some.upper, clopperPearsonUpper(2, 4));
+  assert.deepEqual(clusterWrongBound([]), { clusters: 0, failed: 0, upper: null });
 });
 
 test('percentiles interpolate between closest ranks and ignore non-finite values', () => {

@@ -4,7 +4,7 @@ Everything in `docs/tracking-rubric.md` that a machine can check is green (`npm 
 
 ## The short version (2026-10-01): one phone, 15 minutes, nothing to write down
 
-Already checked without a phone (`npm run realcheck`, the e2e suite, 100 simulated seeds per scenario): the real models on photos of 28 real people and clips of 7, a real group-photo shooting check (0 wrong hits in 216 shots, which bounds the rate below 1.38 % and no lower), whole rounds and practice sessions with a real clip as the camera. What only a phone can tell is how it behaves in your hands, in your light, at your distances.
+Already checked without a phone (`npm run realcheck`, the e2e suite, 100 simulated seeds per scenario): the real models on photos of 28 real people and clips of 7, a real group-photo shooting check (0 wrong hits in 216 shots on 9 photos; the shots at one photo are not independent, so what that proves is that at most 28.3 % of such photos draw a wrong hit, 15.3 % per run, and the 1.38 % that 216 independent shots would give is not proven), whole rounds and practice sessions with a real clip as the camera. What only a phone can tell is how it behaves in your hands, in your light, at your distances.
 
 1. On your phone open https://lazer-shooter-game.vercel.app/?practice (or tap **Practice alone**).
 2. Do your scan, then **Add a target**: point the back camera at a friend, hips in view, and tap **Capture** (a TV or a photo works too, but only a person shows the outfit). Add a second target if someone else is around.
@@ -39,7 +39,7 @@ The sample records each body's box, so face and torso size in pixels can be read
 npm run session:report
 ```
 
-It prints, per condition, target, phone and build: right hits, hits on another player, hits on a non-player (counted apart), rejected legitimate shots, legit-shot success with the rejections in the denominator, resolve and lock-acquisition p50/p95, and the one-sided 95 % Clopper-Pearson upper bound on the wrong-hit rate per shot and per accepted hit. It exits 1 when any wrong hit is in the log. Look at every wrong hit's photo in **Practice review** on the shooter's phone before it is gone (the next round clears it).
+Read the matrix from the `range` section (range mode in a real room, players who did the normal scan); `practice` is the `?practice` session with quick-enrolled targets, `review` the review-card answers, and `practice/range (unsplit)` holds shots from builds that did not record which of the two they were (do not judge the matrix on it). It prints, per condition, target, phone and build: right hits, hits on another player, hits on a non-player (counted apart), rejected legitimate shots, legit-shot success with the rejections in the denominator, resolve p50/p95, lock acquisition (p50/p95 from the target coming under the dot to the first lock on them, with the shots that never locked counted beside it as failures and those already under the dot when the recording began left out as untimed), and the one-sided 95 % Clopper-Pearson upper bound on the wrong-hit rate per target (round x target: the shots at one person share their light and outfit, so they are not independent), and per shot and per accepted hit as if they were. It exits 1 when any wrong hit is in the log. Look at every wrong hit's photo in **Practice review** on the shooter's phone before it is gone (the next round clears it).
 
 **Development and evaluation.** Tune nothing on the session you judge with. The first session is the development set; after any threshold change, run a second session with at least one new person who enrols normally and the non-player, and report it held out:
 
@@ -47,17 +47,17 @@ It prints, per condition, target, phone and build: right hits, hits on another p
 npm run session:report -- --eval 2026-10-08
 ```
 
-(the date of the held-out session; a round key or key prefix works too).
+(the date of the held-out session; a round key or key prefix works too). Give the tuning tools the same argument, `npm run feedback:pull -- --eval 2026-10-08` and `npm run replay -- <export.json> --eval 2026-10-08`: they leave those rounds out of the triage and the calibration sweep and say how many they left out.
 
 **Acceptance targets** (proposed by the review, not claims about today's build):
 
 - zero observed wrong hits, wrong-player and unknown-person both; any wrong hit blocks a bigger round until its cause is found and fixed, and the one unexplained wrong hit from the 2026-09-26 real-photo runs stays open until a traced run explains it;
 - at least 90 % legitimate-shot success in the conditions declared supported below;
-- p95 lock acquisition under 500 ms.
+- p95 lock acquisition under 500 ms, timed from the target coming under the dot, with the shots whose target was under the dot and never locked counted as failures beside it. A shot whose target was already under the dot when its recording began (the 12 frames before the tap) cannot be timed, so sweep onto the target and tap within a second for some taps of each cell rather than holding aim on it for seconds.
 
 **Supported conditions** (fill from the held-out report; until then nothing is declared supported):
 
-| condition | legit success | wrong hits / shots (95 % bound) | p95 lock | supported? |
+| condition | legit success | wrong hits / shots (95 % bound per target) | p95 lock (never locked) | supported? |
 | --- | --- | --- | --- | --- |
 | 1.5 m front | | | | |
 | 3 m front | | | | |
