@@ -1,5 +1,5 @@
 import type { Player, Profile, Room, RoomMeta, RoomSettings } from '../types';
-import { DEFAULT_SETTINGS, PLAYER_COLORS } from '../types';
+import { DEFAULT_SETTINGS, MIN_INVULN_MS, PLAYER_COLORS } from '../types';
 import { NET_CALIB } from '../vision/calibration';
 import type { ProfilesSnapshot, ShotSample } from '../feedback/sample';
 
@@ -24,7 +24,13 @@ export interface RoomBackend {
   /** Saves the final settings, gives every player a fresh set of lives, and begins the countdown. */
   startRound(code: string, settings: RoomSettings, startAt: number): Promise<void>;
   resetForNewRound(code: string): Promise<void>;
-  registerHit(code: string, shooter: string, target: string, score: number, via: string): Promise<HitOutcome>;
+  /**
+   * Applies one shot's hit in a single atomic step over the room (`evaluateRoomHit`): refused unless
+   * the round that started at `roundStartAt` is still playing, and applied at most once per `shotId`,
+   * which is recorded at rooms/{code}/hits/{shotId} in the same write. A write the SDK keeps queued
+   * after the phone gave up waiting can therefore land only in its own round, and only once.
+   */
+  registerHit(code: string, shooter: string, target: string, score: number, via: string, shotId: string, roundStartAt: number | null): Promise<HitOutcome>;
   /**
    * Ends the round in one atomic step: only while it is still playing, with the winner read from the
    * players map in the same step, so twelve phones racing to end the same round agree on one result.
@@ -114,25 +120,102 @@ export interface HitResult {
 }
 
 /**
- * Hit resolution over the whole players map, so it can run inside one atomic write. Refuses any hit
- * once the round is already decided (at most one enrolled player alive), which closes the window
- * where a shot fired just before the last elimination would still land after it.
+ * Hit resolution over the whole players map. Refuses any hit once the round is already decided (at
+ * most one enrolled player alive), which closes the window where a shot fired just before the last
+ * elimination would still land after it. The shield is never shorter than MIN_INVULN_MS.
  */
 export function evaluateHit(
   players: Record<string, Player> | null,
   shooter: string,
   target: string,
   now: number,
-  invulnMs: number,
+  invulnMs: number | undefined,
 ): HitResult {
   if (!players) return { outcome: 'invalid' };
   const alive = Object.values(players).filter((p) => p.enrolled && p.status === 'alive');
   if (alive.length <= 1) return { outcome: 'invalid' };
-  const r = applyHit(players[target] ?? null, now, invulnMs);
+  const r = applyHit(players[target] ?? null, now, shieldMs(invulnMs));
   if (!r.next) return { outcome: r.outcome };
   const next: Record<string, Player> = { ...players, [target]: r.next };
   if (next[shooter]) next[shooter] = { ...next[shooter], tags: (next[shooter].tags ?? 0) + 1 };
   return { outcome: r.outcome, players: next };
+}
+
+/**
+ * The shield a hit actually uses: the room's setting, never below MIN_INVULN_MS. A room saved with
+ * 0 (or by an older build without the field) still costs a target one life per instant, not two.
+ */
+export function shieldMs(invulnMs: number | undefined): number {
+  return typeof invulnMs === 'number' && Number.isFinite(invulnMs) ? Math.max(MIN_INVULN_MS, invulnMs) : MIN_INVULN_MS;
+}
+
+/** What rooms/{code}/hits/{shotId} holds: one applied hit, written in the same transaction that took the life. */
+export interface HitRecord {
+  shooter: string;
+  target: string;
+  /** Server time the hit was applied. */
+  t: number;
+  score: number;
+  via: string;
+  outcome: 'hit' | 'eliminated';
+  /** meta.startAt of the round it landed in. */
+  round: number;
+}
+
+export interface HitRequest {
+  shooter: string;
+  target: string;
+  score: number;
+  via: string;
+  /** The tap's id. A hit is applied at most once per shot, however often or late it is sent. */
+  shotId: string;
+  /** meta.startAt of the round the shot was fired in; a hit for any other round is refused. */
+  roundStartAt: number | null;
+}
+
+/** Shot ids become database keys: letters, digits, '-' and '_' only, so one can never address another path. */
+export const isShotId = (id: unknown): id is string => typeof id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(id);
+
+/** Whether `meta` is the playing round that started at `roundStartAt`. A shot without a round is never in one. */
+export function roundOpenFor(meta: Pick<RoomMeta, 'status' | 'startAt'> | null | undefined, roundStartAt: number | null): boolean {
+  return Boolean(meta) && meta!.status === 'playing' && typeof roundStartAt === 'number' && Number.isFinite(roundStartAt) && meta!.startAt === roundStartAt;
+}
+
+export interface RoomHitResult extends HitResult {
+  /** The hits/{shotId} entry to write with `players`, present exactly when a hit was applied. */
+  record?: HitRecord;
+}
+
+/**
+ * Hit resolution over the whole room, so it can run inside one atomic write with the round check and
+ * the shot record. A shot already recorded is never applied again and is answered as it landed; a
+ * record from another shooter, target or round is somebody else's shot (an id collision) and refused.
+ * Otherwise the hit is refused unless its round is still playing, then resolved by `evaluateHit`.
+ */
+export function evaluateRoomHit(
+  meta: Pick<RoomMeta, 'status' | 'startAt' | 'settings'> | null | undefined,
+  players: Record<string, Player> | null | undefined,
+  hits: Record<string, HitRecord> | null | undefined,
+  req: HitRequest,
+  now: number,
+): RoomHitResult {
+  if (!isShotId(req.shotId)) return { outcome: 'invalid' };
+  const seen = hits?.[req.shotId];
+  if (seen) return { outcome: seen.shooter === req.shooter && seen.target === req.target && seen.round === req.roundStartAt ? seen.outcome : 'invalid' };
+  if (!roundOpenFor(meta, req.roundStartAt)) return { outcome: 'invalid' };
+  const r = evaluateHit(players ?? null, req.shooter, req.target, now, meta!.settings?.invulnMs);
+  if (!r.players || (r.outcome !== 'hit' && r.outcome !== 'eliminated')) return { outcome: r.outcome };
+  // The database refuses NaN and undefined; a malformed score or via must not cost the hit.
+  const record: HitRecord = {
+    shooter: req.shooter,
+    target: req.target,
+    t: now,
+    score: Number.isFinite(req.score) ? req.score : 0,
+    via: typeof req.via === 'string' ? req.via : '',
+    outcome: r.outcome,
+    round: req.roundStartAt as number,
+  };
+  return { outcome: r.outcome, players: r.players, record };
 }
 
 /**

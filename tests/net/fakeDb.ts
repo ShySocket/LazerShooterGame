@@ -29,7 +29,6 @@ export class FakeDb {
   /** How many transaction commits were retried because the node changed under them. */
   retries = 0;
   private listeners: { path: Path; cb: (s: Snap) => void }[] = [];
-  private pushCount = 0;
 
   readAt(path: Path): unknown {
     if (path[0] === '.info') return path[1] === 'connected' ? this.info.connected : path[1] === 'serverTimeOffset' ? this.info.serverTimeOffset : null;
@@ -70,6 +69,14 @@ export class FakeDb {
   writeAt(path: Path, value: unknown): void {
     this.writeSilently(path, value);
     this.notify([path]);
+  }
+
+  /**
+   * A change the server already has but no listener on this phone has heard yet (a dropped socket, an
+   * update still in flight): subscriptions keep their old value, transactions see the new one.
+   */
+  writeUnheard(path: Path, value: unknown): void {
+    this.writeSilently(path, value);
   }
 
   /** The SDK surface, cast for injection into FirebaseBackend. */
@@ -119,11 +126,6 @@ export class FakeDb {
           return { committed: true, snapshot: db.snap(r.path) };
         }
         throw new Error('transaction never settled');
-      },
-      push: async (r: FakeRef, v: unknown): Promise<FakeRef> => {
-        const key = `k${++db.pushCount}`;
-        db.writeAt([...r.path, key], v);
-        return { path: [...r.path, key] };
       },
     };
     return api as unknown as DbSdk;

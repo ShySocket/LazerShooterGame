@@ -7,7 +7,6 @@ import {
   onValue,
   onDisconnect,
   runTransaction,
-  push,
   type Database,
   type DatabaseReference,
 } from 'firebase/database';
@@ -15,15 +14,18 @@ import type { Player, Profile, Room, RoomMeta, RoomSettings } from '../types';
 import {
   claimHostPatch,
   endRoundPatch,
-  evaluateHit,
+  evaluateRoomHit,
   newPlayer,
   newRoomMeta,
   pickColor,
   randomCode,
   ROUND_META_RESET,
+  roundOpenFor,
   roundResetFields,
   type EndResult,
   type HitOutcome,
+  type HitRecord,
+  type HitRequest,
   type JoinResult,
   type PlayerSeed,
   type RoomBackend,
@@ -52,16 +54,15 @@ export interface DbSdk {
   onValue: typeof onValue;
   onDisconnect: typeof onDisconnect;
   runTransaction: typeof runTransaction;
-  push: typeof push;
 }
 
-export const REAL_SDK: DbSdk = { ref, get, set, update, onValue, onDisconnect, runTransaction, push };
+export const REAL_SDK: DbSdk = { ref, get, set, update, onValue, onDisconnect, runTransaction };
 
 export class FirebaseBackend implements RoomBackend {
   readonly mode = 'firebase' as const;
   private db: Database;
   private offset = 0;
-  /** Latest meta seen by an active subscription, so hits do not need a read round trip first. */
+  /** Latest meta seen by an active subscription, so a hit for a round that is visibly over is refused without a round trip. */
   private metaCache = new Map<string, RoomMeta | null>();
   private presence = new Map<string, Presence>();
 
@@ -234,11 +235,14 @@ export class FirebaseBackend implements RoomBackend {
     );
   }
 
-  /** One transaction over the whole room, so a player joining mid-write cannot keep stale lives. */
+  /**
+   * One transaction over the whole room, so a player joining mid-write cannot keep stale lives. The
+   * last round's hit records go with it: the new startAt already refuses any shot fired before it.
+   */
   async startRound(code: string, settings: RoomSettings, startAt: number): Promise<void> {
     await this.roomTransaction(code, (room) => {
       if (!room.meta) return; // abort
-      const { events: _events, ...rest } = room;
+      const { events: _events, hits: _hits, ...rest } = room;
       return {
         ...rest,
         players: this.resetPlayers(room.players, settings.lives),
@@ -250,7 +254,7 @@ export class FirebaseBackend implements RoomBackend {
   async resetForNewRound(code: string): Promise<void> {
     await this.roomTransaction(code, (room) => {
       if (!room.meta) return; // abort
-      const { events: _events, ...rest } = room;
+      const { events: _events, hits: _hits, ...rest } = room;
       return { ...rest, players: this.resetPlayers(room.players, room.meta.settings.lives), meta: { ...room.meta, ...ROUND_META_RESET } };
     });
   }
@@ -277,30 +281,29 @@ export class FirebaseBackend implements RoomBackend {
     return res.committed ? next : null;
   }
 
-  async registerHit(code: string, shooter: string, target: string, score: number, via: string): Promise<HitOutcome> {
-    let meta = this.metaCache.get(code);
-    if (meta === undefined) meta = (await this.sdk.get(this.sdk.ref(this.db, this.path(code, 'meta')))).val() as RoomMeta | null;
-    if (!meta || meta.status !== 'playing') return 'invalid';
-    const now = this.now();
-    const invulnMs = meta.settings.invulnMs;
-    const state = { outcome: 'invalid' as HitOutcome };
-    const res = await this.sdk.runTransaction(
-      this.sdk.ref(this.db, this.path(code, 'players')),
-      (players: Record<string, Player> | null) => {
-        // No local copy of the players map yet (a phone that has not subscribed): hand the null back
-        // so the server rejects the write and re-runs this on the real map, instead of aborting.
-        if (players === null) return null;
-        const r = evaluateHit(players, shooter, target, now, invulnMs);
-        state.outcome = r.outcome;
-        return r.players; // undefined aborts the transaction
-      },
-      { applyLocally: false },
-    );
-    const outcome = state.outcome;
-    if (res.committed && (outcome === 'hit' || outcome === 'eliminated')) {
-      void this.sdk.push(this.sdk.ref(this.db, this.path(code, 'events')), { shooter, target, t: now, score, via });
-    }
-    return outcome;
+  /**
+   * One transaction over the whole room (`evaluateRoomHit`): the round check, the shot record and the
+   * lives are read and written together. The SDK keeps a transaction queued after the game stops
+   * waiting for it (withTimeout); when it finally reaches the server it re-runs on the room as it is
+   * then, so a shot from a round that has ended or been replaced is refused there, and a shot already
+   * recorded is not applied twice.
+   */
+  async registerHit(code: string, shooter: string, target: string, score: number, via: string, shotId: string, roundStartAt: number | null): Promise<HitOutcome> {
+    const req: HitRequest = { shooter, target, score, via, shotId, roundStartAt };
+    // Refusing on the subscribed meta is always safe and saves a round trip; only the transaction accepts.
+    const cached = this.metaCache.get(code);
+    if (cached !== undefined && !roundOpenFor(cached, roundStartAt)) return 'invalid';
+    let outcome: HitOutcome = 'invalid';
+    const res = await this.roomTransaction(code, (room) => {
+      const r = evaluateRoomHit(room.meta, room.players, room.hits, req, this.now());
+      outcome = r.outcome;
+      if (!r.players || !r.record) return; // abort: refused, or this shot already counted
+      return { ...room, players: r.players, hits: { ...(room.hits ?? {}), [shotId]: r.record } };
+    });
+    if (!res.committed) return outcome;
+    // A committed write is answered from what the server stored, never from a closure a re-run may have changed.
+    const stored = (res.snapshot.val() as RoomNode | null)?.hits?.[shotId];
+    return stored && stored.shooter === shooter && stored.target === target ? stored.outcome : 'invalid';
   }
 
   async submitShotFeedback(round: string, sample: ShotSample, profiles: ProfilesSnapshot | null): Promise<void> {
@@ -323,6 +326,9 @@ interface RoomNode {
   meta?: RoomMeta;
   players?: Record<string, Player>;
   profiles?: Record<string, Profile>;
+  /** One entry per applied hit this round, keyed by shot id; cleared when a round starts or resets. */
+  hits?: Record<string, HitRecord>;
+  /** The hit log written by builds before hits/{shotId}; dropped like hits at the next round. */
   events?: unknown;
 }
 

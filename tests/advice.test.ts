@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { connectState, crashNotice, HIT_CONFIDENCE_NOTE, RANGE_TARGET_NOTE, updateAllowed, verdictAdvice, isStalled, loadProgress, lobbyHint, rejoinFailure, saveError, shareFallback, STALL_TEXT } from '../src/ui/advice';
+import { connectState, crashNotice, HIT_CONFIDENCE_NOTE, hitVerdict, NOT_COUNTED, RANGE_TARGET_NOTE, UNCONFIRMED, UNCONFIRMED_ADVICE, updateAllowed, verdictAdvice, isStalled, loadProgress, lobbyHint, rejoinFailure, saveError, shareFallback, STALL_TEXT } from '../src/ui/advice';
 import { LOAD_CALIB } from '../src/vision/calibration';
 
 const REQUIRED = ['blazeface', 'facemesh', 'insightface-ghostnet-strides1', 'movenet-multipose'];
@@ -70,7 +70,7 @@ test('share fallback shows the code, and the hit confidence note says where the 
 });
 
 test('verdict advice names what to do for every refusal and stays silent on hits and clean misses', () => {
-  for (const v of ['UNCLEAR TARGET', 'NOT A PLAYER', 'THAT IS YOU', 'CAMERA TOO SLOW', 'NO FRESH FRAMES', 'NO CAMERA LOCK', 'SHOT LOST', 'NO CONNECTION, SHOT LOST']) {
+  for (const v of ['UNCLEAR TARGET', 'NOT A PLAYER', 'THAT IS YOU', 'CAMERA TOO SLOW', 'NO FRESH FRAMES', 'NO CAMERA LOCK', 'SHOT LOST', 'NO CONNECTION, SHOT LOST', 'UNCONFIRMED', 'NOT COUNTED', 'Sam IS ALREADY OUT']) {
     assert.ok(verdictAdvice(v).length > 10, `${v} has advice`);
   }
   assert.equal(verdictAdvice('MISS'), '');
@@ -78,6 +78,25 @@ test('verdict advice names what to do for every refusal and stays silent on hits
   assert.match(verdictAdvice('UNCLEAR TARGET'), /closer|green name/);
   assert.match(verdictAdvice('CAMERA TOO SLOW'), /light/);
   assert.match(RANGE_TARGET_NOTE, /FIRE/);
+});
+
+test('a hit the server answered is worded for what happened: a refused hit is never a MISS, a timed-out one is UNCONFIRMED', () => {
+  assert.deepEqual(hitVerdict('hit', 'Sam'), { text: 'HIT Sam', kind: 'good' });
+  assert.deepEqual(hitVerdict('eliminated', 'Sam'), { text: 'Sam ELIMINATED', kind: 'good' });
+  assert.deepEqual(hitVerdict('invulnerable', 'Sam'), { text: 'Sam is shielded', kind: 'info' });
+  assert.deepEqual(hitVerdict('dead', 'Sam'), { text: 'Sam IS ALREADY OUT', kind: 'info' });
+  assert.deepEqual(hitVerdict('invalid', 'Sam'), { text: NOT_COUNTED, kind: 'warn' });
+  for (const out of ['hit', 'eliminated', 'invulnerable', 'dead', 'invalid'] as const) assert.notEqual(hitVerdict(out, 'Sam').text, 'MISS', out);
+  // Each refusal names what to do; the dead and invalid lines are not the same line.
+  assert.match(verdictAdvice(hitVerdict('dead', 'Sam').text), /still playing/);
+  assert.match(verdictAdvice(NOT_COUNTED), /round was already over/);
+  assert.notEqual(verdictAdvice(hitVerdict('dead', 'Sam').text), verdictAdvice(NOT_COUNTED));
+  // UNCONFIRMED is honest: it may still count, and only if it reached the server.
+  assert.equal(UNCONFIRMED, 'UNCONFIRMED');
+  assert.equal(verdictAdvice(UNCONFIRMED), UNCONFIRMED_ADVICE);
+  assert.match(UNCONFIRMED_ADVICE, /counts only if it reached the server/);
+  assert.match(UNCONFIRMED_ADVICE, /Wi-Fi/);
+  assert.equal(verdictAdvice('Sam is shielded'), '');
 });
 
 test('update allowed only when nothing on the phone would be lost by a reload', () => {

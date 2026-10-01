@@ -2,9 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Human, Result } from '@vladmandic/human';
 import { backend, MIN_PLAYERS, practiceBackend } from '../net';
 import { decideRoundEnd } from '../net/backend';
-import { CROWD_TEXT, hitFailureText, OFFLINE_TEXT, PRACTICE_CHECKLIST, practiceVerdict, RANGE_SHOT_NOTE, RANGE_TARGET_NOTE, verdictAdvice } from '../ui/advice';
+import { CROWD_TEXT, hitFailureText, hitVerdict, OFFLINE_TEXT, PRACTICE_CHECKLIST, practiceVerdict, RANGE_SHOT_NOTE, RANGE_TARGET_NOTE, verdictAdvice } from '../ui/advice';
 import { useConnection } from '../hooks/useConnection';
-import { withTimeout } from '../net/withTimeout';
+import { isTimeout, withTimeout } from '../net/withTimeout';
 import { NET_CALIB } from '../vision/calibration';
 import { alivePlayers, enrolledPlayers, livesLabel, UNKNOWN_ID, type Player, type Room } from '../types';
 import { useCamera } from '../hooks/useCamera';
@@ -43,10 +43,12 @@ interface ShotContext {
   practice: boolean;
   distance: number;
   expectedId: string;
-  /** Ties the verdict back to the feedback recorder's record of the tap. */
+  /** Ties the verdict back to the feedback recorder's record of the tap, and is the hit's once-only key on the server. */
   shotId: string;
   /** Practice: how the shot was set up, as the shooter said before the tap. */
   conditions: ShotConditions;
+  /** meta.startAt of the round the tap was made in: the server refuses the hit in any other round. */
+  roundStartAt: number | null;
 }
 
 type Kind = 'info' | 'good' | 'warn' | 'bad';
@@ -406,21 +408,23 @@ export function Game({ room, me, pid, onLeave }: Props) {
       return show('UNCLEAR TARGET', 'warn');
     }
     const name = room.players[r.id]?.name ?? '?';
-    // Offline, a Firebase write waits forever; the player gets a verdict either way.
-    withTimeout(backend.registerHit(room.code, pid, r.id, r.score, r.via), NET_CALIB.hitTimeoutMs, 'the hit')
+    // Offline, a Firebase write waits forever; the player gets a verdict either way. The write stays
+    // queued after the deadline, which is why it carries the shot id and its round: it can only land
+    // once, and only while that round is playing, so a timeout is UNCONFIRMED rather than lost.
+    withTimeout(backend.registerHit(room.code, pid, r.id, r.score, r.via, context.shotId, context.roundStartAt), NET_CALIB.hitTimeoutMs, 'the hit')
       .then((out) => {
         logShot(out, track, { targetName: name, targetId: r.id, via: r.via, resolveMs, zoom: zoomed }, context.shotId);
-        if (out === 'hit' || out === 'eliminated') {
+        const v = hitVerdict(out, name);
+        if (v.kind === 'good') {
           sfx.hit();
           flashScreen('rgba(124,255,59,0.35)');
-          show(out === 'eliminated' ? `${name} ELIMINATED` : `HIT ${name}`, 'good');
-        } else if (out === 'invulnerable') show(`${name} is shielded`, 'info');
-        else show('MISS', 'info');
+        } else if (v.kind === 'warn') sfx.unclear();
+        show(v.text, v.kind);
       })
       .catch((e: unknown) => {
-        console.warn('hit not registered', e);
+        console.warn('hit not confirmed', e);
         sfx.unclear();
-        logShot('network error', track, { targetName: name, targetId: r.id, via: r.via, resolveMs, zoom: zoomed }, context.shotId);
+        logShot(isTimeout(e) ? 'unconfirmed' : 'network error', track, { targetName: name, targetId: r.id, via: r.via, resolveMs, zoom: zoomed }, context.shotId);
         show(hitFailureText(e), 'warn', 2000);
       });
   };
@@ -507,7 +511,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
     torch(120);
     flashScreen('rgba(255,255,255,0.9)', 90);
     const shotId = `${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-    const context: ShotContext = { practice: rangeMode, distance: rangeDist, expectedId: rangeTargetId, shotId, conditions: { distance: rangeDist, view: rangeView, lighting: rangeLight, scenario: rangeScenario } };
+    const context: ShotContext = { practice: rangeMode, distance: rangeDist, expectedId: rangeTargetId, shotId, conditions: { distance: rangeDist, view: rangeView, lighting: rangeLight, scenario: rangeScenario }, roundStartAt: room.startAt ?? null };
 
     const L = pipeline.current.getLatest();
     const wrap = wrapRef.current;

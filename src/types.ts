@@ -107,6 +107,12 @@ export const DEFAULT_SETTINGS: RoomSettings = {
   hitMargin: 0.2,
 };
 
+/**
+ * The shortest shield after a hit, whatever the lobby says: two shooters tagging the same target in
+ * the same instant cost one life, not two. The lobby field stops here and the hit rule clamps to it.
+ */
+export const MIN_INVULN_MS = 500;
+
 /** Twelve colours that stay apart on a phone screen; a thirteenth player gets a random repeat. */
 export const PLAYER_COLORS = [
   '#ff3b5c', '#3bd1ff', '#ffd23b', '#7cff3b', '#c43bff', '#ff8a3b',
