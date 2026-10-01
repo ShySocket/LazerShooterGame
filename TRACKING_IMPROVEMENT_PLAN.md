@@ -494,3 +494,38 @@ Until today every identity number came from the simulator or the bench's one 3D-
 Shooting on real group photos (bench, standing groups, 12 shots at each of 2 people per photo): about 88 of 124 on-target shots land, 0 wrong. Misses are ~90% the torso rule (dot on the outer box but off the observed torso, or a neighbour covering it), by design; the rest are bodies the detector did not find. Open: one of 11 full runs (2376 shots) showed 1 wrong hit and 4 wrong-lock frames before tracing existed and has not recurred in 8 traced runs; any recurrence now writes `.rubric/realcheck/shoot-fail-*.json`.
 
 Still missing: head-turn clips for the scan check (Wikimedia returns 429 for most video), and more same-session identities than the 3 in the talker clips.
+
+### 2026-10-01: face model choice at the operating point (Astra review item 8)
+
+GhostNet was chosen on 2026-09-26 by distribution numbers: EER, TAR at 1% FAR, the 5th percentile of own-frame similarity, and the rival margin. The game runs at a far stricter point, because a wrong hit must not happen at all. `scripts/compare-face-models.ts` now also judges every model there, on the clips. The clips are the frames a round sees: 6 talkers, each enrolled with 8 samples from their first 6 s, then 477 later frames and 465 running track means (from the third frame, `MEAN_ALPHA`). For each model it reports the share of genuine frames and track means above three cutoffs:
+
+- **zero FA:** the strictest cutoff that accepts no impostor. It sits just above the highest of (a) every still face (252 faces, nobody in the photo set is enrolled) against each talker's profile and (b) the other talkers against each profile, using single frames for the frame column and track means for the track-mean column.
+- **FACE_CALIB-eq and FACE_ONLY-eq:** each calibration is a ramp, so it is expressed as the similarity at which a face alone, at full quality, gives a hit. That is evidence of at least `hitThreshold` 0.5 and at least `hitMargin` 0.2 ahead of the stranger baseline: 0.492 under `FACE_CALIB` and 0.810 under `FACE_ONLY_CALIB` in GhostNet's scale. A wrong hit lives in the tail, and the tails differ between models, so other models get the equivalent cutoff by false accepts, not by z-norm on the bulk. That means the cutoff that lets the same number of the 6222 impostor comparisons through (10 at 0.492). Above every impostor (0.810) there are none to match, so they get the same headroom over their own worst impostor, measured in impostor standard deviations.
+
+`src/realcheck/probe.ts` now times each face's zoom crop pass: crop, detector, mesh and embedding, with results read back. `scripts/realcheck.ts` stores the median as `msPerCrop` (and the p90) in the faces and clips summaries. It also takes `LZ_FIXTURES`, `LZ_REALCHECK_OUT` and `LZ_REALCHECK_PORT`, so a worktree can use the main checkout's fixtures and its own dev server. A stale server on 5198 serving another checkout would otherwise be reused silently. All six models were rerun from the same fixtures on 2026-10-01 (`faces clips`, `--face=<model>`). GhostNet strides 1 loaded as a candidate reproduced the shipped run exactly, so the candidate path is fair.
+
+| model | ms/crop | zero FA, frames | zero FA, track means | FACE_CALIB-eq (10/6222 FA): frames / means | FACE_ONLY-eq (0 FA): frames / means |
+| --- | --- | --- | --- | --- | --- |
+| GhostNet strides 1 (shipped) | 19.4, 19.9 | 0.69: 44% | 0.59: 91% | 0.49: 91% / 96% | 0.81: 12% / 23% |
+| EfficientNet-B0 | 19.8, 17.5 | 0.45: 78% | 0.45: 90% | 0.41: 82% / 92% | 0.57: 64% / 82% |
+| GhostNet strides 2 | 17.9, 16.3 | 0.60: 59% | 0.60: 79% | 0.52: 72% / 86% | 0.76: 20% / 32% |
+| MobileNet-Swish | 18.4, 19.0 | 0.74: 58% | 0.74: 76% | 0.54: 84% / 89% | 0.89: 5% / 12% |
+| MobileNet-emore | 17.3, 15.2 | no valid embeddings | | | |
+
+Notes on the table:
+
+- **ms/crop:** median of 337 crops in two round-robin rounds of the faces stage, headless Chrome on WebGPU (Apple M5, ANGLE Metal), with other jobs on the machine. GhostNet strides 1 alone ranged from 18.1 to 26.5 ms across six faces-stage runs. The differences between models are inside that noise: the crop pass is dominated by the detector, the mesh and the readback, not by the embedding model. Timing does not separate the models.
+- **Photo pairs:** EER and TAR at 1% FAR were GhostNet 12.7% and 83%, EfficientNet-B0 10.9% and 80%.
+- **Model size:** GhostNet is 8.1 MB to download, EfficientNet-B0 13.0 MB.
+
+What the numbers say:
+
+- **Track means:** what the belief is built from. GhostNet and EfficientNet-B0 tie at zero FA (91% and 90%). The other two trail (79%, 76%).
+- **Single frames:** what a fresh track's first reads and the overlap rule's own face read rely on. EfficientNet-B0 leads, 78% against 44%. GhostNet's frame cutoff rests on one face. In the Cordeiro interview, one woman turned 32° (t = 21.4 s) scores 0.69 against the other woman's profile. They are visibly two different people. EfficientNet-B0 gives the same frame 0.41 and MobileNet-Swish 0.56. Without that frame GhostNet accepts 74%, and above its third-highest impostor (0.54) 83%. The still that binds next (0.59) is also a turned face. With single frames limited to yaw ≤ 30° (17 of 477 genuine frames dropped), GhostNet's frame cutoff falls to 0.53 and accepts 83% of all frames, against EfficientNet-B0's 76%.
+- **Outfit-corroborated face (`FACE_CALIB`):** at equal false accepts GhostNet accepts more, 91% / 96% against 82% / 92%. This is the case for most of a round.
+- **Face alone (`FACE_ONLY_CALIB`):** the face-only hit point (0.81) passes 12% of real frames and 23% of track means. No real frame reaches `accept` 0.95. With the same headroom over its own worst impostor, EfficientNet-B0 would pass 64% / 82%. That headroom is measured from GhostNet's worst impostor, which is the turned-face frame above.
+
+Decision: **keep GhostNet strides 1.** On the paths a round mostly uses, it is equal or better: track means at zero FA (91% against 90%) and the corroborated face at equal false accepts (91% / 96% against 82% / 92%). It costs the same per crop and is smaller to download. Switching would invalidate every stored scan and would need `FACE_MEAN`, `FACE_CALIB`, `FACE_ONLY_CALIB`, `FACE_CONFLICT` and the sim's same-person levels measured again. EfficientNet-B0's lead on single frames and on the face-only bar comes from GhostNet's weakness on turned faces, and that is better fixed where it arises. Follow-ups (not done here):
+
+1. A yaw bound of about 30° on the single-frame face reads that name a player (the overlap rule's own read and a fresh track's first reads). The scan's turned prompts are not affected. Measured here, GhostNet's zero-FA frame acceptance goes from 44% to 83%. It only refuses more frames, so it cannot loosen anything, but it needs `npm run sim:full` and the tests before it lands.
+2. Revisit EfficientNet-B0 when there are more same-session talkers (6 today, and the frame verdict rests on one face), or if face-only targets (practice captures without an outfit) become common. Rerun with `npm run realcheck -- faces clips [--face=<model>]` per model, then `node --import ./tests/register.mjs scripts/compare-face-models.ts`.
