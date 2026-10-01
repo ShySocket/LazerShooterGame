@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { BodyResult, FaceResult } from '@vladmandic/human';
 import { buildDetections, faceBodyBox, faceOwner, hitRegion, resetIdentity, Tracker, trackState, type Detection } from '../src/vision/tracker.ts';
 import type { NBox } from '../src/vision/geometry.ts';
-import { resolveHit, updateBelief } from '../src/vision/scoring.ts';
+import { resolveHit, updateBelief, updateFaceMean } from '../src/vision/scoring.ts';
 
 const detection = (x: number, width = 0.2): Detection => ({ box: [x, 0.1, width, 0.7] });
 const body = (box: NBox, nose?: [number, number]): BodyResult => ({
@@ -236,9 +236,18 @@ test('ambiguous association keeps the track and its identity but suspends locks 
   assert.ok(current.belief.alice > 0.9, 'the identity is kept');
   assert.equal(current.unconfirmed, true);
   assert.equal(resolveHit(current, new Set(['alice']), 0.5, 0.2, 210), null, 'but it cannot take a hit yet');
+  // The next frame's association is clear again (while it stays ambiguous, only a fresh read may decide).
+  tracker.update([detection(0.3)], 300);
   updateBelief(current, { alice: 1 }, 0.3, 400);
   assert.equal(current.unconfirmed, false);
-  assert.ok(resolveHit(current, new Set(['alice']), 0.5, 0.2, 410), 'fresh evidence restores it');
+  // Review of 2026-10-01: one agreeing frame is not fresh evidence. The running face mean started over
+  // at the transition, and the identity needs REACQUIRE.faceSamples independent samples after it.
+  assert.equal(resolveHit(current, new Set(['alice']), 0.5, 0.2, 410), null, 'one frame does not restore it');
+  assert.equal(current.faceMean, null, 'the old running mean is gone');
+  updateFaceMean(current, [1, 0], 420);
+  updateFaceMean(current, [1, 0], 700);
+  updateBelief(current, { alice: 1 }, 0.3, 730);
+  assert.ok(resolveHit(current, new Set(['alice']), 0.5, 0.2, 740), 'two fresh face samples after the transition restore it');
 });
 
 test('identity reset clears evidence freshness, conflict and face history together', () => {
@@ -455,4 +464,50 @@ test('a track anticipates a turning pan: constant acceleration keeps continuity 
   young.update([b(0.3)], 0);
   const [y] = young.update([b(0.32)], 220);
   assert.equal(y.ax, 0);
+});
+
+test('an uncertain transition throws away the old running face mean and keeps outfit vetoes', async () => {
+  const { markUncertain } = await import('../src/vision/tracker.ts');
+  const { faceEvidence } = await import('../src/vision/scoring.ts');
+  const { unitSimilarity } = await import('../src/vision/embedding.ts');
+  const [t] = new Tracker().update([detection(0.3)], 100);
+  const ALICE = [1, 0, 0];
+  const BOB = [0, 1, 0];
+  for (let i = 0; i < 6; i++) updateFaceMean(t, ALICE, 100 + i * 200);
+  t.outfitVeto = { carol: { at: 900, eased: false } };
+  markUncertain(t, 1500);
+  assert.equal(t.faceMean, null, 'nothing of the previous face survives');
+  assert.ok(t.outfitVeto?.carol, 'a veto only ever refuses, and is re-read by the next outfit sample');
+  assert.equal(t.reacquireAt, 1500);
+  // One frame of a different face now reads as that face alone, not as a blend dominated by the old one.
+  const mean = updateFaceMean(t, BOB, 1600);
+  const ev = faceEvidence(mean, [{ id: 'alice', profile: { faceModel: 'x', face: [ALICE], outfit: { front: { top: [1] }, back: { top: [1] } } } }], unitSimilarity, { reject: 0.3, accept: 0.62 });
+  assert.equal(ev.alice, 0, 'the old person no longer speaks through the mean');
+});
+
+test('after a transition the identity needs two fresh face samples taken after it', async () => {
+  const { markUncertain } = await import('../src/vision/tracker.ts');
+  const { reacquired } = await import('../src/vision/scoring.ts');
+  const [t] = new Tracker().update([detection(0.3)], 100);
+  markUncertain(t, 1500);
+  updateFaceMean(t, [1, 0], 1500);
+  assert.equal(reacquired(t), false, 'a sample in the transition frame itself is not after it');
+  updateFaceMean(t, [1, 0], 1600);
+  assert.equal(reacquired(t), false, 'one fresh face sample is not enough');
+  updateFaceMean(t, [1, 0], 1900);
+  assert.equal(reacquired(t), true);
+});
+
+test('a persistent overlap starts the identity over once, not every frame, so the player can be re-earned', () => {
+  const tracker = new Tracker();
+  const front: Detection = { box: [0.3, 0.2, 0.2, 0.7] };
+  const behind: Detection = { box: [0.4, 0.25, 0.18, 0.62] };
+  let [a] = tracker.update([front, behind], 100);
+  updateFaceMean(a, [1, 0], 100);
+  for (let t = 300; t <= 1500; t += 200) {
+    [a] = tracker.update([front, behind], t);
+    updateFaceMean(a, [1, 0], t);
+  }
+  assert.equal(a.reacquireAt, 100, 'the overlap started the identity over at its onset only');
+  assert.ok(a.faceSamples >= 2, 'fresh samples accumulate while the overlap lasts');
 });

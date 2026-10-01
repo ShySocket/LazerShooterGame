@@ -56,6 +56,10 @@ export interface PersonSpec {
   outfitOf?: string;
   /** Optional: enrolled with the face only (a practice target captured without the hips in view). */
   faceOnlyProfile?: boolean;
+  /** Optional: share of clothing samples that read a wrong garment colour (a bad crop, a light change). */
+  outfitGlitch?: number;
+  /** Optional: share of clothing samples whose torso cannot be read at all (hips hidden, side-on): sig null. */
+  torsoHidden?: number;
   /** Changes of behaviour during the round, applied once the scene clock passes `at` seconds. */
   script?: { at: number; facing?: Facing; vx?: number; vd?: number }[];
 }
@@ -406,6 +410,10 @@ export function sampleOutfit(rng: Rng, p: Person | null): OutfitObservation | nu
     headShoulder: p.props.headShoulder + rng.gauss(0, 0.03),
   };
   // Legs and hair are seen less reliably than the top: about a third of samples miss them.
+  // Hips behind cover or out of frame: the sampler cannot read a torso, so nothing is compared.
+  if (p.torsoHidden && rng.chance(p.torsoHidden)) return { sig: null, props: null };
+  // A glitched sample reads some other colour entirely: the case that can veto a real player.
+  if (p.outfitGlitch && rng.chance(p.outfitGlitch)) return { sig: { top: perturb(rng, topHistogram((Math.floor(rng.next() * 11) + 1 + Math.round(p.topHue)) % 12, 2), lighting), thighs: perturb(rng, topHistogram(Math.floor(rng.next() * 12), 2), lighting) }, props: null };
   const sig: OutfitSig = { top: perturb(rng, p.top, lighting) };
   if (rng.chance(0.7)) sig.thighs = perturb(rng, p.bottom, lighting);
   if (rng.chance(0.55)) sig.shins = perturb(rng, p.bottom, lighting + 0.05);

@@ -328,3 +328,62 @@ test('(j) a nomination from motion needs the dot on the moved torso, not merely 
   h.clock.now = h.t - PERIOD + 100;
   assert.equal(h.pipeline.fire({ tap: h.clock.now }, [0.29 - 0.02, 0.35, 0.42, 0.3]).kind, 'miss');
 });
+
+test('an outfit sample whose torso cannot be read is not a sample: the audit stays due and nothing counts as checked', async () => {
+  const h = harness();
+  h.ops.sampleOutfit = () => ({ sig: null, props: null });
+  await h.frame([body(BOB_BOX, BOB_HIT)]);
+  await h.frame([body(BOB_BOX, BOB_HIT)]);
+  const out = await h.frame([body(BOB_BOX, BOB_HIT)]);
+  const t = out.tracks[0];
+  assert.equal(t.lastClothingAt, 0);
+  assert.equal(t.lastOutfitReadAt ?? 0, 0);
+});
+
+// ---- Review of 2026-10-01: a face must be corroborated, and nobody may be refused for good ----------
+
+/** A unit vector with cosine `cos` to `u` (64-d, so the 512-d mean-centring does not apply). */
+const withCosine = (u: number[], cos: number, seed: number): number[] => {
+  const n = embedding(seed);
+  const d = n.reduce((s, x, i) => s + x * u[i], 0);
+  const perp = unit(n.map((x, i) => x - d * u[i]));
+  return u.map((x, i) => cos * x + Math.sqrt(1 - cos * cos) * perp[i]);
+};
+
+test('a look-alike stranger whose torso cannot be read is never named: without a readable outfit the face needs the strict bar', async () => {
+  const h = harness();
+  const LOOKALIKE = withCosine(ALICE_FACE, 0.66, 9);
+  h.ops.sampleOutfit = () => ({ sig: null, props: null });
+  h.ops.cropFaces = async (region) => (region[2] > 0.3 ? [{ box: [region[0] + 0.12, 0.26, 0.08, 0.1], embedding: LOOKALIKE, quality: 1 }] : []);
+  for (let i = 0; i < 30; i++) {
+    const out = await h.frame([body(BOB_BOX, BOB_HIT)]);
+    assert.notEqual(out.lock?.kind === 'lock' ? out.lock.id : null, 'alice', `frame ${i}: a face at 0.66 must not name alice uncorroborated`);
+  }
+});
+
+test('a player whose torso cannot be read is still hit once the face clears the strict bar, even after a dropout', async () => {
+  const h = harness();
+  h.ops.sampleOutfit = () => ({ sig: null, props: null });
+  let locked = 0;
+  for (let i = 0; i < 8; i++) if ((await h.frame([body(BOB_BOX, BOB_HIT)])).lock?.kind === 'lock') locked++;
+  assert.ok(locked > 0, 'Bob, face clear, torso hidden, locks');
+  for (let i = 0; i < 4; i++) await h.frame([]);
+  let after = 0;
+  for (let i = 0; i < 15; i++) if ((await h.frame([body(BOB_BOX, BOB_HIT)])).lock?.kind === 'lock') after++;
+  assert.ok(after >= 10, `after a reclaim Bob is locked again within a few frames (${after}/15)`);
+});
+
+test('a player standing half behind someone is re-earned, not refused for as long as the overlap lasts', async () => {
+  const h = harness();
+  h.ops.sampleOutfit = () => ({ sig: { top: [1] }, props: null });
+  // The other person stands to Bob's right and a little behind (IoU about 0.3); the dot stays on Bob's torso.
+  const OTHER: NBox = [0.55, 0.3, 0.3, 0.55];
+  // Bob's face sits clearly on his own box, left of where the other person's box starts.
+  h.ops.cropFaces = async (region) => (region[0] < 0.5 && region[2] > 0.3 ? [{ box: [0.4, 0.26, 0.06, 0.08], embedding: BOB_FACE, quality: 1 }] : []);
+  let locked = 0;
+  for (let i = 0; i < 25; i++) {
+    const out = await h.frame([body(BOB_BOX, BOB_HIT), body(OTHER, [0.6, 0.32, 0.18, 0.3])]);
+    if (out.lock?.kind === 'lock' && out.lock.id === 'bob') locked++;
+  }
+  assert.ok(locked >= 15, `Bob locked in ${locked}/25 frames of a lasting overlap`);
+});

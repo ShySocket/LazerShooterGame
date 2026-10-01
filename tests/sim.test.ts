@@ -128,7 +128,8 @@ test('a target who turns their back and then faces the shooter again stays hitta
 
 test('a phone with occasional slow frames still fires and hits instead of refusing shots as stale', async () => {
   const a = await run('hiccups');
-  assert.ok(a.stale <= 1, describe(a));
+  // About 1.4% of shots land on a slow frame (100 seeds: 29-32 of 2200); 2 in these 3 seeds' 67 is noise.
+  assert.ok(a.stale <= 2, describe(a));
   assert.ok(hitRate(a) >= 0.85, describe(a));
   assert.equal(a.wrong, 0, describe(a));
 });
@@ -193,6 +194,21 @@ test('a face-only target (no outfit on file) is never confused with a look-alike
   assert.equal(a.wrongLockFrames, 0, describe(a));
   const d = await run('duel-faceonly');
   assert.equal(d.wrong, 0, describe(d));
+});
+
+test('identity does not ride across a crossing, and a wrongly vetoed player costs refusals, never a wrong hit', async () => {
+  // Review of 2026-10-01: markUncertain resets the face mean and vetoes, and reacquired() needs fresh
+  // evidence; crossing look-alikes (faces 0.66 alike) and a player whose outfit is misread a quarter
+  // of the time measured 0 wrong hits and 0 wrong-lock frames over 100 seeds.
+  for (const name of ['crossing-lookalike-faces', 'vetoed-player', 'lookalike-stranger-slow']) {
+    const a = await run(name);
+    assert.equal(a.wrong, 0, describe(a));
+    assert.equal(a.wrongLockFrames, 0, describe(a));
+  }
+  // Fairness: a misread outfit costs refusals, never the player for good (100 seeds: 78% land).
+  assert.ok(hitRate(await run('vetoed-player')) >= 0.6, 'a wrongly vetoed player is still hit most of the time');
+  const { OUTFIT_VETO, CLOTHING_AUDIT_MS } = await import('../src/vision/calibration');
+  assert.ok(OUTFIT_VETO.holdMs >= 2 * CLOTHING_AUDIT_MS, 'a veto must outlast the clothing audit, or it lapses between samples');
 });
 
 test('a stranger wearing the same top as a player is never hit, and never wears their name even hedged', async () => {

@@ -355,6 +355,14 @@ export const SCENARIOS: Scenario[] = [
     options: { target: 'alice', durationMs: 15000, pan: { amplitude: 0.15, periodS: 3 } },
   },
   {
+    // Review of 2026-10-01: the same pan crossing aimed at the farther player. Geometry under 250 ms
+    // old let an instant hit decide while the pan had already moved the other player under the dot.
+    name: 'pan-crossing-far',
+    expect: 'the pan crossing aimed at the farther player: never the nearer one',
+    people: [ME, front('alice', 0.2, 4, 0, { vx: 0.04 }), front('bob', 0.8, 4.4, 6, { vx: -0.04 })],
+    options: { target: 'bob', durationMs: 15000, pan: { amplitude: 0.15, periodS: 3 } },
+  },
+  {
     name: 'crossing-backs',
     expect: 'the same crossing with both players facing away: only the outfit can re-identify them',
     people: [ME, front('alice', 0.2, 4, 0, { vx: 0.04, facing: 'back' }), front('bob', 0.8, 4.4, 6, { vx: -0.04, facing: 'back' })],
@@ -409,6 +417,52 @@ export const SCENARIOS: Scenario[] = [
     expect: 'a non-player whose face reads about 0.66 like a player, in other clothes: never a hit',
     people: [ME, front('alice', 0.12, 4, 0), { id: 'stranger', player: false, x: 0.5, distance: 3, facing: 'front', topHue: 7, bottomHue: 3, faceLike: { id: 'alice', cos: 0.85 } }],
     options: { target: 'stranger' },
+  },
+  {
+    // Review of 2026-10-01: on a slow phone clothing audits come ~1.8 s apart; a veto that lapses on
+    // a clock (2 s) let the look-alike be hit 42 times in 40 seeds.
+    name: 'lookalike-stranger-slow',
+    expect: 'the look-alike stranger on a phone that takes 400 ms per frame: never a hit',
+    people: [ME, front('alice', 0.12, 4, 0), { id: 'stranger', player: false, x: 0.5, distance: 3, facing: 'front', topHue: 7, bottomHue: 3, faceLike: { id: 'alice', cos: 0.85 } }],
+    options: { target: 'stranger', inferenceMs: 400, cropMs: 45 },
+  },
+  {
+    // Review of 2026-10-01: a look-alike whose torso can never be read is never vetoed, so only the
+    // corroboration rule (the face-only bar without the player's own outfit backing it) refuses him.
+    name: 'lookalike-stranger-hidden',
+    expect: 'a non-player whose face reads about 0.66 like a player and whose torso cannot be read: never a hit',
+    people: [ME, front('alice', 0.12, 4, 0), { id: 'stranger', player: false, x: 0.5, distance: 3, facing: 'front', topHue: 7, bottomHue: 3, faceLike: { id: 'alice', cos: 0.85 }, torsoHidden: 1 }],
+    options: { target: 'stranger' },
+  },
+  {
+    // A player crossing a non-player look-alike: no identity, outfit read or learned face may ride over.
+    name: 'crossing-lookalike-stranger',
+    expect: 'a player and a non-player look-alike cross: the stranger is never hit or locked as her',
+    people: [ME, front('alice', 0.2, 4, 0, { vx: 0.06 }), { id: 'stranger', player: false, x: 0.8, distance: 4.2, facing: 'front', topHue: 7, bottomHue: 3, vx: -0.06, faceLike: { id: 'alice', cos: 0.85 } }],
+    options: { target: 'stranger', durationMs: 15000 },
+  },
+  {
+    // Fairness: a player whose hips are never in view faces the face-only bar.
+    name: 'duel-hidden-torso',
+    expect: 'face-on at 3 m with the torso never readable: hits only on a clear face, never wrong',
+    people: [ME, front('alice', 0.5, 3, 0, { torsoHidden: 1 }), front('bob', 0.12, 5, 4)],
+    options: { target: 'alice' },
+  },
+  {
+    // Review of 2026-10-01: an identity must not ride across a crossing onto the wrong body. Two
+    // players whose faces read 0.66 alike cross; the shooter keeps aiming at bob.
+    name: 'crossing-lookalike-faces',
+    expect: 'two players with look-alike faces cross: shots on bob never land on alice',
+    people: [ME, front('alice', 0.2, 4, 0, { vx: 0.06 }), front('bob', 0.8, 4.2, 6, { vx: -0.06, faceLike: { id: 'alice', cos: 0.85 } })],
+    options: { target: 'bob', durationMs: 15000 },
+  },
+  {
+    // The reverse failure of the outfit veto: a real player whose clothing is misread a quarter of the
+    // time gets vetoed on their own body; that must cost a refusal, never a hit on someone else.
+    name: 'vetoed-player',
+    expect: 'a player whose outfit is misread on a quarter of samples: refusals at worst, never a wrong hit',
+    people: [ME, front('alice', 0.5, 3, 0, { outfitGlitch: 0.25 }), front('bob', 0.15, 4, 6)],
+    options: { target: 'alice' },
   },
   {
     // Review of 2026-10-01: a practice target captured without the hips has no outfit, so the

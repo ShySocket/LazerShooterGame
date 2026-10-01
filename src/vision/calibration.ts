@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-10-01.2';
+export const CALIBRATION_VERSION = '2026-10-01.3';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /**
@@ -32,7 +32,7 @@ export const FACE_CALIB = { reject: 0.3, accept: 0.62 };
  * 0.55/0.85 gave 4, 0.55/0.90 gives 0 while a face-only duel at 3 m still lands 27% (97% with an
  * outfit). Face alone cannot tell a look-alike apart, so practice capture asks for the hips in view.
  */
-export const FACE_ONLY_CALIB = { reject: 0.55, accept: 0.9 };
+export const FACE_ONLY_CALIB = { reject: 0.6, accept: 0.95 };
 /**
  * Two players whose scans are this alike will be confused at range; the lobby warns. GhostNet: the
  * closest pair of samples between two different people's scans measured 0.42 at most (6 people,
@@ -255,9 +255,39 @@ export const CLOTHING_CONTRADICTION = { top: 0.75, current: 0.2 };
  * look-alike stranger. Players play in the outfit they scanned: a sample covering at least the top
  * (`minCoverage`) whose match to a player's outfit is at most `maxSim` (a contradicting garment caps
  * the match at REGION_CONTRADICTION_CAP) rules that player out on this body for `holdMs`, whatever
- * the face says. A later sample matching at `clearSim` or better lifts it.
+ * the face says. A later sample matching at `clearSim` or better over at least `clearCoverage` of the
+ * outfit lifts it at once (a matching shirt alone cannot lift a veto the trousers caused); a readable
+ * sample in between lets it lapse `holdMs` after that sample; without readable samples it never
+ * lapses (scoring.ts outfitVetoed). holdMs measured on the sim (2026-10-01): it must outlast the
+ * clothing audit spacing on every phone (1 s gave 1653 wrong hits on lookalike-stranger; 2 s ran out
+ * between audits at 460 ms per frame, 42 wrong hits on the slow-phone look-alike).
  */
-export const OUTFIT_VETO = { maxSim: 0.4, minCoverage: 0.45, holdMs: 4000, clearSim: 0.6 };
+export const OUTFIT_VETO = { maxSim: 0.4, minCoverage: 0.45, holdMs: 4000, clearSim: 0.6, clearCoverage: 0.7 };
+/**
+ * After an uncertain transition (tracker.ts markUncertain: a crossing, a reclaim, a jump, an
+ * ambiguous face) a track re-earns its identity from fresh evidence only: this many independent face
+ * samples taken after it, or clothing samples for a back view (review of 2026-10-01: one agreeing
+ * frame of an old running mean was enough). Whether those faces may name a look-alike is the
+ * corroboration rule below.
+ */
+export const REACQUIRE = { faceSamples: 2, clothingSamples: 2 };
+/**
+ * A face names a player at the normal bar (FACE_CALIB) only while their own outfit corroborates it: a
+ * readable sample covering at least `OUTFIT_VETO.clearCoverage` (top and trousers) matched them at
+ * `clearSim` or better on this body this recently, since its last uncertain transition, and not while
+ * it overlaps someone. Otherwise (torso hidden, legs out of view, an overlap, a different outfit) the
+ * face must clear FACE_ONLY_CALIB, the bar a candidate enrolled without an outfit gets.
+ */
+export const OUTFIT_RECENT_MS = 3000;
+/**
+ * While a body overlaps someone (or its face association is ambiguous) the track may hop between
+ * them without any transition, carrying the belief across; a hit then needs a face read on this
+ * body this recently that, on its own, names the same player clearly (crossing-lookalike-faces seed
+ * 4, 2026-10-01: a belief carried from the crossing partner hit him while she was under the dot).
+ */
+export const OVERLAP_FACE_FRESH_MS = 400;
+/** A single-frame face naming another player than the track believes, by this lead over the rest, is a hop onto another body. */
+export const HOP_READ_MARGIN = 0.2;
 /** Belief step per clothing frame (one reference period). */
 export const CLOTHING_BELIEF_ALPHA = 0.35;
 /** A track whose face has not been seen for this long is carried by its clothing. */

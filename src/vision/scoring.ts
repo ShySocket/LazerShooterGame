@@ -1,5 +1,5 @@
 import type { BodyProps, OutfitSig, Profile } from '../types';
-import { BELIEF_MAX_STEPS, BELIEF_REF_PERIOD_MS, CLOTHING_EVIDENCE, EVIDENCE_WEIGHTS, IDENTITY_TTL_MS, LIVE_FACE_SAMPLE_SPACING_MS, MEAN_ALPHA, MEAN_RESET_SIM, FACE_ONLY_CALIB, OUTFIT_VETO, STRANGER_BASELINE } from './calibration';
+import { BELIEF_MAX_STEPS, BELIEF_REF_PERIOD_MS, CLOTHING_EVIDENCE, EVIDENCE_WEIGHTS, IDENTITY_TTL_MS, LIVE_FACE_SAMPLE_SPACING_MS, MEAN_ALPHA, MEAN_RESET_SIM, FACE_ONLY_CALIB, OUTFIT_RECENT_MS, OUTFIT_VETO, OVERLAP_FACE_FRESH_MS, REACQUIRE, STRANGER_BASELINE } from './calibration';
 import { BODY_MODEL, UNKNOWN_ID } from '../types';
 import { hasOutfit, profileOutfitMatch, propsSimilarity } from './clothing';
 import { resetIdentity, type Track } from './tracker';
@@ -28,6 +28,7 @@ export function faceEvidence(
   sim: (a: number[], b: number[]) => number,
   calib: FaceCalib,
   quality = 1,
+  corroborated: (id: string) => boolean = () => true,
 ): Record<string, number> {
   const ev: Record<string, number> = {};
   let top = 0;
@@ -37,8 +38,9 @@ export function faceEvidence(
   for (const c of cands) {
     let best = 0;
     for (const f of c.profile.face ?? []) best = Math.max(best, sim(embedding, f));
-    // Without an outfit on file nothing can veto a look-alike stranger: the face must clear a stricter bar.
-    const k = hasOutfit(c.profile.outfit) ? calib : FACE_ONLY_CALIB;
+    // Without an outfit on file, or without their own outfit backing the face on this body lately,
+    // nothing tells a look-alike stranger apart: the face must clear the stricter bar.
+    const k = hasOutfit(c.profile.outfit) && corroborated(c.id) ? calib : FACE_ONLY_CALIB;
     ev[c.id] = clamp01((best - k.reject) / (k.accept - k.reject));
     top = Math.max(top, ev[c.id]);
   }
@@ -227,23 +229,46 @@ export function topBelief(track: Track): Resolution | null {
  * Rule players out on this body when a well-covered outfit sample contradicts their scanned outfit,
  * and lift the veto when a later sample matches it again. See OUTFIT_VETO.
  */
-export function updateOutfitVeto(track: Track, sig: OutfitSig, cands: Candidate[], now: number): void {
+export function updateOutfitVeto(track: Track, sig: OutfitSig, cands: Candidate[], now: number, mayCorroborate = true): void {
   for (const c of cands) {
     if (!c.profile.outfit || c.id === UNKNOWN_ID) continue;
     const m = profileOutfitMatch(sig, c.profile.outfit);
     if (m.coverage < OUTFIT_VETO.minCoverage) continue;
-    if (m.sim <= OUTFIT_VETO.maxSim) track.outfitVeto = { ...track.outfitVeto, [c.id]: now };
-    else if (m.sim >= OUTFIT_VETO.clearSim && track.outfitVeto?.[c.id] !== undefined) {
-      const { [c.id]: _gone, ...rest } = track.outfitVeto;
-      track.outfitVeto = rest;
+    const v = track.outfitVeto?.[c.id];
+    if (m.sim <= OUTFIT_VETO.maxSim) {
+      track.outfitVeto = { ...track.outfitVeto, [c.id]: { at: now, eased: false } };
+      continue;
     }
+    // Only a sample that covers more than the shirt can lift, ease or back up anything: a shirt alone
+    // never compared the trousers that may have caused a veto, nor told a look-alike in the same top apart.
+    if (m.coverage < OUTFIT_VETO.clearCoverage) continue;
+    if (m.sim >= OUTFIT_VETO.clearSim) {
+      if (v) {
+        const { [c.id]: _gone, ...rest } = track.outfitVeto!;
+        track.outfitVeto = rest;
+      }
+      if (mayCorroborate) track.outfitSupport = { ...track.outfitSupport, [c.id]: now };
+    } else if (v && !v.eased) track.outfitVeto = { ...track.outfitVeto, [c.id]: { at: now, eased: true } };
   }
 }
 
-/** Whether a contradicting outfit currently rules `id` out on this track. */
+/**
+ * Whether a contradicting outfit currently rules `id` out on this track. A veto lapses with time only
+ * once a readable sample over top and trousers has not contradicted it, `holdMs` after that sample: an
+ * unreadable torso, a shirt-only view, a slow phone's sparse audits or a face-only stretch never let it
+ * run out (a 2 s clock ran out between audits at 460 ms per frame). A new contradiction re-arms it.
+ */
 export function outfitVetoed(track: Track, id: string, now: number): boolean {
-  const at = track.outfitVeto?.[id];
-  return at !== undefined && now >= at && now - at <= OUTFIT_VETO.holdMs;
+  const v = track.outfitVeto?.[id];
+  if (!v || now < v.at) return false;
+  return !v.eased || now - v.at <= OUTFIT_VETO.holdMs;
+}
+
+/** Whether `id`'s own outfit corroborates a face on this track now (OUTFIT_RECENT_MS), and the body overlaps nobody. */
+export function outfitSupports(track: Pick<Track, 'outfitSupport' | 'overlapping' | 'ambiguous'>, id: string, now: number): boolean {
+  if (track.overlapping || track.ambiguous) return false;
+  const at = track.outfitSupport?.[id];
+  return at !== undefined && now >= at && now - at <= OUTFIT_RECENT_MS;
 }
 
 /** Best eligible player, for the live label. Null when the top belief is not a shootable player or their outfit is ruled out. */
@@ -254,12 +279,30 @@ export function bestBelief(track: Track, eligible: Set<string>, now = performanc
 
 export { IDENTITY_TTL_MS };
 
+/**
+ * Whether a track has re-earned its identity since its last uncertain transition: enough fresh face
+ * (or, for a back view, clothing) samples. Whether those faces may name a look-alike is decided where
+ * they become evidence (faceEvidence's corroboration), not here.
+ */
+export function reacquired(track: Track): boolean {
+  const at = track.reacquireAt ?? 0;
+  if (!at) return true;
+  const fresh = (track.faceSamples >= REACQUIRE.faceSamples && track.lastFaceSampleAt > at) || (track.clothingSince ?? 0) >= REACQUIRE.clothingSamples;
+  return fresh;
+}
+
 /** A hit only registers when the top candidate is a live opponent, confident, and clearly ahead of everyone else. */
 export function resolveHit(track: Track, eligible: Set<string>, threshold: number, margin: number, now = performance.now()): Resolution | null {
   if (!Number.isFinite(track.lastEvidenceAt) || now < track.lastEvidenceAt || now - track.lastEvidenceAt > IDENTITY_TTL_MS) return null;
   // After a frame that could not tell whose face was whose, the identity waits for fresh evidence.
-  if (track.unconfirmed) return null;
+  if (track.unconfirmed || !reacquired(track)) return null;
   const b = bestBelief(track, eligible, now);
   if (!b || !Number.isFinite(b.score) || !Number.isFinite(b.margin) || b.score < threshold || b.margin < margin || b.margin <= 0) return null;
+  // During an overlap the belief may have been carried over from the other body: this body's own
+  // latest face must name the same player clearly, on its own.
+  if (track.overlapping || track.ambiguous) {
+    const r = track.lastRead;
+    if (!r || now - r.at > OVERLAP_FACE_FRESH_MS || now < r.at || r.id !== b.id || r.margin < margin) return null;
+  }
   return b;
 }

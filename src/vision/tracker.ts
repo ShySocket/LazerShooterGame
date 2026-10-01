@@ -33,8 +33,33 @@ export interface Track {
    * kept, but it may not show a lock or take a hit until fresh evidence updates the belief again.
    */
   unconfirmed: boolean;
-  /** Players ruled out on this body by a contradicting outfit, with when (scoring.ts updateOutfitVeto). Survives resetIdentity. */
-  outfitVeto?: Record<string, number>;
+  /**
+   * Players ruled out on this body by a contradicting outfit (scoring.ts updateOutfitVeto): when the
+   * last contradiction was read, and whether a readable sample that did not contradict has been seen
+   * since (only then may the veto lapse with time). Survives resetIdentity and uncertain transitions.
+   */
+  outfitVeto?: Record<string, { at: number; eased: boolean }>;
+  /** When an outfit sample with a readable top was last taken on this body (unreadable samples do not count). */
+  lastOutfitReadAt?: number;
+  /**
+   * Players whose own outfit corroborated a face on this body, with when: a readable sample over top
+   * and trousers matched them while the body overlapped nobody (scoring.ts outfitSupports). Reset by
+   * every uncertain transition, so it never carries over to whoever the track lands on next.
+   */
+  outfitSupport?: Record<string, number>;
+  /**
+   * When this track last went through an uncertain transition (crossing, reclaim after a gap, a jump,
+   * an ambiguous face assignment): 0 when none is pending. Until fresh evidence is gathered after it
+   * (scoring.ts reacquired) the track may not lock or take a hit.
+   */
+  reacquireAt?: number;
+  /** Clothing evidence samples taken since `reacquireAt` (back views re-earn the identity this way). */
+  clothingSince?: number;
+  /** The last single-frame face read on this track: whom it named, by how much, and when (overlap rule). */
+  lastRead?: { at: number; id: string; margin: number };
+  /** Whether the previous frame had this track overlapping another or ambiguously associated (onset detection). */
+  overlapping?: boolean;
+  ambiguous?: boolean;
   via: 'face' | 'clothing' | 'none';
   lastFaceAt: number;
   /** When clothing pixels were last sampled for this track (evidence or audit). */
@@ -213,6 +238,26 @@ export function buildDetections(bodies: BodyResult[], faces: FaceResult[]): Dete
 }
 
 /** Discard all accumulated identity evidence when continuity is no longer trustworthy. */
+/**
+ * An uncertain transition: the face seen on this body may now be someone else's. The running face
+ * mean starts over, the next clothing sample is due at once, and nothing locks or hits until fresh
+ * evidence has been gathered (scoring.ts reacquired). The belief is kept, so a correct identity is
+ * re-earned quickly. Outfit vetoes are kept too: they only ever refuse, and the next readable outfit
+ * sample re-evaluates them (clearing them on a transition handed the name back to a ruled-out
+ * look-alike after two face frames; review of 2026-10-01).
+ */
+export function markUncertain(track: Track, now: number): void {
+  track.unconfirmed = true;
+  track.faceMean = null;
+  track.faceSamples = 0;
+  track.lastFaceSampleAt = 0;
+  track.lastClothingAt = 0;
+  track.lastOutfitReadAt = 0;
+  track.outfitSupport = undefined;
+  track.reacquireAt = now;
+  track.clothingSince = 0;
+}
+
 export function resetIdentity(track: Track): void {
   track.belief = {};
   track.claimed = null;
@@ -299,13 +344,13 @@ export class Tracker {
         // A box that shrank or grew by more than a quarter in one step, or whose centre jumped more
         // than half a box width, is a suspicious match: the identity is kept but must be confirmed by
         // fresh evidence before it can lock or take a hit.
-        if (heightRatio(d.box, t.box) < HEIGHT_CONFIRM_MIN) t.unconfirmed = true;
-        if (Math.abs(center(d.box)[0] - center(t.box)[0]) > CENTRE_JUMP_CONFIRM * Math.max(d.box[2], t.box[2])) t.unconfirmed = true;
+        if (heightRatio(d.box, t.box) < HEIGHT_CONFIRM_MIN) markUncertain(t, now);
+        if (Math.abs(center(d.box)[0] - center(t.box)[0]) > CENTRE_JUMP_CONFIRM * Math.max(d.box[2], t.box[2])) markUncertain(t, now);
         const m = this.motion.get(t.id)!;
         const dt = now - t.lastSeen;
         // Reclaimed after more than the continuity gap: the body is where it was expected, but the
         // identity must be confirmed by fresh evidence before it can lock or take a hit.
-        if (dt > gapMs) t.unconfirmed = true;
+        if (dt > gapMs) markUncertain(t, now);
         const [oldX, oldY] = center(t.box);
         const [newX, newY] = center(d.box);
         const alpha = m.samples === 1 ? 1 : 0.7;
@@ -341,20 +386,41 @@ export class Tracker {
       }
       t.box = [...d.box];
       t.lastSeen = now;
-      if (d.associationAmbiguous) t.unconfirmed = true;
+      // A persistent condition (an ambiguous association, an overlap) starts over only at its onset;
+      // while it lasts the track stays unconfirmed, as before, so fresh evidence can re-earn it rather
+      // than being reset away every frame (a player half behind someone was unhittable for good).
+      if (d.associationAmbiguous) {
+        if (!t.ambiguous) markUncertain(t, now);
+        else t.unconfirmed = true;
+      }
+      t.ambiguous = Boolean(d.associationAmbiguous);
       return t;
     });
     // Crossing: bodies that overlap each other, or a body that has moved over where a briefly skipped
     // neighbour was, cannot lock or take a hit until fresh evidence confirms the identity on that
     // body. This is where a swapped identity would otherwise ride unnoticed.
+    const overlap = new Set<Track>();
     for (let i = 0; i < out.length; i++) {
       for (let j = i + 1; j < out.length; j++) {
-        if (iou(out[i].box, out[j].box) >= CROSSING_IOU) out[i].unconfirmed = out[j].unconfirmed = true;
+        if (iou(out[i].box, out[j].box) >= CROSSING_IOU) {
+          overlap.add(out[i]);
+          overlap.add(out[j]);
+        }
       }
+      // A neighbour lost here a moment ago (within the lost-track window, not just the coasting gap)
+      // may be standing right behind: the detector alternates between two people in one spot, and the
+      // surviving track then hops between them with no jump to notice (crossing-lookalike-faces seed 4).
       for (const c of this.tracks) {
-        if (c.lastSeen === now || now - c.lastSeen > gapMs) continue;
-        if (iou(out[i].box, c.box) >= CROSSING_IOU) out[i].unconfirmed = true;
+        if (c.lastSeen === now || now - c.lastSeen > ttlMs) continue;
+        if (iou(out[i].box, c.box) >= CROSSING_IOU) overlap.add(out[i]);
       }
+    }
+    for (const t of out) {
+      if (overlap.has(t)) {
+        if (!t.overlapping) markUncertain(t, now);
+        else t.unconfirmed = true;
+      }
+      t.overlapping = overlap.has(t);
     }
     this.lastUpdate = now;
     return out;
