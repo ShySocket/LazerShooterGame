@@ -1,6 +1,7 @@
 import { Human, type Config } from '@vladmandic/human';
 import { createSerialQueue } from './serial';
 import { clearModelCaches } from './modelCache';
+import { BODY_CAP } from './calibration';
 export { MODELS_CACHE, STALE_MODEL_CACHES, clearModelCaches } from './modelCache';
 export * from './embedding';
 
@@ -31,7 +32,7 @@ export const humanConfig: Partial<Config> = {
     // Untyped in Human's config but honoured by the pipeline: overwrites face.embedding with a 512-d ArcFace vector.
     ...({ insightface: { enabled: true, modelPath: 'insightface-ghostnet-strides1.json', skipFrames: 0, skipTime: 0 } } as object),
   },
-  body: { enabled: true, modelPath: 'movenet-multipose.json', maxDetected: 6, minConfidence: 0.25, skipFrames: 0, skipTime: 0 },
+  body: { enabled: true, modelPath: 'movenet-multipose.json', maxDetected: BODY_CAP, minConfidence: 0.25, skipFrames: 0, skipTime: 0 },
   hand: { enabled: false },
   object: { enabled: false },
   gesture: { enabled: false },

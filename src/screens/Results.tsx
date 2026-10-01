@@ -4,6 +4,7 @@ import { enrolledPlayers, livesLabel, type Room } from '../types';
 import { sfx } from '../audio/sfx';
 import { shotLog } from '../debug/shotLog';
 import { ShotReview } from '../feedback/ShotReview';
+import { PracticeReview } from '../feedback/PracticeReview';
 import { RESET_FAILED } from '../ui/advice';
 
 interface Props {
@@ -45,6 +46,7 @@ export function Results({ room, pid, onLeave }: Props) {
         ))}
       </ol>
       <ShotReview room={room} pid={pid} />
+      <PracticeReview />
       {isHost ? (
         <>
           <button className="btn primary big" onClick={() => backend.resetForNewRound(room.code).then(() => setResetNote(''), () => setResetNote(RESET_FAILED))}>

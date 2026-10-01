@@ -126,6 +126,8 @@ export function verdictAdvice(text: string): string {
 }
 
 export const RANGE_TARGET_NOTE = 'Choose who you are aiming at to enable FIRE.';
+/** Under the range panel once a target is chosen: what a range-test shot does. */
+export const RANGE_SHOT_NOTE = 'Shots here deal no damage. Each is logged with your answer; its photo stays on this phone.';
 
 /** A waiting build is applied only when nothing on this phone would be lost by a reload. */
 export function updateAllowed(state: { inRoom: boolean; profileOpen: boolean; inputFocused: boolean }): boolean {
@@ -161,6 +163,9 @@ export function hitFailureText(e: unknown): string {
 }
 
 export const OFFLINE_TEXT = 'OFFLINE. Shots are not counting. Reconnecting…';
+
+/** Shown while the camera sees as many bodies as it can follow (BODY_CAP): hits then need a clear face. */
+export const CROWD_TEXT = 'Too many people in view. Hits need a clear face.';
 
 export type CameraPermission = 'prompt' | 'granted' | 'denied' | 'unknown';
 
@@ -199,6 +204,22 @@ export const PRACTICE_CHECKLIST: readonly string[] = [
 ];
 
 export const PRACTICE_INTRO = 'Practice: everything stays on this phone. Add targets with the back camera (a friend, a TV, a photo), pick who you aim at, and every shot is logged with that answer so the tracking can be tuned. Shots deal no damage.';
+
+export type PracticeFilter = 'all' | 'good' | 'bad' | 'warn';
+
+/** Totals for the practice review header: right (good), wrong (bad) and no-lock (warn) shots. */
+export function practiceReviewCounts(kinds: (string | undefined)[]): { total: number; good: number; bad: number; warn: number } {
+  return { total: kinds.length, good: kinds.filter((k) => k === 'good').length, bad: kinds.filter((k) => k === 'bad').length, warn: kinds.filter((k) => k === 'warn').length };
+}
+
+/** One practice shot's set-up line: "aimed at Target 1 · 3 m · back · dim · crossing · 420 ms". */
+export function practiceConditionsText(aimed: string, c: { distance?: number; view?: string; lighting?: string; scenario?: string }, resolveMs: number | null): string {
+  const parts = [`aimed at ${aimed}`];
+  if (c.distance !== undefined) parts.push(`${c.distance} m`);
+  for (const v of [c.view, c.lighting, c.scenario]) if (v) parts.push(v);
+  if (resolveMs !== null) parts.push(`${resolveMs} ms`);
+  return parts.join(' · ');
+}
 
 /** The banner after a practice shot: what the game decided against what you said you aimed at. */
 export function practiceVerdict(expected: string, resolved: string | null): { text: string; kind: 'good' | 'warn' | 'bad' } {

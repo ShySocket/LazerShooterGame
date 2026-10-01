@@ -479,6 +479,23 @@ export const SCENARIOS: Scenario[] = [
     options: { target: 'alice' },
   },
   {
+    // Astra review 2026-10-01: MoveNet returns six bodies at most, so in a crowd somebody is always
+    // missing and who it is changes frame to frame; a stranger in the target's colours stands beside her.
+    name: 'crowd-seven',
+    expect: 'seven people in view (two players, five strangers milling about): never a wrong hit or lock',
+    people: [
+      ME,
+      front('alice', 0.42, 4, 0, { vx: 0.015 }),
+      front('bob', 0.62, 4.5, 4, { vx: -0.015 }),
+      { id: 's1', player: false, x: 0.5, distance: 4.2, facing: 'front', topHue: 0, bottomHue: 3, vx: 0.02 },
+      { id: 's2', player: false, x: 0.12, distance: 5, facing: 'side', topHue: 4, vx: 0.01 },
+      { id: 's3', player: false, x: 0.82, distance: 3.6, facing: 'front', topHue: 8, vx: -0.02 },
+      { id: 's4', player: false, x: 0.3, distance: 6, facing: 'back', topHue: 2 },
+      { id: 's5', player: false, x: 0.92, distance: 5.5, facing: 'front', topHue: 6, vx: -0.01 },
+    ],
+    options: { target: 'alice' },
+  },
+  {
     name: 'mirror',
     expect: 'the shooter in a mirror: never a hit',
     people: [ME, front('alice', 0.12, 4, 0), { id: 'mirror', player: false, copyOf: 'me', x: 0.5, distance: 3, facing: 'front', topHue: 9 }],

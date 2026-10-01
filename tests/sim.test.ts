@@ -211,6 +211,15 @@ test('identity does not ride across a crossing, and a wrongly vetoed player cost
   assert.ok(OUTFIT_VETO.holdMs >= 2 * CLOTHING_AUDIT_MS, 'a veto must outlast the clothing audit, or it lapses between samples');
 });
 
+test('a crowd past the detector body cap never produces a wrong hit or lock', async () => {
+  // MoveNet returns six bodies at most; with seven people in view who is left out changes frame to
+  // frame (world.ts detect). 100 seeds on 2026-10-01: 0 wrong, 0 wrong-lock frames, 40% of shots land.
+  const a = await run('crowd-seven');
+  assert.equal(a.wrong, 0, describe(a));
+  assert.equal(a.wrongLockFrames, 0, describe(a));
+  assert.ok(a.possible > 0, 'the target is under the dot sometimes');
+});
+
 test('a stranger wearing the same top as a player is never hit, and never wears their name even hedged', async () => {
   const a = await run('same-shirt-stranger');
   assert.equal(a.correct + a.wrong, 0, describe(a));

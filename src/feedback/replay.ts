@@ -147,6 +147,7 @@ export function replayShot(sample: ShotSample, overrides: Partial<ReplayParams> 
   const trackId = sample.shot.decisionTrackId ?? sample.shot.trackId;
   let decision: BeliefState | null = null;
   let conflict = false;
+  let gate: ShotSample['frames'][number]['tracks'][number] | null = null;
   for (let i = 0; i <= last; i++) {
     const frame = sample.frames[i];
     for (const t of frame.tracks) {
@@ -182,6 +183,7 @@ export function replayShot(sample: ShotSample, overrides: Partial<ReplayParams> 
       if (i === last && t.id === trackId) {
         decision = s;
         conflict = t.conflict;
+        gate = t;
       }
     }
   }
@@ -189,7 +191,12 @@ export function replayShot(sample: ShotSample, overrides: Partial<ReplayParams> 
   const best = top(decision.belief);
   if (!best) return { resolved: null, top: null };
   const eligible = new Set(sample.round.eligible ?? []);
-  const ok = !conflict && eligible.has(best.id) && best.score >= threshold && best.margin >= margin && best.margin > 0;
+  // v2 samples carry the refusals the game applies on top of the belief: an identity not yet
+  // re-earned after a transition, a player the outfit rules out, and an overlap or a crowded frame
+  // without this frame's own face read (v1 samples lack the fields and are judged on belief alone).
+  const g = gate as ShotSample['frames'][number]['tracks'][number] | null;
+  const refused = Boolean(g && (g.unconfirmed || g.reacquiring || g.vetoed?.includes(best.id) || ((g.overlapping || g.crowded) && g.freshFace === false)));
+  const ok = !conflict && !refused && eligible.has(best.id) && best.score >= threshold && best.margin >= margin && best.margin > 0;
   return { resolved: ok ? best.id : null, top: best };
 }
 

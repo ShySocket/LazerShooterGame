@@ -3,6 +3,8 @@ import { faceOwner, type Detection, type Track } from '../vision/tracker';
 import type { FaceObservation, FrameOps, FrameOutcome, OutfitObservation } from '../vision/pipeline';
 import type { Candidate } from '../vision/scoring';
 import { centredSimilarity, FACE_MODEL } from '../vision/embedding';
+import { outfitVetoed } from '../vision/scoring';
+import { CALIBRATION_VERSION } from '../vision/calibration';
 import { profileOutfitMatch, propsSimilarity } from '../vision/clothing';
 import type { NBox } from '../vision/geometry';
 import { IdMap, round, roundBox, roundKey, SAMPLE_VERSION, type EvidenceSummary, type FrameSummary, type Pid, type ShotSample, type TrackSummary } from './sample';
@@ -216,8 +218,7 @@ export class ShotRecorder {
       return {
         id: t.id,
         box: roundBox(t.box),
-        // This build has no observed hit region: a shot may land anywhere in the body box.
-        hit: roundBox(t.box),
+        hit: roundBox(t.hit),
         belief: r.ids.record(t.claimed ?? t.belief, 2),
         via: t.via,
         conflict: Boolean(t.identityConflict),
@@ -226,10 +227,17 @@ export class ShotRecorder {
         faceAgeMs: t.lastFaceAt > 0 ? Math.round(capturedAt - t.lastFaceAt) : null,
         evidenceAgeMs: Number.isFinite(t.lastEvidenceAt) ? Math.round(capturedAt - t.lastEvidenceAt) : null,
         inSight: outcome.inSight?.id === t.id,
+        vetoed: Object.keys(t.outfitVeto ?? {}).filter((id) => outfitVetoed(t, id, capturedAt)).map((id) => r.ids.pid(id)),
+        clothingAgeMs: t.lastOutfitReadAt ? Math.round(capturedAt - t.lastOutfitReadAt) : null,
+        unconfirmed: Boolean(t.unconfirmed),
+        reacquiring: Boolean(t.reacquireAt),
+        overlapping: Boolean(t.overlapping),
+        crowded: Boolean(t.crowded),
+        freshFace: Boolean(face),
         ...ev,
       };
     });
-    const summary = { tracks, lock: outcome.lock ? (outcome.lock.kind === 'unknown' ? 'unknown' : `${outcome.lock.kind}:${r.ids.pid(outcome.lock.id)}`) : null };
+    const summary = { tracks, bodies: dets.filter((d) => d.body).length, lock: outcome.lock ? (outcome.lock.kind === 'unknown' ? 'unknown' : `${outcome.lock.kind}:${r.ids.pid(outcome.lock.id)}`) : null };
     this.ring.push({ t: capturedAt, summary });
     if (this.ring.length > PRE_TAP_FRAMES) this.ring.shift();
     for (const [id, shot] of this.open) {
@@ -286,7 +294,7 @@ export class ShotRecorder {
     const frames = [...shot.pre, ...shot.after];
     return {
       v: SAMPLE_VERSION,
-      app: { commit: appCommit(), faceModel: FACE_MODEL, bodyModel: BODY_MODEL, ua: typeof navigator === 'undefined' ? 'node' : navigator.userAgent.slice(0, 200) },
+      app: { commit: appCommit(), faceModel: FACE_MODEL, bodyModel: BODY_MODEL, calibration: CALIBRATION_VERSION, ua: typeof navigator === 'undefined' ? 'node' : navigator.userAgent.slice(0, 200) },
       round: {
         key: r.key,
         code: r.code,

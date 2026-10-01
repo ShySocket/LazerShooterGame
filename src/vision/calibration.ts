@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-10-01.4';
+export const CALIBRATION_VERSION = '2026-10-01.5';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /**
@@ -289,6 +289,13 @@ export const OUTFIT_RECENT_MS = 3000;
 export const OVERLAP_FACE_FRESH_MS = 400;
 /** A single-frame face naming another player than the track believes, by this lead over the rest, is a hop onto another body. */
 export const HOP_READ_MARGIN = 0.2;
+/**
+ * MoveNet MultiPose returns at most this many bodies (human.ts body.maxDetected). A frame at the cap
+ * may be missing a seventh person, who can stand inside a detected body's box or take its track
+ * when the six returned change from frame to frame; a hit then needs this body's own face read this
+ * frame, as during an overlap, and the HUD says why ("Too many people in view").
+ */
+export const BODY_CAP = 6;
 /** Belief step per clothing frame (one reference period). */
 export const CLOTHING_BELIEF_ALPHA = 0.35;
 /** A track whose face has not been seen for this long is carried by its clothing. */

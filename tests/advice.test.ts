@@ -109,3 +109,12 @@ test('practice messages: capture notes name what is missing, verdicts compare wi
   assert.equal(practiceVerdict('Target 1', null).kind, 'warn');
   assert.ok(PRACTICE_CHECKLIST.length >= 5);
 });
+
+test('practice review: counts by verdict and a set-up line that names only what was chosen', async () => {
+  const { practiceReviewCounts, practiceConditionsText, CROWD_TEXT } = await import('../src/ui/advice');
+  assert.deepEqual(practiceReviewCounts(['good', 'bad', 'warn', 'good', undefined]), { total: 5, good: 2, bad: 1, warn: 1 });
+  assert.equal(practiceConditionsText('Target 1', { distance: 1.5, view: 'back', lighting: 'dim', scenario: 'crossing' }, 420), 'aimed at Target 1 · 1.5 m · back · dim · crossing · 420 ms');
+  assert.equal(practiceConditionsText('Not a player', {}, null), 'aimed at Not a player');
+  assert.match(CROWD_TEXT, /Too many people/);
+  assert.match(CROWD_TEXT, /clear face/);
+});

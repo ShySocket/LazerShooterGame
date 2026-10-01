@@ -60,6 +60,8 @@ export interface Track {
   /** Whether the previous frame had this track overlapping another or ambiguously associated (onset detection). */
   overlapping?: boolean;
   ambiguous?: boolean;
+  /** Whether the frame this track was last seen in returned the detector's full BODY_CAP bodies (crowd rule). */
+  crowded?: boolean;
   via: 'face' | 'clothing' | 'none';
   lastFaceAt: number;
   /** When clothing pixels were last sampled for this track (evidence or audit). */

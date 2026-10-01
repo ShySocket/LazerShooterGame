@@ -128,6 +128,22 @@ test('a recorded instant hit names nobody and carries the raw similarities behin
   assert.equal(sample.target?.faceMean?.length, 64);
   assert.deepEqual(sample.target?.outfit, { top: [1], thighs: [1] });
   assert.ok(sample.frames.some((f) => f.tracks[0].outfit?.match[bob]), 'outfit matches recorded');
+  // v2 trace (Astra review): every decision can be explained from the sample alone.
+  const { CALIBRATION_VERSION } = await import('../src/vision/calibration');
+  assert.equal(sample.v, 2);
+  assert.equal(sample.app.calibration, CALIBRATION_VERSION);
+  const final = sample.frames[6];
+  assert.equal(final.bodies, 1);
+  const tr = final.tracks[0];
+  assert.deepEqual(tr.vetoed, [], 'Bob\'s own outfit vetoes nobody');
+  assert.equal(typeof tr.clothingAgeMs, 'number', 'the age of the last outfit read is recorded');
+  assert.equal(tr.unconfirmed, false);
+  assert.equal(tr.reacquiring, false);
+  assert.equal(tr.overlapping, false);
+  assert.equal(tr.crowded, false);
+  assert.equal(faceFrames.every((f) => f.tracks[0].freshFace), true, 'a frame with a face read is marked fresh');
+  assert.ok(sample.frames.some((f) => !f.tracks[0].face && f.tracks[0].freshFace === false), 'a frame without a read is marked as carried');
+  assert.deepEqual(tr.hit, tr.hit.map((v) => Math.round(v * 1000) / 1000), 'the observed hit region is recorded');
 });
 
 test('a tap at empty space is recorded as a miss with no target, and only failed shots with a body are preferred for review', async () => {
@@ -203,6 +219,12 @@ test('a burst records the frames after the tap and the replay reproduces the ver
   const missNone = normaliseSample(JSON.parse(JSON.stringify({ ...none, shot: { ...none.shot, resolvedTo: null } }, (_k, v) => (v === null ? undefined : v))));
   assert.equal(asPlayed(missNone), null);
   assert.equal(replayShot({ ...labelled, frames: labelled.frames.map((f, i) => (i === 1 ? { ...f, tracks: f.tracks.map((t) => ({ ...t, conflict: true })) } : f)) }).resolved, null, 'an identity conflict at decision time refuses the hit');
+  const withGate = (g: Record<string, unknown>) => replayShot({ ...back, shot: { ...back.shot, decidedAtFrame: 2 }, frames: back.frames.map((f, i) => (i === 2 ? { ...f, tracks: f.tracks.map((t) => ({ ...t, ...g })) } : f)) }).resolved;
+  assert.equal(withGate({}), bob, 'the v2 fields absent: judged on belief alone');
+  assert.equal(withGate({ unconfirmed: true }), null, 'an identity not yet re-earned refuses the hit');
+  assert.equal(withGate({ vetoed: [bob] }), null, 'a player the outfit rules out is refused');
+  assert.equal(withGate({ crowded: true, freshFace: false }), null, 'a crowded frame without a face read refuses');
+  assert.equal(withGate({ crowded: true, freshFace: true }), bob, 'a crowded frame with this frame\'s face read may hit');
 });
 
 test('a sample that grows past the upload budget loses its oldest frames first', () => {
@@ -220,6 +242,34 @@ test('a sample that grows past the upload budget loses its oldest frames first',
   assert.equal(trimmed.frames[trimmed.frames.length - 1].t, 11, 'the newest frame survives');
   assert.equal(trimmed.shot.decidedAtFrame, trimmed.frames.length - 1);
   assert.equal(trimSample(big).frames.length, 12, 'a small sample is untouched');
+});
+
+test('practice shots keep their photos for the practice review, apart from the review card', async () => {
+  const store = new FeedbackStore(new MemoryBacking());
+  const now = Date.now();
+  const sample = (id: string): ShotSample => ({
+    v: 2,
+    app: { commit: 'x', faceModel: 'x', bodyModel: 'x', ua: 'x' },
+    round: { key: 'P1', code: 'ABCD', startAt: 1, settings: DEFAULT_SETTINGS, players: 2, shooter: 'p0', eligible: ['p1'] },
+    device: { periodMs: 200, staleMs: 520, burstMs: 500, width: 1280, height: 720 },
+    shot: { id, roundMs: 0, outcome: 'unclear', kind: 'pending', resolvedTo: null, via: null, resolveMs: 0, zoom: false, frameAgeMs: 0, allowanceMs: 0, crosshair: [0, 0, 1, 1], trackId: 1, decidedAtFrame: -1, settledBy: 'frame', decisionTrackId: null, decisionBelief: null },
+    frames: [],
+    target: null,
+    label: { kind: 'player', target: 'p1', answeredAt: now, reviewMs: 0, distance: 3, view: 'back', lighting: 'dim', scenario: 'crossing' },
+  });
+  const photo = new Blob(['jpeg'], { type: 'image/jpeg' });
+  await store.beginRound({ key: 'P1', code: 'ABCD', startAt: now, ids: ['a', 'b'], profiles: {} });
+  for (let i = 0; i < 3; i++) {
+    await store.saveShot({ id: `p${i}`, round: 'P1', outcome: 'unclear', hadTrack: true, roundMs: i, sample: sample(`p${i}`), photo, practice: { verdict: 'NO LOCK on Target 1', kind: 'warn', aimed: 'Target 1', resolved: null, resolveMs: 400 } });
+  }
+  assert.equal((await store.pendingReview())?.shots.length, 0, 'the review card never asks about a practice shot');
+  await store.finishReview('P1');
+  const kept = await store.practiceShots();
+  assert.equal(kept?.shots.length, 3, 'closing the review card keeps the practice photos');
+  assert.equal(kept?.shots[0].photo, photo);
+  assert.equal(kept?.shots[0].sample.label?.view, 'back');
+  await store.clearPractice('P1');
+  assert.equal(await store.practiceShots(), null, 'clearing the practice review deletes its photos');
 });
 
 test('the on-phone store caps failed shots per round, keeps only the newest round, and retries queued uploads', async () => {

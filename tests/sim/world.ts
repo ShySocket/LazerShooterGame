@@ -6,6 +6,7 @@ import type { NBox } from '../../src/vision/geometry';
 import { hitRegion, type Detection } from '../../src/vision/tracker';
 import type { FaceObservation, OutfitObservation } from '../../src/vision/pipeline';
 import { Rng } from './rng';
+import { BODY_CAP } from '../../src/vision/calibration';
 
 /**
  * A synthetic laser-tag scene. People have a true appearance (face vector, outfit histogram, body
@@ -370,6 +371,12 @@ export function detect(rng: Rng, scene: Scene, model: DetectorModel): { bodies: 
     const ghost = { boxRaw: [rng.next() * 0.8, rng.next() * 0.5, 0.1 + rng.next() * 0.1, 0.2 + rng.next() * 0.2], score: 0.3 + rng.next() * 0.3, keypoints: [] } as unknown as BodyResult;
     bodies.push(ghost);
     owner.set(ghost, null);
+  }
+  // MoveNet MultiPose returns its best BODY_CAP poses: in a crowd, who is left out changes frame to frame.
+  if (bodies.length > BODY_CAP) {
+    const kept = new Set(bodies.slice().sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, BODY_CAP));
+    for (const b of bodies) if (!kept.has(b)) owner.delete(b);
+    return { bodies: bodies.filter((b) => kept.has(b)), faces, owner };
   }
   return { bodies, faces, owner };
 }

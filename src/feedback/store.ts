@@ -25,6 +25,11 @@ export interface StoredShot {
   roundMs: number;
   sample: ShotSample;
   photo: Blob | null;
+  /**
+   * Practice shots: kept for the on-phone practice review, never shown on the review card (their label
+   * was given at the tap). Names are the phone's own labels and stay here; only the sample was uploaded.
+   */
+  practice?: { verdict: string; kind: 'good' | 'warn' | 'bad'; aimed: string; resolved: string | null; resolveMs: number };
 }
 
 export interface QueuedUpload {
@@ -37,6 +42,8 @@ export interface QueuedUpload {
 
 /** Failed shots kept per round; the oldest go first once the cap is reached. */
 export const MAX_SHOTS_PER_ROUND = 40;
+/** Practice shots kept per round with their photos (about 50 kB each), for the practice review. */
+export const MAX_PRACTICE_SHOTS = 150;
 /**
  * A queued upload refused this many times is dropped: either it already went through (its key is
  * write-once) or the database rules were never published, and the queue is not a permanent archive.
@@ -160,9 +167,31 @@ export class FeedbackStore {
 
   saveShot(shot: StoredShot): Promise<void> {
     return this.safe(undefined, async (b) => {
-      const same = (await b.all<StoredShot>('shots')).filter((s) => s.round === shot.round).sort((x, y) => x.roundMs - y.roundMs);
-      while (same.length >= MAX_SHOTS_PER_ROUND) await b.delete('shots', same.shift()!.id);
+      const kind = Boolean(shot.practice);
+      const same = (await b.all<StoredShot>('shots')).filter((s) => s.round === shot.round && Boolean(s.practice) === kind).sort((x, y) => x.roundMs - y.roundMs);
+      while (same.length >= (kind ? MAX_PRACTICE_SHOTS : MAX_SHOTS_PER_ROUND)) await b.delete('shots', same.shift()!.id);
       await b.put('shots', shot);
+    });
+  }
+
+  /** The newest round's practice shots, oldest first, with their photos; null when there are none. */
+  practiceShots(): Promise<{ round: StoredRound; shots: StoredShot[] } | null> {
+    return this.safe(null, async (b) => {
+      const round = (await b.all<StoredRound>('rounds')).sort((x, y) => y.startAt - x.startAt)[0];
+      if (!round) return null;
+      if (Date.now() - round.startAt > ROUND_TTL_MS) {
+        await this.dropRound(b, round.key);
+        return null;
+      }
+      const shots = (await b.all<StoredShot>('shots')).filter((s) => s.round === round.key && s.practice).sort((x, y) => x.roundMs - y.roundMs);
+      return shots.length ? { round, shots } : null;
+    });
+  }
+
+  /** The shooter cleared the practice review: its photos go. */
+  clearPractice(key: string): Promise<void> {
+    return this.safe(undefined, async (b) => {
+      for (const s of await b.all<StoredShot>('shots')) if (s.round === key && s.practice) await b.delete('shots', s.id);
     });
   }
 
@@ -176,7 +205,7 @@ export class FeedbackStore {
         await this.dropRound(b, round.key);
         return null;
       }
-      const shots = (await b.all<StoredShot>('shots')).filter((s) => s.round === round.key).sort((x, y) => x.roundMs - y.roundMs);
+      const shots = (await b.all<StoredShot>('shots')).filter((s) => s.round === round.key && !s.practice).sort((x, y) => x.roundMs - y.roundMs);
       return { round, shots };
     });
   }
@@ -185,10 +214,10 @@ export class FeedbackStore {
     return this.safe(undefined, (b) => b.delete('shots', id));
   }
 
-  /** The round's review is over: drop every photo it still holds. */
+  /** The round's review card is over: drop every photo it still holds (practice shots wait for their own review). */
   finishReview(key: string): Promise<void> {
     return this.safe(undefined, async (b) => {
-      for (const s of await b.all<StoredShot>('shots')) if (s.round === key) await b.delete('shots', s.id);
+      for (const s of await b.all<StoredShot>('shots')) if (s.round === key && !s.practice) await b.delete('shots', s.id);
       const round = await b.get<StoredRound>('rounds', key);
       if (round) await b.put('rounds', { ...round, reviewed: true });
     });

@@ -1,6 +1,6 @@
 import { UNKNOWN_ID, type BodyProps, type OutfitSig } from '../types';
 import { clothingDue, cropBudget } from './schedule';
-import { CLOTHING_AUDIT_MS, CLOTHING_BELIEF_ALPHA, CLOTHING_CONTRADICTION, FACE_BELIEF_ALPHA, FACE_FRESH_MIN_MARGIN, FACE_FRESH_MS, FACE_REFRESH_MIN_LEAD, FACE_REFRESH_MS, FACE_VIA_TIMEOUT_MS, MATURE_TRACK_OBSERVATIONS, TORSO_COVER_FRACTION, LIVE_FACE_ENROLLED_MIN, LIVE_FACE_MIN, LIVE_FACE_MIN_BELIEF, LIVE_FACE_MIN_QUALITY, LIVE_FACE_MIN_TRACK_SAMPLES, LIVE_FACE_NOVELTY, LIVE_FACE_RUNNER_UP, LIVE_FACES_PER_PLAYER, HOP_READ_MARGIN } from './calibration';
+import { CLOTHING_AUDIT_MS, CLOTHING_BELIEF_ALPHA, CLOTHING_CONTRADICTION, FACE_BELIEF_ALPHA, FACE_FRESH_MIN_MARGIN, FACE_FRESH_MS, FACE_REFRESH_MIN_LEAD, FACE_REFRESH_MS, FACE_VIA_TIMEOUT_MS, MATURE_TRACK_OBSERVATIONS, TORSO_COVER_FRACTION, LIVE_FACE_ENROLLED_MIN, LIVE_FACE_MIN, LIVE_FACE_MIN_BELIEF, LIVE_FACE_MIN_QUALITY, LIVE_FACE_MIN_TRACK_SAMPLES, LIVE_FACE_NOVELTY, LIVE_FACE_RUNNER_UP, LIVE_FACES_PER_PLAYER, HOP_READ_MARGIN, BODY_CAP } from './calibration';
 import { containsPoint, faceOwner, markUncertain, resetIdentity, trackGapMs, Tracker, type Detection, type Track } from './tracker';
 import { crosshairCentre, indexInSight, intersectArea, type NBox } from './geometry';
 import {
@@ -100,6 +100,8 @@ export interface FrameOutcome<C> {
   /** A pending shot decided by this frame. */
   settled: ShotSettlement<C> | null;
   periodMs: number;
+  /** The detector returned its full BODY_CAP bodies: someone may be missing, hits need a fresh face. */
+  crowded: boolean;
 }
 
 interface PendingShot<C> {
@@ -272,6 +274,9 @@ export class VisionPipeline<C = unknown> {
 
     const gapMs = trackGapMs(this.period.ms());
     const tracks = this.tracker.update(dets, now, undefined, gapMs);
+    // At the detector's cap somebody may be missing from this frame: see BODY_CAP.
+    const crowded = dets.filter((d) => d.body).length >= BODY_CAP;
+    for (const t of tracks) t.crowded = crowded;
     // People the detector skipped this frame but who were here a moment ago: they still occupy their spot.
     const coasting = this.tracker.live().filter((t) => t.lastSeen !== now && now - t.lastSeen <= gapMs && !t.identityConflict).map(snapshotTrack);
     const sampleClothing = ops.sampleOutfit && clothingDue(this.period.ms(), this.lastClothingAt, now);
@@ -432,7 +437,7 @@ export class VisionPipeline<C = unknown> {
         else lock = { kind: 'unknown' };
       }
     }
-    return { dets, tracks, inSight, lock, settled, periodMs: this.period.ms() };
+    return { dets, tracks, inSight, lock, settled, periodMs: this.period.ms(), crowded };
   }
 
   /**

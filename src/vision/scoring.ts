@@ -299,8 +299,9 @@ export function resolveHit(track: Track, eligible: Set<string>, threshold: numbe
   const b = bestBelief(track, eligible, now);
   if (!b || !Number.isFinite(b.score) || !Number.isFinite(b.margin) || b.score < threshold || b.margin < margin || b.margin <= 0) return null;
   // During an overlap the belief may have been carried over from the other body: this body's own
-  // latest face must name the same player clearly, on its own.
-  if (track.overlapping || track.ambiguous) {
+  // latest face must name the same player clearly, on its own. The same holds in a frame at the
+  // detector's body cap, where an undetected person may share this box or have handed it over.
+  if (track.overlapping || track.ambiguous || track.crowded) {
     const r = track.lastRead;
     if (!r || now - r.at > OVERLAP_FACE_FRESH_MS || now < r.at || r.id !== b.id || r.margin < margin) return null;
   }

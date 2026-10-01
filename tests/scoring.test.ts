@@ -55,6 +55,20 @@ test('identity evidence expires even while the body remains visible', () => {
   assert.equal(resolveHit(t, eligible, 0.5, 0.2, 1750)?.id, 'alice');
 });
 
+test('at the detector body cap a hit needs this body\'s own fresh face read naming the same player', () => {
+  const t = track({ alice: 0.95, [UNKNOWN_ID]: 0.01 });
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 150)?.id, 'alice', 'an uncrowded frame resolves on the belief');
+  t.crowded = true;
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 150), null, 'a crowded frame refuses a carried belief');
+  t.lastRead = { at: 140, id: 'bob', margin: 0.5 };
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 150), null, 'a fresh read naming somebody else refuses');
+  t.lastRead = { at: 140, id: 'alice', margin: 0.1 };
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 150), null, 'a fresh read without the margin refuses');
+  t.lastRead = { at: 140, id: 'alice', margin: 0.5 };
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 150)?.id, 'alice', 'a fresh clear read on this body resolves');
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 140 + 401), null, 'a read older than OVERLAP_FACE_FRESH_MS refuses');
+});
+
 test('a discontinuous face resets the old person instead of lending them confidence', () => {
   const t = track({ alice: 0.95, bob: 0.01 });
   t.faceMean = [1, 0];

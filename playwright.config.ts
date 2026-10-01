@@ -1,5 +1,8 @@
 import { defineConfig } from '@playwright/test';
 
+/** E2E_PORT lets two checkouts (worktrees) run the suite at once without one reusing the other's dev server. */
+const PORT = Number(process.env.E2E_PORT ?? 5199);
+
 /**
  * Browser end-to-end tests against the real Firebase database (rooms are open by decision; every
  * test deletes the rooms it made). Uses the installed Google Chrome (no browser download) with a
@@ -15,15 +18,15 @@ export default defineConfig({
   retries: 0,
   reporter: [['list'], ['./tests/e2e/rubricReporter.ts']],
   use: {
-    baseURL: 'http://localhost:5199',
+    baseURL: `http://localhost:${PORT}`,
     channel: 'chrome',
     headless: true,
     launchOptions: { args: ['--use-fake-device-for-media-stream'] },
     permissions: ['camera'],
   },
   webServer: {
-    command: 'npm run dev:http -- --port 5199 --strictPort',
-    url: 'http://localhost:5199',
+    command: `npm run dev:http -- --port ${PORT} --strictPort`,
+    url: `http://localhost:${PORT}`,
     reuseExistingServer: true,
     timeout: 60_000,
   },
