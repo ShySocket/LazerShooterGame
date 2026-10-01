@@ -158,6 +158,47 @@ export function hintFor(prompt: FacePrompt, reason: PoseReason): string {
   }
 }
 
+// ---- Identity during the face scan: continuity, then a frontal re-verify after a break -----------
+
+export interface Continuity {
+  /** When a face was last seen, and its box (normalised), null before the first. */
+  lastSeen: number;
+  box: NBox | null;
+  /** Set when the face went missing, doubled or jumped after identity was established. */
+  broken: boolean;
+}
+
+export const initialContinuity = (): Continuity => ({ lastSeen: 0, box: null, broken: false });
+
+/**
+ * Fold one frame into the continuity: `face` is the single face box seen this frame, or null when
+ * there was none or more than one (`faces` says which). The first face establishes the person; a
+ * second face, a gap longer than `gapMs` or a centre jump of more than `jump` face widths breaks it.
+ */
+export function continuityStep(c: Continuity, face: NBox | null, faces: number, now: number, gapMs = SCAN_CALIB.continuityGapMs, jump = SCAN_CALIB.continuityJump): Continuity {
+  if (faces > 1) return { ...c, broken: c.box !== null || c.broken };
+  if (!face) return c.box && now - c.lastSeen > gapMs ? { ...c, broken: true } : c;
+  if (!c.box) return { lastSeen: now, box: face, broken: c.broken };
+  const gap = now - c.lastSeen > gapMs;
+  const dx = face[0] + face[2] / 2 - (c.box[0] + c.box[2] / 2);
+  const dy = face[1] + face[3] / 2 - (c.box[1] + c.box[3] / 2);
+  const moved = Math.hypot(dx, dy) > jump * Math.max(face[2], c.box[2]);
+  return { lastSeen: now, box: face, broken: c.broken || gap || moved };
+}
+
+export const REVERIFY_TEXT = 'Lost track of your face. Look straight at the camera to continue.';
+export const NOT_SAME_TEXT = 'This is not the face the scan started with. The same person please, or Restart scan.';
+
+/**
+ * After a break, the scan continues only from a frontal frame that matches the frontal samples
+ * already taken (the only angle at which the face model tells people apart reliably).
+ */
+export function reverify(yawDeg: number, embedding: number[], frontal: number[][], min = SCAN_CALIB.reverifyMin, sim: (a: number[], b: number[]) => number = faceSimilarity): 'ok' | 'look-straight' | 'not-same' {
+  if (Math.abs(yawDeg) > SCAN_CALIB.straightYaw[1]) return 'look-straight';
+  if (!frontal.length) return 'ok';
+  return frontal.some((f) => sim(embedding, f) >= min) ? 'ok' : 'not-same';
+}
+
 // ---- Body stages ---------------------------------------------------------------------------------
 
 export type BodySampleDecision = 'take' | 'skip' | 'restart';

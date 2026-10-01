@@ -184,3 +184,31 @@ test('the face size gate is measured in full-frame pixels, so a 720p phone is no
   assert.ok(!faceBigEnough(30, 40, SCAN_CALIB.minFacePx, 1));
   assert.ok(faceBigEnough(48, 60, SCAN_CALIB.minFacePx, 1));
 });
+
+test('continuity: one face seen every frame is the same person; a gap, a second face or a jump breaks it', async () => {
+  const { continuityStep, initialContinuity } = await import('../src/vision/scan');
+  const box = (x: number): NBox => [x, 0.3, 0.2, 0.25];
+  let c = initialContinuity();
+  c = continuityStep(c, null, 0, 0);
+  assert.equal(c.broken, false, 'no face before the first is not a break');
+  c = continuityStep(c, box(0.4), 1, 100);
+  // A turning head drifts a little every frame: never a break.
+  for (let t = 200, x = 0.4; t < 3000; t += 100, x += 0.01) c = continuityStep(c, box(x), 1, t);
+  assert.equal(c.broken, false, 'a slow drift over 3 s keeps the person');
+  assert.equal(continuityStep(c, null, 0, 2900 + SCAN_CALIB.continuityGapMs - 50).broken, false, 'a dropped frame or two is not a break');
+  assert.equal(continuityStep(c, null, 0, 2900 + SCAN_CALIB.continuityGapMs + 50).broken, true, 'missing longer than the gap breaks it');
+  assert.equal(continuityStep(c, null, 2, 3000).broken, true, 'a second face breaks it');
+  assert.equal(continuityStep(c, box(0.95), 1, 3000).broken, true, 'a jump of more than a face width breaks it');
+  const broken = continuityStep(c, null, 2, 3000);
+  assert.equal(continuityStep(broken, box(0.68), 1, 3100).broken, true, 'a break stays until the scan clears it');
+});
+
+test('re-verify after a break: only a frontal frame that matches the frontal samples continues the scan', async () => {
+  const { reverify } = await import('../src/vision/scan');
+  const sim = (a: number[], b: number[]) => (a[0] === b[0] ? 0.8 : 0.4);
+  assert.equal(reverify(30, [1], [[1]], SCAN_CALIB.reverifyMin, sim), 'look-straight', 'a turned head is asked to look straight first');
+  assert.equal(reverify(5, [1], [[1]], SCAN_CALIB.reverifyMin, sim), 'ok');
+  assert.equal(reverify(5, [2], [[1]], SCAN_CALIB.reverifyMin, sim), 'not-same', 'somebody else at the phone is caught');
+  // Measured on GhostNet: same person frontal-vs-frontal p1 0.60, other people at most 0.51.
+  assert.ok(SCAN_CALIB.reverifyMin > 0.51 && SCAN_CALIB.reverifyMin < 0.6);
+});
