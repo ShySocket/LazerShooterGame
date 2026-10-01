@@ -20,16 +20,38 @@ export interface RoomBackend {
   subscribe(code: string, cb: (room: Room | null) => void): () => void;
   updatePlayer(code: string, id: string, patch: Partial<Player>): Promise<void>;
   setProfile(code: string, id: string, profile: Profile): Promise<void>;
-  updateMeta(code: string, patch: Partial<RoomMeta>): Promise<void>;
-  /** Saves the final settings, gives every player a fresh set of lives, and begins the countdown. */
-  startRound(code: string, settings: RoomSettings, startAt: number): Promise<void>;
-  resetForNewRound(code: string): Promise<void>;
+  /**
+   * The lobby's settings only. The round's status changes only through the guarded steps below
+   * (startRound, beginPlay, endRound, resetForNewRound), so a write a phone buffered while it was
+   * offline or asleep can never move a round it no longer sees.
+   */
+  updateMeta(code: string, patch: Pick<RoomMeta, 'settings'>): Promise<void>;
+  /**
+   * Saves the final settings, gives every player a fresh set of lives, and begins the countdown, in
+   * one atomic step that applies only while the room is in the lobby (a Start tap replayed later
+   * cannot restart a round in progress). Resolves to whether this call started the round.
+   */
+  startRound(code: string, settings: RoomSettings, startAt: number): Promise<boolean>;
+  /**
+   * The end of the countdown: the round that started at `startAt` begins play, in one atomic step
+   * that applies only while that countdown is still on. Every phone may ask (the host first); a call
+   * buffered on a phone that was away refuses once the round has ended or the room went back to the
+   * lobby. Resolves to whether this call flipped it.
+   */
+  beginPlay(code: string, startAt: number): Promise<boolean>;
+  /**
+   * Back to the lobby after the round that started at `startAt` ended, in one atomic step that
+   * applies only while that round is still the ended one; otherwise (a tap replayed after another
+   * host moved on) it changes nothing. Resolves to whether this call reset the room.
+   */
+  resetForNewRound(code: string, startAt: number | null): Promise<boolean>;
   /**
    * Applies one shot's hit in a single atomic step over the players map (`evaluatePlayersHit`):
    * refused unless both players are still in the round that started at `roundStartAt`, and applied at
    * most once per `shotId`, which is recorded at players/{target}/shots/{shotId} in the same write. A
    * write the SDK keeps queued after the phone gave up waiting can therefore land only in its own
-   * round, and only once.
+   * round, and only once. The shield is judged at the time of this call (server clock), however late
+   * the write arrives.
    */
   registerHit(code: string, shooter: string, target: string, score: number, via: string, shotId: string, roundStartAt: number | null): Promise<HitOutcome>;
   /**
@@ -108,6 +130,18 @@ export const ROUND_META_RESET: Pick<RoomMeta, 'status' | 'startAt' | 'endedAt' |
   endedAt: null,
   winnerId: null,
 };
+
+/**
+ * The preconditions of the round's status steps, each read inside the step's own atomic write: a
+ * round starts only from the lobby, plays only from its own countdown, and goes back to the lobby
+ * only from its own end. A step a phone buffered while offline re-runs on the room as it is when it
+ * arrives, and does nothing unless the room is still where the phone saw it.
+ */
+export const canStartRound = (meta: Pick<RoomMeta, 'status'> | null | undefined): boolean => meta?.status === 'lobby';
+export const canBeginPlay = (meta: Pick<RoomMeta, 'status' | 'startAt'> | null | undefined, startAt: number): boolean =>
+  meta?.status === 'countdown' && meta.startAt === startAt;
+export const canResetRound = (meta: Pick<RoomMeta, 'status' | 'startAt'> | null | undefined, startAt: number | null): boolean =>
+  meta?.status === 'ended' && (meta.startAt ?? null) === startAt;
 
 /** Pure hit resolution for one target. */
 export function applyHit(target: Player | null, now: number, invulnMs: number): { outcome: HitOutcome; next?: Player } {
@@ -201,6 +235,10 @@ export function inRound(players: Record<string, Player> | null | undefined, req:
  * or round is somebody else's shot (an id collision) and refused. Otherwise the hit is refused unless
  * both players are still in the shot's round, then resolved by `evaluateHit` with the round's shield
  * (`invulnMs`, from the room settings, which only change in the lobby).
+ *
+ * `now` is the shot's own time: the server clock when the phone sent the hit, taken once, never when
+ * a re-run or a write queued offline is finally evaluated. Two shooters who tag one target in the
+ * same instant then cost it one life, however late the second write reaches the server.
  */
 export function evaluatePlayersHit(players: Record<string, Player> | null | undefined, req: HitRequest, now: number, invulnMs: number | undefined): PlayersHitResult {
   if (!isShotId(req.shotId)) return { outcome: 'invalid' };

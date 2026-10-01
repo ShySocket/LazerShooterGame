@@ -2,9 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Human, Result } from '@vladmandic/human';
 import { backend, MIN_PLAYERS, practiceBackend } from '../net';
 import { decideRoundEnd } from '../net/backend';
-import { CROWD_TEXT, hitFailureText, hitVerdict, OFFLINE_TEXT, PRACTICE_CHECKLIST, practiceVerdict, RANGE_SHOT_NOTE, RANGE_TARGET_NOTE, verdictAdvice } from '../ui/advice';
+import { CROWD_TEXT, hitFailureText, hitOutcomeUnknown, hitVerdict, OFFLINE_TEXT, PRACTICE_CHECKLIST, practiceVerdict, RANGE_SHOT_NOTE, RANGE_TARGET_NOTE, verdictAdvice } from '../ui/advice';
 import { useConnection } from '../hooks/useConnection';
-import { isTimeout, withTimeout } from '../net/withTimeout';
+import { withTimeout } from '../net/withTimeout';
 import { NET_CALIB } from '../vision/calibration';
 import { alivePlayers, enrolledPlayers, livesLabel, UNKNOWN_ID, type Player, type Room } from '../types';
 import { useCamera } from '../hooks/useCamera';
@@ -206,7 +206,10 @@ export function Game({ room, me, pid, onLeave }: Props) {
   };
   useEffect(() => () => window.clearTimeout(flashTimer.current), []);
 
-  // Countdown before the round, then flip to playing.
+  // Countdown before the round, then flip to playing. The flip is beginPlay: one transaction that
+  // applies only while this round's countdown is still on, so a flip this phone buffered while asleep
+  // or offline cannot reopen the round after it ended, or start a lobby the host has reset. Asked
+  // once per countdown (again only if it failed); the host first, everyone else 1.5 s later.
   useEffect(() => {
     if (room.status !== 'countdown') {
       setCountdown(null);
@@ -214,6 +217,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
     }
     const startAt = room.startAt ?? 0;
     let last = -99;
+    let asked = false;
     const iv = window.setInterval(() => {
       const rem = Math.ceil((startAt - backend.now()) / 1000);
       if (rem !== last) {
@@ -221,7 +225,13 @@ export function Game({ room, me, pid, onLeave }: Props) {
         setCountdown(rem);
         if (rem > 0 && rem <= 5) sfx.countdown();
       }
-      if (rem <= 0 && (isHost || backend.now() - startAt > 1500)) void backend.updateMeta(room.code, { status: 'playing' });
+      if (!asked && rem <= 0 && (isHost || backend.now() - startAt > 1500)) {
+        asked = true;
+        backend.beginPlay(room.code, startAt).catch((e: unknown) => {
+          asked = false;
+          console.warn('beginPlay failed', e);
+        });
+      }
     }, 150);
     return () => window.clearInterval(iv);
   }, [room.status, room.startAt, room.code, isHost]);
@@ -424,7 +434,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
       .catch((e: unknown) => {
         console.warn('hit not confirmed', e);
         sfx.unclear();
-        logShot(isTimeout(e) ? 'unconfirmed' : 'network error', track, { targetName: name, targetId: r.id, via: r.via, resolveMs, zoom: zoomed }, context.shotId);
+        logShot(hitOutcomeUnknown(e) ? 'unconfirmed' : 'network error', track, { targetName: name, targetId: r.id, via: r.via, resolveMs, zoom: zoomed }, context.shotId);
         show(hitFailureText(e), 'warn', 2000);
       });
   };

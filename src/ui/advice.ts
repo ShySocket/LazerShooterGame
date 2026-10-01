@@ -187,12 +187,23 @@ export const REVIEW_DONE = 'Done reviewing';
 export const RESET_FAILED = 'Could not reset the room. Check the connection and tap again.';
 
 /**
- * The banner for a hit the server never answered. A timeout is UNCONFIRMED: the write is still queued
- * and counts if it reaches the server while its round is playing. An error means the write was
- * dropped: offline is a lost shot for want of a connection, anything else a lost shot.
+ * Whether a failed hit may still have counted. A timeout: the write is still queued, or already sent
+ * and unanswered. Error('disconnect'): the Realtime Database SDK sent the write, the socket dropped
+ * before the answer, and the SDK cancelled it because it cannot tell whether the server applied it
+ * (PersistentConnection.cancelSentTransactions_); registerHit sends it again with the same shot id.
+ */
+export function hitOutcomeUnknown(e: unknown): boolean {
+  return isTimeout(e) || (e instanceof Error && e.message === 'disconnect');
+}
+
+/**
+ * The banner for a hit the server never answered. An outcome that is not known (`hitOutcomeUnknown`)
+ * is UNCONFIRMED: it counts if it reached, or reaches, the server while its round is playing. Any
+ * other error means the write was refused or never sent: offline is a lost shot for want of a
+ * connection, anything else a lost shot.
  */
 export function hitFailureText(e: unknown): string {
-  if (isTimeout(e)) return UNCONFIRMED;
+  if (hitOutcomeUnknown(e)) return UNCONFIRMED;
   const text = (e instanceof Error ? `${e.name} ${e.message}` : String(e ?? '')).toLowerCase();
   if (/network|offline|disconnected|unavailable/.test(text)) return 'NO CONNECTION, SHOT LOST';
   return 'SHOT LOST';

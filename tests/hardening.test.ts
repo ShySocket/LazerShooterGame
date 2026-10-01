@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { isTimeout, TimeoutError, withTimeout } from '../src/net/withTimeout';
-import { cameraRequestPlan, hitFailureText } from '../src/ui/advice';
+import { cameraRequestPlan, hitFailureText, hitOutcomeUnknown } from '../src/ui/advice';
 import { CAM_CALIB, NET_CALIB, SCHED_CALIB } from '../src/vision/calibration';
 import { clothingDue, cropBudget, failureDecision } from '../src/vision/schedule';
 import { MODELS_CACHE, STALE_MODEL_CACHES } from '../src/vision/modelCache';
@@ -19,6 +19,21 @@ test('a hit that cannot reach the server within the deadline is reported as UNCO
   assert.equal(hitFailureText(new Error('network error')), 'NO CONNECTION, SHOT LOST');
   assert.equal(hitFailureText(new Error('PERMISSION_DENIED')), 'SHOT LOST');
   assert.ok(NET_CALIB.hitTimeoutMs >= 3000 && NET_CALIB.hitTimeoutMs <= 6000, 'a deadline a player will wait out');
+});
+
+test('a hit whose answer was cut off by a dropped connection is UNCONFIRMED, never SHOT LOST: the server may have applied it', () => {
+  // @firebase/database rejects a transaction it had already sent with Error('disconnect') when the
+  // socket drops (PersistentConnection.cancelSentTransactions_: "we don't know if our sent
+  // transactions succeeded"). The target may have lost the life; telling the shooter it was lost and
+  // to fire again would be false.
+  assert.equal(hitOutcomeUnknown(new Error('disconnect')), true);
+  assert.equal(hitFailureText(new Error('disconnect')), 'UNCONFIRMED');
+  assert.equal(hitOutcomeUnknown(new TimeoutError('the hit', 4000)), true);
+  // Errors after which nothing was applied stay lost: the SDK's own aborts (nothing committed) and refusals.
+  for (const reason of ['set', 'maxretry', 'permission_denied']) {
+    assert.equal(hitOutcomeUnknown(new Error(reason)), false, reason);
+    assert.equal(hitFailureText(new Error(reason)), 'SHOT LOST', reason);
+  }
 });
 
 test('a vision loop that fails every frame stops after the threshold and is reported, never spun silently', () => {
