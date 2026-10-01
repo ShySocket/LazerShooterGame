@@ -1,6 +1,8 @@
 import { BODY_MODEL, type BodyProps, type OutfitSig, type Profile } from '../types';
 import { averageProps, bodyProportions, FrameSampler, outfitSignature } from './clothing';
-import { compactEmbedding, configurePass, FACE_MODEL, FACE_SAMPLES, faceYawDeg, isValidEmbedding, loadHuman, MAX_YAW_DEG, withHumanSession } from './human';
+import { compactEmbedding, configurePass, FACE_MODEL, FACE_SAMPLES, faceYawDeg, isValidEmbedding, loadHuman, withHumanSession } from './human';
+import { SCAN_CALIB } from './calibration';
+import { pickOwnCrop } from './cropPick';
 import { buildDetections } from './tracker';
 import { toNBox } from './geometry';
 import { faceRegion, ZoomPass } from './zoom';
@@ -36,11 +38,13 @@ export async function enrolFromCanvases(canvases: HTMLCanvasElement[], fallbackO
         .filter((d) => d.face && !d.associationAmbiguous)
         .sort((a, b) => b.box[2] * b.box[3] - a.box[2] * a.box[3])[0];
       if (!main?.face) return;
-      const fb = toNBox(main.face.boxRaw);
-      const own = (await zoom.run(human, canvas, faceRegion(fb, canvas.width / canvas.height, 6)))
-        .filter((c) => isValidEmbedding(c.face.embedding) && faceYawDeg(c.face) <= MAX_YAW_DEG)
-        .sort((a, b) => Math.hypot(a.box[0] - fb[0], a.box[1] - fb[1]) - Math.hypot(b.box[0] - fb[0], b.box[1] - fb[1]))[0];
-      if (own) faces.push(compactEmbedding(own.face.embedding!));
+      // A weak detection gives no face sample, but its outfit and body ratios still count below.
+      if (main.face.score >= SCAN_CALIB.minFaceScore) {
+        const fb = toNBox(main.face.boxRaw);
+        const crops = (await zoom.run(human, canvas, faceRegion(fb, canvas.width / canvas.height, 6))).map((c) => ({ ...c, score: c.face.score, yaw: faceYawDeg(c.face), valid: isValidEmbedding(c.face.embedding) }));
+        const own = pickOwnCrop(crops, fb, canvas.width, canvas.height);
+        if (own) faces.push(compactEmbedding(own.face.embedding!));
+      }
       if (main.body) {
         const pixels = sampler.grab(canvas, 320);
         const sig = pixels ? outfitSignature(pixels, main.body) : null;

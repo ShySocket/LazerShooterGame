@@ -205,6 +205,15 @@ export function outfitSignature(img: ImageData, body: BodyResult, minScore = 0.4
   return sig;
 }
 
+/** A region signature that carries no measurement (missing, empty, or all zeros) says nothing either way. */
+const hasSignal = (s: number[] | undefined): s is number[] => Boolean(s && s.length && s.some((v) => v > 0));
+
+/** Whether a profile has any measured outfit region on either side (an outfit veto can only protect those that do). */
+export function hasOutfit(outfit: OutfitSides | null | undefined): boolean {
+  if (!outfit) return false;
+  return [outfit.front, outfit.back].some((side) => side && ((['top', 'thighs', 'shins', 'hair'] as (keyof OutfitSig)[])).some((k) => hasSignal(side[k])));
+}
+
 /** Histogram intersection in 0..1. */
 function sigSimilarity(a: number[], b: number[]): number {
   let s = 0;
@@ -263,14 +272,15 @@ function outfitMatch(a: OutfitSig, b: OutfitSig): OutfitMatch {
   for (const k of Object.keys(REGION_WEIGHT) as (keyof OutfitSig)[]) {
     const x = a[k];
     const y = b[k];
-    if (!x || !y) continue;
+    // An unmeasured region (a profile enrolled without the hips in view) is unknown, never a contradiction.
+    if (!hasSignal(x) || !hasSignal(y)) continue;
     const s = sigSimilarity(x, y);
     if (s < REGION_CONTRADICTION[k]) contradiction = true;
     num += REGION_WEIGHT[k] * s;
     den += REGION_WEIGHT[k];
   }
   const sim = den === 0 ? 0 : num / den;
-  return { sim: contradiction ? Math.min(sim, REGION_CONTRADICTION_CAP) : sim, coverage: den, thighs: Boolean(a.thighs && b.thighs) };
+  return { sim: contradiction ? Math.min(sim, REGION_CONTRADICTION_CAP) : sim, coverage: den, thighs: hasSignal(a.thighs) && hasSignal(b.thighs) };
 }
 
 function outfitSimilarity(a: OutfitSig, b: OutfitSig): number {

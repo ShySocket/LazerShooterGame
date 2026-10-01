@@ -185,6 +185,16 @@ test('a stranger whose face reads like a player\'s but wears other clothes is ne
   assert.equal(a.maybeOnNonPlayer, 0, describe(a));
 });
 
+test('a face-only target (no outfit on file) is never confused with a look-alike stranger, and still takes clear hits', async () => {
+  // Review of 2026-10-01: without an outfit the veto cannot protect a face-only target; FACE_ONLY_CALIB
+  // took the look-alike from 35 wrong hits in 30 seeds to none over 100.
+  const a = await run('lookalike-stranger-faceonly');
+  assert.equal(a.correct + a.wrong, 0, describe(a));
+  assert.equal(a.wrongLockFrames, 0, describe(a));
+  const d = await run('duel-faceonly');
+  assert.equal(d.wrong, 0, describe(d));
+});
+
 test('a stranger wearing the same top as a player is never hit, and never wears their name even hedged', async () => {
   const a = await run('same-shirt-stranger');
   assert.equal(a.correct + a.wrong, 0, describe(a));

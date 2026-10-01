@@ -338,6 +338,8 @@ export function Game({ room, me, pid, onLeave }: Props) {
    */
   const uploadPracticeShot = (context: ShotContext, r: Resolution | null, track: Track | null, resolveMs: number, zoomed: boolean) => {
     const round = practiceRound.current;
+    // The crosshair photo is only kept for the review card of a real round.
+    if (context.shotId) photos.current.delete(context.shotId);
     const sample = context.shotId
       ? recorder.current.endShot(context.shotId, { outcome: r ? 'hit' : track ? 'unclear' : 'miss', resolvedTo: r?.id ?? null, via: r?.via ?? null, resolveMs, zoom: zoomed, track, settledBy: settledBy.current })
       : null;
@@ -522,7 +524,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
         periodMs: pipeline.current.periodMs(),
         staleMs: pipeline.current.staleMs(),
         burstMs: pipeline.current.burstMs(),
-        liveFaces: {},
+        liveFaces: pipeline.current.liveFaceCounts(),
         eligible,
       });
       const kept = keeper.current.take(L.t);

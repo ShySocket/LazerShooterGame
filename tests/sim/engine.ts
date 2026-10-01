@@ -411,6 +411,20 @@ export const SCENARIOS: Scenario[] = [
     options: { target: 'stranger' },
   },
   {
+    // Review of 2026-10-01: a practice target captured without the hips has no outfit, so the
+    // outfit veto cannot protect it; a look-alike stranger must still be refused.
+    name: 'lookalike-stranger-faceonly',
+    expect: 'a face-only target (no outfit enrolled) and a non-player whose face reads about 0.66 like them: never a hit',
+    people: [ME, front('alice', 0.12, 4, 0, { faceOnlyProfile: true }), { id: 'stranger', player: false, x: 0.5, distance: 3, facing: 'front', topHue: 7, bottomHue: 3, faceLike: { id: 'alice', cos: 0.85 } }],
+    options: { target: 'stranger' },
+  },
+  {
+    name: 'duel-faceonly',
+    expect: 'face-on at 3 m against a face-only target: hits only on a clear face, never wrong',
+    people: [ME, front('alice', 0.5, 3, 0, { faceOnlyProfile: true }), front('bob', 0.12, 5, 4)],
+    options: { target: 'alice' },
+  },
+  {
     name: 'mirror',
     expect: 'the shooter in a mirror: never a hit',
     people: [ME, front('alice', 0.12, 4, 0), { id: 'mirror', player: false, copyOf: 'me', x: 0.5, distance: 3, facing: 'front', topHue: 9 }],

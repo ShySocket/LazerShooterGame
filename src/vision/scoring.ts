@@ -1,7 +1,7 @@
 import type { BodyProps, OutfitSig, Profile } from '../types';
-import { BELIEF_MAX_STEPS, BELIEF_REF_PERIOD_MS, CLOTHING_EVIDENCE, EVIDENCE_WEIGHTS, IDENTITY_TTL_MS, LIVE_FACE_SAMPLE_SPACING_MS, MEAN_ALPHA, MEAN_RESET_SIM, OUTFIT_VETO, STRANGER_BASELINE } from './calibration';
+import { BELIEF_MAX_STEPS, BELIEF_REF_PERIOD_MS, CLOTHING_EVIDENCE, EVIDENCE_WEIGHTS, IDENTITY_TTL_MS, LIVE_FACE_SAMPLE_SPACING_MS, MEAN_ALPHA, MEAN_RESET_SIM, FACE_ONLY_CALIB, OUTFIT_VETO, STRANGER_BASELINE } from './calibration';
 import { BODY_MODEL, UNKNOWN_ID } from '../types';
-import { profileOutfitMatch, propsSimilarity } from './clothing';
+import { hasOutfit, profileOutfitMatch, propsSimilarity } from './clothing';
 import { resetIdentity, type Track } from './tracker';
 import { centredSimilarity } from './embedding';
 
@@ -37,7 +37,9 @@ export function faceEvidence(
   for (const c of cands) {
     let best = 0;
     for (const f of c.profile.face ?? []) best = Math.max(best, sim(embedding, f));
-    ev[c.id] = clamp01((best - calib.reject) / (calib.accept - calib.reject));
+    // Without an outfit on file nothing can veto a look-alike stranger: the face must clear a stricter bar.
+    const k = hasOutfit(c.profile.outfit) ? calib : FACE_ONLY_CALIB;
+    ev[c.id] = clamp01((best - k.reject) / (k.accept - k.reject));
     top = Math.max(top, ev[c.id]);
   }
   for (const id of Object.keys(ev)) ev[id] *= weight;

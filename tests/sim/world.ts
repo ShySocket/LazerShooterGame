@@ -54,6 +54,8 @@ export interface PersonSpec {
   faceLike?: { id: string; cos: number };
   /** Optional: this person wears exactly the same outfit (top, trousers, hair) as another id. */
   outfitOf?: string;
+  /** Optional: enrolled with the face only (a practice target captured without the hips in view). */
+  faceOnlyProfile?: boolean;
   /** Changes of behaviour during the round, applied once the scene clock passes `at` seconds. */
   script?: { at: number; facing?: Facing; vx?: number; vd?: number }[];
 }
@@ -227,7 +229,9 @@ export function buildScene(rng: Rng, specs: PersonSpec[], selfId = 'me'): Scene 
   const profiles: Record<string, Profile> = {};
   for (const p of people) {
     if (!p.player) continue;
-    profiles[p.id] = { faceModel: FACE_MODEL, face: p.faceSamples, outfit: { front: p.outfitFront, back: p.outfitBack }, body: p.props, bodyModel: BODY_MODEL };
+    profiles[p.id] = p.faceOnlyProfile
+      ? { faceModel: FACE_MODEL, face: p.faceSamples, outfit: { front: { top: [] }, back: { top: [] } }, body: null, bodyModel: BODY_MODEL }
+      : { faceModel: FACE_MODEL, face: p.faceSamples, outfit: { front: p.outfitFront, back: p.outfitBack }, body: p.props, bodyModel: BODY_MODEL };
   }
   return { people, profiles, selfId, time: 0, panX: 0 };
 }

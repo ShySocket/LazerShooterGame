@@ -184,7 +184,7 @@ export function cameraRequestPlan(permission: CameraPermission): CameraRequestPl
 /** What a capture got: how many frames gave a face, and whether the outfit could be read. */
 export function practiceCaptureNote(name: string, faces: number, frames: number, outfit: boolean): string {
   const face = faces >= frames / 2 ? `${name} added.` : `${name} added, but only ${faces} of ${frames} frames showed a usable face: capture again closer or in better light if shots on them refuse.`;
-  return outfit ? face : `${face} No outfit: the hips were not in view, so only the face identifies them (step back and capture again to add it).`;
+  return outfit ? face : `${face} Face only: the hips were not in view, so nothing can rule out a look-alike and shots on them land only on a very clear face. Step back and Capture again with their hips in view.`;
 }
 
 /** The things worth trying in a practice session, in the order that teaches the most. */

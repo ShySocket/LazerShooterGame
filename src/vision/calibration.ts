@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-10-01.1';
+export const CALIBRATION_VERSION = '2026-10-01.2';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /**
@@ -24,6 +24,15 @@ export const CALIBRATION_VERSION = '2026-10-01.1';
  * can still reach 0.69, which is why a contradicting outfit vetoes a face (OUTFIT_VETO).
  */
 export const FACE_CALIB = { reject: 0.3, accept: 0.62 };
+/**
+ * Face thresholds for a candidate enrolled without any outfit (a practice target captured without
+ * the hips in view): the outfit veto cannot rule a look-alike stranger out for them, so the face
+ * alone must clear a stricter bar. On the sim's lookalike-stranger-faceonly scenario (a stranger at
+ * about 0.66, the real different-person tail; 100 seeds): FACE_CALIB gave 35 wrong hits in 30 seeds,
+ * 0.55/0.85 gave 4, 0.55/0.90 gives 0 while a face-only duel at 3 m still lands 27% (97% with an
+ * outfit). Face alone cannot tell a look-alike apart, so practice capture asks for the hips in view.
+ */
+export const FACE_ONLY_CALIB = { reject: 0.55, accept: 0.9 };
 /**
  * Two players whose scans are this alike will be confused at range; the lobby warns. GhostNet: the
  * closest pair of samples between two different people's scans measured 0.42 at most (6 people,

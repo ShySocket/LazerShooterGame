@@ -140,3 +140,42 @@ test('a clearly different top or trousers caps the whole outfit match, a mild ha
   const topOnly = profileOutfitMatch({ top: hist(0) }, profile);
   assert.ok(!topOnly.thighs && topOnly.coverage < 0.5 && topOnly.sim > 0.99, JSON.stringify(topOnly));
 });
+
+test('an unmeasured region is unknown, never a contradiction: a profile enrolled without hips is not vetoed everywhere', async () => {
+  const { profileOutfitMatch } = await import('../src/vision/clothing');
+  const { updateOutfitVeto, outfitVetoed } = await import('../src/vision/scoring');
+  const { Tracker } = await import('../src/vision/tracker');
+  const hist = (bin: number) => { const h = new Array(51).fill(0); h[bin] = 0.7; h[bin + 1] = 0.3; return h; };
+  const empty = { front: { top: [] as number[] }, back: { top: [] as number[] } };
+  const zeros = { front: { top: new Array(51).fill(0) }, back: { top: new Array(51).fill(0) } };
+  const live = { top: hist(0), thighs: hist(24) };
+  for (const outfit of [empty, zeros]) {
+    const m = profileOutfitMatch(live, outfit);
+    assert.equal(m.coverage, 0, 'nothing was compared');
+    const t = new Tracker().update([{ box: [0.3, 0.2, 0.3, 0.6] }], 100)[0];
+    updateOutfitVeto(t, live, [{ id: 'target', profile: { faceModel: 'x', face: [], outfit } }], 1000);
+    assert.equal(outfitVetoed(t, 'target', 1000), false, 'no veto from an outfit that was never measured');
+  }
+});
+
+test('a skipped region never counts as compared trousers', async () => {
+  const { profileOutfitMatch } = await import('../src/vision/clothing');
+  const hist = (bin: number) => { const h = new Array(51).fill(0); h[bin] = 0.7; h[bin + 1] = 0.3; return h; };
+  const profile = { front: { top: hist(0), hair: hist(48), thighs: new Array(51).fill(0) }, back: { top: hist(0), hair: hist(48), thighs: new Array(51).fill(0) } };
+  const m = profileOutfitMatch({ top: hist(0), hair: hist(48), thighs: hist(24) }, profile);
+  assert.equal(m.thighs, false, 'all-zero trousers on file were never compared');
+});
+
+test('quick enrolment takes only the crop that is the detected face, never a neighbour inside the crop', async () => {
+  const { pickOwnCrop } = await import('../src/vision/cropPick');
+  const detected: [number, number, number, number] = [0.45, 0.2, 0.1, 0.15];
+  const own = { box: [0.46, 0.21, 0.09, 0.14] as [number, number, number, number], score: 0.9, yaw: 5, valid: true, who: 'own' };
+  const neighbour = { box: [0.44, 0.2, 0.1, 0.15] as [number, number, number, number], score: 0.9, yaw: 5, valid: true, who: 'n' };
+  const far = { box: [0.7, 0.2, 0.1, 0.15] as [number, number, number, number], score: 0.95, yaw: 5, valid: true, who: 'far' };
+  assert.equal(pickOwnCrop([far], detected, 1280, 720), null, 'a face that does not overlap the detected one is never taken');
+  assert.equal(pickOwnCrop([far, own], detected, 1280, 720)?.who, 'own');
+  assert.equal(pickOwnCrop([{ ...own, score: 0.5 }], detected, 1280, 720), null, 'a weak crop is refused');
+  assert.equal(pickOwnCrop([{ ...own, yaw: 60 }], detected, 1280, 720), null, 'a face turned past what a round matches is refused');
+  assert.equal(pickOwnCrop([{ ...own, box: [0.46, 0.21, 0.01, 0.01] }], detected, 1280, 720), null, 'a face too small to embed is refused');
+  assert.ok(pickOwnCrop([neighbour, own], detected, 1280, 720), 'of overlapping faces the centre-nearest is taken');
+});
