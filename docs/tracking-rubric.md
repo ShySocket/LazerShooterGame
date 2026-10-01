@@ -178,7 +178,7 @@ Real-phone evidence: a rescan on the phones players use, with the yaw/pitch read
 - [ ] **Must**: Each face prompt advances within 3 s of the player holding the correct pose (no prompt needs more than one try on a phone that shows the pose in the readout). <!-- R8.01 phone -->
 - [ ] **Must**: Both turn directions work whatever the mirrored preview shows: left and right only have to be opposite ways, latched from the first turn. <!-- R8.02 auto:test:mirrored player -->
 - [ ] **Must**: The hint names the actual correction: a turn that is too small says "turn a bit more", too large says "turn back", and "the other way" appears only when the direction is wrong. <!-- R8.03 auto:test:turn-less, not other-way -->
-- [ ] **Must**: The same person is never refused for turning their head: a sample counts when it matches any accepted sample, so a far turn chains through the adjacent angle. <!-- R8.04 auto:test:same-person chain -->
+- [ ] **Must**: The same person is never refused for turning their head: the face stage takes no decision on face similarity (the one face in frame is the player), so no turn can read as "a different face". <!-- R8.04 auto:test:the face stage completes for a person who only turns one way -->
 - [ ] **Must**: Chin up and chin down complete whatever sign the model gives pitch on the device. <!-- R8.05 auto:test:inverted pitch sign -->
 - [ ] **Must**: The face scan completes in under 45 s and the whole enrolment (face, front and back body scans) in under 2 min on the slowest phone in the group. <!-- R8.06 phone -->
 - [ ] **Must**: A 720p selfie at arm's length is not stuck on "Move closer": the enrolment face size gate is 48 px, not 64. <!-- R8.07 auto:test:minimum face size -->
@@ -195,6 +195,9 @@ Real-phone evidence: a rescan on the phones players use, with the yaw/pitch read
 - [ ] **Must**: A weak face detection names light as the fix, never "hold still"; each cheap gate (no face, several faces, crop) has one message. <!-- R8.18 auto:test:low light is named -->
 - [ ] **Must**: The enrolment face size gate is measured in full-frame pixels, so a 720p phone is not held closer than a 1080p one. <!-- R8.19 auto:test:the face size gate is measured -->
 - [ ] **Must**: A failed scan upload keeps the captured scan: the message says why in plain words, "Try again" re-sends it, and "Start over" is a separate link. <!-- R8.20 auto:test:a failed scan upload -->
+- [ ] **Must**: A real person completes the eight-angle face scan with the real models without a dead end or a "different face" refusal: a real interview clip as the selfie camera reaches 8/8 (patience and Skip this angle for the moves the speaker never makes). <!-- R8.21 e2e:real-scan -->
+- [ ] **Must**: No face-scan prompt can dead-end: after 6 s the best right-way frame stands in, after 10 s the angle can be skipped, and the face stage never refuses a sample on face similarity. <!-- R8.22 auto:test:the face stage completes for a person who only turns one way -->
+- [ ] **Should**: Two people in the selfie frame never give a face sample, and the hint asks for one face. <!-- R8.23 e2e:real-scan-two-faces -->
 
 ## 9. Demo-day protocol (run this before the first guest picks up a phone)
 

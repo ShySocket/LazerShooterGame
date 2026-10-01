@@ -17,6 +17,8 @@ The full protocol below is for the venue day with several phones and the rubric.
 
 ## Scan check first (settles R8.01, R8.06, R8.13)
 
+Since 2026-10-01 the scan cannot get stuck: the hint shows the angle the phone reads against the one it wants, after 6 s the best try counts and after 10 s **Skip this angle** appears, and it no longer refuses a turn as "a different face". If a prompt still needs Skip often, write down the readout it showed; that is what tunes the bands below.
+
 Before anything else, enrol once on the iPhone and once on an Android. The face stage shows `yaw N° · pitch M°` under the hint. For each prompt, turn until the hint says "Hold it" and note:
 
 - whether every prompt advanced within about 3 s of holding the pose (R8.01), and which one needed more than one try;
