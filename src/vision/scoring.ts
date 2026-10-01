@@ -225,6 +225,18 @@ export function topBelief(track: Track): Resolution | null {
   return { id, score, margin: score - (second?.[1] ?? 0), via: track.via };
 }
 
+/** A sample over more than the shirt that matches a player's scanned outfit well enough to lift a veto (OUTFIT_VETO). */
+const clearOutfitMatch = (m: { sim: number; coverage: number }): boolean => m.coverage >= OUTFIT_VETO.clearCoverage && m.sim >= OUTFIT_VETO.clearSim;
+
+/**
+ * Players this track's own earlier reads ruled out (an active veto) whose outfit this sample clearly
+ * matches. A body does not change clothes between two reads a moment apart, so a non-empty answer
+ * means the track is now on somebody else's body, or one of the two reads was wrong.
+ */
+export function outfitReversals(track: Track, sig: OutfitSig, cands: Candidate[], now: number): string[] {
+  return cands.filter((c) => c.profile.outfit && c.id !== UNKNOWN_ID && outfitVetoed(track, c.id, now) && clearOutfitMatch(profileOutfitMatch(sig, c.profile.outfit))).map((c) => c.id);
+}
+
 /**
  * Rule players out on this body when a well-covered outfit sample contradicts their scanned outfit,
  * and lift the veto when a later sample matches it again. See OUTFIT_VETO.
@@ -242,7 +254,7 @@ export function updateOutfitVeto(track: Track, sig: OutfitSig, cands: Candidate[
     // Only a sample that covers more than the shirt can lift, ease or back up anything: a shirt alone
     // never compared the trousers that may have caused a veto, nor told a look-alike in the same top apart.
     if (m.coverage < OUTFIT_VETO.clearCoverage) continue;
-    if (m.sim >= OUTFIT_VETO.clearSim) {
+    if (clearOutfitMatch(m)) {
       if (v) {
         const { [c.id]: _gone, ...rest } = track.outfitVeto!;
         track.outfitVeto = rest;

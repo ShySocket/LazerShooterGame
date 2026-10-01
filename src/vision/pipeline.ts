@@ -11,6 +11,7 @@ import {
   combineEvidence,
   faceEvidence,
   IDENTITY_TTL_MS,
+  outfitReversals,
   outfitSupports,
   outfitVetoed,
   reacquired,
@@ -298,6 +299,17 @@ export class VisionPipeline<C = unknown> {
         if (!obs) return;
         // An unreadable torso is not a sample: the audit stays due and nothing counts as checked.
         if (!obs.sig) return;
+        // A body does not change clothes. This sample clearly matching a player whom this track's own
+        // reads ruled out moments ago means the track now sits on somebody else's body: a hop with no
+        // jump to notice, whatever the belief says (crossing-lookalike-faces seed 63, 2026-10-01: the
+        // partner's track had retired behind her, her body was skipped for a frame, her track took
+        // his face-only detection half a box away, and the next frame's outfit read turned the belief
+        // to him before the face hop check ran; a burst opened on her settled on him 1.1 s later). The
+        // identity starts over before this read counts, so it is evidence from the new body, and a
+        // burst opened before it cannot settle on this track. The player the track already believes
+        // is exempt: their own outfit coming back is a misread veto correcting itself.
+        const carried = topBelief(t)?.id;
+        if (outfitReversals(t, obs.sig, candidates, now).some((id) => id !== carried)) markUncertain(t, now);
         t.lastClothingAt = now;
         t.lastOutfitReadAt = now;
         // A sample read while this body overlaps someone may vet a name but never back one up.
@@ -403,9 +415,13 @@ export class VisionPipeline<C = unknown> {
       let r = canConfirmShot(p, t, now, decisionAt, stale) && t ? resolveHit(t, eligible, hitThreshold, hitMargin, decisionAt) : null;
       // A burst that started on one accepted identity must not quietly land on another.
       if (r && p.expectedId && r.id !== p.expectedId) r = null;
-      // Nor on a track that went through an uncertain transition after the tap: it may now be
-      // somebody else's body (crossing-lookalike-faces seed 63: a 1.1 s burst settled on the partner).
-      if (r && t && (t.reacquireAt ?? 0) > p.startedAt) r = null;
+      // A burst that started on no accepted identity must not land on whoever an uncertain transition
+      // after the tap put on the track: it may now be somebody else's body. This stays true after the
+      // new body re-earns an identity, which is why it reads transitionAt and not reacquireAt (cleared
+      // on re-earning, so the old check could never refuse anything resolveHit had not already
+      // refused; crossing-lookalike-faces seed 63, 2026-10-01: a 1.1 s burst on her settled on him).
+      // With an accepted identity at the tap, the rule above already holds the burst to it.
+      if (r && t && !p.expectedId && (t.transitionAt ?? 0) > p.startedAt) r = null;
       p.framesLeft--;
       p.zoom ||= zoomed;
       // A frame in which the detector skipped the target is not the target leaving: the burst keeps
