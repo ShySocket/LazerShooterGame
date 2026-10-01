@@ -1,12 +1,13 @@
-import type { ShotLabel, ShotSample } from './sample';
-import { formatBound, percentile, wrongHitBounds } from './stats';
+import type { FrameSummary, ShotLabel, ShotSample } from './sample';
+import { clusterWrongBound, formatBound, percentile, wrongHitBounds } from './stats';
 import { triage } from './triage';
 
 /**
  * The session report: what a play or practice session's labelled shots say, broken down by
  * condition, target, shooter phone and build, with exact upper bounds on the wrong-hit rate so a
- * clean session is read for what it proves ("0 wrong in 216 shots: the rate is below 1.4%") rather
- * than as "never". Pure functions over feedback samples; scripts/session-report.ts prints them.
+ * clean session is read for what it proves (no wrong hit at 30 targets: at most about 10% of targets
+ * draw one) rather than as "never". Pure functions over feedback samples; scripts/session-report.ts
+ * prints them.
  */
 export type LabelledSample = ShotSample & { label: ShotLabel };
 
@@ -23,9 +24,25 @@ export function conditionOf(s: ShotSample, field: ConditionField): string {
   return UNLABELLED;
 }
 
-/** Practice shots are labelled with the aim selector at the tap (reviewMs 0); review-card labels come after the round. */
-export function isPractice(s: ShotSample): boolean {
-  return s.label?.reviewMs === 0;
+/**
+ * Where a label came from. `practice`: ?practice, targets quick-enrolled with the rear camera (a
+ * face-only one is held to FACE_ONLY_CALIB). `range`: range mode in a real room, players who did the
+ * normal scan (the phone-session matrix). `review`: the review card after a round, failed shots only.
+ */
+export type ShotSource = 'practice' | 'range' | 'review';
+/** Labels taken at the tap by a build that did not record whether it was ?practice or a real room's range mode. */
+export const UNSPLIT = 'practice/range (unsplit)';
+export type SectionSource = ShotSource | typeof UNSPLIT;
+
+/**
+ * A label's source. Review-card labels come after the round (reviewMs > 0); labels taken with the aim
+ * selector at the tap (reviewMs 0) say `source` from the build that writes it, and older ones, which
+ * cannot tell the two populations apart, are UNSPLIT.
+ */
+export function sourceOf(s: ShotSample): SectionSource {
+  if (s.label?.reviewMs !== 0) return 'review';
+  const source = (s.label as { source?: unknown }).source;
+  return source === 'practice' || source === 'range' ? source : UNSPLIT;
 }
 
 export type Outcome = 'correct' | 'wrongPlayer' | 'unknownFalse' | 'rightRefusal' | 'rejected';
@@ -40,18 +57,46 @@ export function outcomeOf(s: LabelledSample): Outcome {
   return 'rejected';
 }
 
+/** The body the shot was about: nominated at the tap, else the target summary's, else the one under the dot at the decision. */
+export function shotTrackId(s: ShotSample): number | null {
+  return s.shot.trackId ?? s.target?.trackId ?? s.shot.decisionTrackId ?? null;
+}
+
+/** How the labelled target came to be locked in a shot's recorded frames (see lockAcquisition). */
+export type LockAcquisition =
+  /** The shot's body came under the dot in the recorded frames and locked on the target `ms` later. */
+  | { kind: 'locked'; ms: number }
+  /** Under the dot in the recorded frames and never locked on the target there: a failure. */
+  | { kind: 'never' }
+  /**
+   * Already under the dot in the first recorded frame and locked there or later: it came under the
+   * dot before the recording began, so the time is unknown (left-censored), whether it was already
+   * locked or not. Timing it from the first frame would understate exactly the slow locks.
+   */
+  | { kind: 'untimed' };
+
 /**
- * Time from the earliest recorded frame to the first frame whose lock names the labelled target as
- * a hit (`lock:<pid>`, the state in which a tap would land). The recorded window starts 12 frames
- * before the tap, so 0 means the target was already locked when the window began. Null when the
- * label names nobody or no recorded frame locked the target.
+ * How long the tracker took to lock the labelled target once their body was under the dot: from the
+ * first recorded frame in which the shot's body (shotTrackId) is in sight to the first frame after
+ * it in which that body, still in sight, is locked on the target (`lock:<pid>`, the state in which a
+ * tap would land). Measured from the body coming under the dot, not from the start of the recorded
+ * window (12 frames before the tap, whatever the frame period), so it says how fast the tracker locks
+ * and not how long the shooter held aim. Null when the label names nobody or the shot's body was
+ * never under the dot in the recorded frames.
  */
-export function lockAcquisitionMs(s: ShotSample): number | null {
+export function lockAcquisition(s: ShotSample): LockAcquisition | null {
   if (s.label?.kind !== 'player' || s.frames.length === 0) return null;
+  const id = shotTrackId(s);
+  if (id === null) return null;
   const want = `lock:${s.label.target}`;
   const frames = [...s.frames].sort((a, b) => a.t - b.t);
-  const first = frames.find((f) => f.lock === want);
-  return first ? first.t - frames[0].t : null;
+  const inSight = (f: FrameSummary) => f.tracks.some((t) => t.id === id && t.inSight);
+  const start = frames.findIndex(inSight);
+  if (start < 0) return null;
+  const locked = frames.findIndex((f, i) => i >= start && inSight(f) && f.lock === want);
+  if (locked < 0) return { kind: 'never' };
+  if (start === 0) return { kind: 'untimed' };
+  return { kind: 'locked', ms: frames[locked].t - frames[start].t };
 }
 
 /** A user agent cut down to the phone and browser: `iPhone iOS 18.5 Safari 18.5`, `Android 14 Pixel 8 Chrome 140`. */
@@ -118,30 +163,52 @@ export interface ReportRow {
   accepted: number;
   /** correct / playerAttempts, rejections included in the denominator; null without player shots. */
   legitSuccess: number | null;
-  /** One-sided 95% Clopper-Pearson upper bounds on (wrongPlayer + unknownFalse) per attempt and per accepted hit. */
+  /**
+   * One-sided 95% Clopper-Pearson upper bounds on (wrongPlayer + unknownFalse) per attempt and per
+   * accepted hit. They treat every shot as an independent trial; shots at one target in one round
+   * share their cause, so read them next to wrongPerTargetUpper. Null where nothing can be bounded.
+   */
   wrongPerAttemptUpper: number | null;
   wrongPerHitUpper: number | null;
+  /** Round x target groups (the shots at one labelled target, or at non-players, in one round), and how many had a wrong hit. */
+  targets: number;
+  wrongTargets: number;
+  /** The same bound over those groups (clusterWrongBound): the share of targets that draw a wrong hit. */
+  wrongPerTargetUpper: number | null;
   /** resolveMs of accepted hits. */
   resolveMs: Latency;
-  /** lockAcquisitionMs of player-labelled shots that locked their target in the recorded window. */
+  /** lockAcquisition of player-labelled shots whose body came under the dot in the recorded frames and then locked. */
   lockMs: Latency;
+  /** Player-labelled shots whose body was under the dot in the recorded frames and never locked on the target: failures. */
+  lockNever: number;
+  /** Player-labelled shots whose body was already under the dot in the first recorded frame and locked: time unknown, left out of lockMs. */
+  lockUntimed: number;
 }
+
+/** The round x target group a shot belongs to: shots in one share the person, the outfit and the light. */
+const targetGroup = (s: LabelledSample) => `${s.round.key} ${s.label.kind === 'player' ? s.label.target : NOT_A_PLAYER}`;
 
 export function summariseRow(key: string, samples: LabelledSample[]): ReportRow {
   const n = { correct: 0, wrongPlayer: 0, unknownFalse: 0, rightRefusal: 0, rejected: 0 };
   const resolve: number[] = [];
   const lock: number[] = [];
+  const lockOther = { never: 0, untimed: 0 };
+  const wrongByTarget = new Map<string, number>();
   let players = 0;
   for (const s of samples) {
     const o = outcomeOf(s);
     n[o]++;
     if (s.label.kind === 'player') players++;
-    if ((o === 'correct' || o === 'wrongPlayer' || o === 'unknownFalse') && s.shot.resolveMs !== null && Number.isFinite(s.shot.resolveMs)) resolve.push(s.shot.resolveMs);
-    const l = lockAcquisitionMs(s);
-    if (l !== null) lock.push(l);
+    const wrong = o === 'wrongPlayer' || o === 'unknownFalse';
+    wrongByTarget.set(targetGroup(s), (wrongByTarget.get(targetGroup(s)) ?? 0) + (wrong ? 1 : 0));
+    if ((o === 'correct' || wrong) && s.shot.resolveMs !== null && Number.isFinite(s.shot.resolveMs)) resolve.push(s.shot.resolveMs);
+    const l = lockAcquisition(s);
+    if (l?.kind === 'locked') lock.push(l.ms);
+    else if (l) lockOther[l.kind]++;
   }
   const accepted = n.correct + n.wrongPlayer + n.unknownFalse;
   const bounds = wrongHitBounds(n.wrongPlayer + n.unknownFalse, samples.length, accepted);
+  const byTargetBound = clusterWrongBound(wrongByTarget.values());
   return {
     key,
     attempts: samples.length,
@@ -156,8 +223,13 @@ export function summariseRow(key: string, samples: LabelledSample[]): ReportRow 
     legitSuccess: players ? n.correct / players : null,
     wrongPerAttemptUpper: bounds.perAttempt,
     wrongPerHitUpper: bounds.perHit,
+    targets: byTargetBound.clusters,
+    wrongTargets: byTargetBound.failed,
+    wrongPerTargetUpper: byTargetBound.upper,
     resolveMs: latency(resolve),
     lockMs: latency(lock),
+    lockNever: lockOther.never,
+    lockUntimed: lockOther.untimed,
   };
 }
 
@@ -194,28 +266,41 @@ export interface EvalSplit {
 }
 
 /**
- * `--eval` argument: a date (`2026-09-30`, local midnight; or a date-time), epoch milliseconds, or a
- * full round key (`ABCD-1759312345678`) holds out every round that started at or after it; any other
- * string holds out the rounds whose key starts with it (a room code, say).
+ * A point in time as the feedback scripts take it (`--since`, `--eval`): a date (`2026-09-30`, local
+ * midnight), a date-time (`2026-09-30T18:00`), epoch milliseconds, or a full round key
+ * (`ABCD-1759312345678`, its start). Null when `arg` is none of these; throws on a date that has
+ * the shape but does not exist, so a typo is never read as some other day.
  */
-export function parseEvalSplit(arg: string): EvalSplit {
+export function parseCutoff(arg: string, flag = '--since'): { t: number; describe: string } | null {
   const a = arg.trim();
-  const from = (t: number, what: string): EvalSplit => ({ describe: `rounds started at or after ${what}`, isEval: (s) => s.round.startAt >= t });
   const date = /^(\d{4})-(\d{2})-(\d{2})$/.exec(a);
   if (date) {
     const d = new Date(Number(date[1]), Number(date[2]) - 1, Number(date[3]));
-    if (d.getMonth() !== Number(date[2]) - 1 || d.getDate() !== Number(date[3])) throw new Error(`--eval: no such date ${a}`);
-    return from(d.getTime(), `${a} (local midnight)`);
+    if (d.getMonth() !== Number(date[2]) - 1 || d.getDate() !== Number(date[3])) throw new Error(`${flag}: no such date ${a}`);
+    return { t: d.getTime(), describe: `${a} (local midnight)` };
   }
   if (/^\d{4}-\d{2}-\d{2}T/.test(a)) {
     const t = Date.parse(a);
-    if (!Number.isFinite(t)) throw new Error(`--eval: cannot read the date ${a}`);
-    return from(t, a);
+    if (!Number.isFinite(t)) throw new Error(`${flag}: cannot read the date ${a}`);
+    return { t, describe: a };
   }
-  if (/^\d{9,16}$/.test(a)) return from(Number(a), new Date(Number(a)).toISOString());
+  if (/^\d{9,16}$/.test(a)) return { t: Number(a), describe: new Date(Number(a)).toISOString() };
   const key = /^[A-Z]{4}-(\d{9,16})$/.exec(a);
-  if (key) return from(Number(key[1]), `round ${a}`);
+  if (key) return { t: Number(key[1]), describe: `round ${a}` };
+  return null;
+}
+
+/**
+ * `--eval` argument: a cutoff (parseCutoff) holds out every round that started at or after it; a
+ * prefix of a round key (`ABCD`, a room code, or `ABCD-17593`) holds out the rounds whose key starts
+ * with it. Anything else could match no round, so it throws rather than hold out nothing.
+ */
+export function parseEvalSplit(arg: string): EvalSplit {
+  const a = arg.trim();
   if (!a) throw new Error('--eval needs a date, a round key or a round key prefix');
+  const cut = parseCutoff(a, '--eval');
+  if (cut) return { describe: `rounds started at or after ${cut.describe}`, isEval: (s) => s.round.startAt >= cut.t };
+  if (!/^([A-Z]{1,4}|[A-Z]{4}-\d*)$/.test(a)) throw new Error(`--eval: cannot read ${a}: give a date (2026-09-30), a date-time, a round key (ABCD-1759312345678) or a round key prefix (ABCD)`);
   return { describe: `rounds whose key starts with ${a}`, isEval: (s) => s.round.key.startsWith(a) };
 }
 
@@ -225,10 +310,13 @@ export interface ReportTable {
 }
 
 export interface ReportSection {
-  /** `practice` or `review`, prefixed with `dev` / `eval` when a split is given. */
+  /** The source (`practice`, `range`, `practice/range (unsplit)` or `review`), prefixed with `dev` / `eval` when a split is given. */
   name: string;
+  source: SectionSource;
   /** What the section's numbers can and cannot say. */
   note: string | null;
+  /** Why the section has no wrong-hit bound (its rows' bounds are null), or null when it has one. */
+  boundsNa: string | null;
   total: ReportRow;
   rounds: number;
   tables: ReportTable[];
@@ -242,27 +330,46 @@ export interface SessionReport {
 }
 
 /** The review card only asks about shots that did not land (sample.ts REVIEWABLE_OUTCOMES). */
-export const REVIEW_NOTE = 'review cards ask only about shots that did not land: no hits can appear here, so legit success is not a hit rate; the rows say which refusals were real players';
+export const REVIEW_NOTE = 'review cards ask only about shots that did not land: no hits can appear here, so legit success is not a hit rate and no wrong-hit rate can be bounded; the rows say which refusals were real players';
+/** Why a review section prints no wrong-hit bound: zero wrong hits there is true by construction, not evidence. */
+export const REVIEW_BOUNDS_NA = 'review cards hold only shots that did not land, so a wrong hit cannot appear in them';
 
-function section(name: string, note: string | null, samples: LabelledSample[]): ReportSection {
+const NOTES: Record<SectionSource, string | null> = {
+  practice: '?practice: targets quick-enrolled with the rear camera (a face-only one must clear FACE_ONLY_CALIB), not players who did the normal scan',
+  range: 'range mode in a real room: players who did the normal scan; the phone-session matrix is read here',
+  [UNSPLIT]: 'labelled at the tap by a build that did not record whether it was ?practice or range mode in a real room: both pooled, so read neither population from it',
+  review: REVIEW_NOTE,
+};
+
+const withoutBounds = (r: ReportRow): ReportRow => ({ ...r, wrongPerAttemptUpper: null, wrongPerHitUpper: null, wrongPerTargetUpper: null });
+
+function section(name: string, source: SectionSource, samples: LabelledSample[]): ReportSection {
+  const boundsNa = source === 'review' ? REVIEW_BOUNDS_NA : null;
+  const rows = (list: ReportRow[]) => (boundsNa ? list.map(withoutBounds) : list);
+  const total = summariseRow('all', samples);
   return {
     name,
-    note,
-    total: summariseRow('all', samples),
+    source,
+    note: NOTES[source],
+    boundsNa,
+    total: boundsNa ? withoutBounds(total) : total,
     rounds: new Set(samples.map((s) => s.round.key)).size,
     tables: [
-      ...CONDITION_FIELDS.map((f) => ({ title: `by ${f}`, rows: groupRows(samples, byCondition(f)) })),
-      { title: 'by target player', rows: groupRows(samples, byTarget) },
-      { title: 'by shooter phone', rows: groupRows(samples, byPhone) },
-      { title: 'by build', rows: groupRows(samples, byBuild) },
+      ...CONDITION_FIELDS.map((f) => ({ title: `by ${f}`, rows: rows(groupRows(samples, byCondition(f))) })),
+      { title: 'by target player', rows: rows(groupRows(samples, byTarget)) },
+      { title: 'by shooter phone', rows: rows(groupRows(samples, byPhone)) },
+      { title: 'by build', rows: rows(groupRows(samples, byBuild)) },
     ],
   };
 }
 
+const SOURCES: SectionSource[] = ['practice', 'range', UNSPLIT, 'review'];
+
 /**
- * The whole report. Practice and review-card shots are never pooled: practice labels are the aim
- * the shooter chose before the tap, review labels are a memory of a failed shot. With a split, the
- * held-out rounds are reported apart from the development rounds the calibration was tuned on.
+ * The whole report, one section per source present in the log. Sources are never pooled: ?practice
+ * targets are quick-enrolled, range targets did the normal scan, and review labels are a memory of a
+ * failed shot. With a split, the held-out rounds are reported apart from the development rounds the
+ * calibration was tuned on.
  */
 export function buildSessionReport(samples: ShotSample[], split: EvalSplit | null = null): SessionReport {
   const labelled = samples.filter((s): s is LabelledSample => Boolean(s.label));
@@ -272,14 +379,10 @@ export function buildSessionReport(samples: ShotSample[], split: EvalSplit | nul
         ['eval', labelled.filter((s) => split.isEval(s))],
       ]
     : [['', labelled]];
+  const present = SOURCES.filter((source) => labelled.some((s) => sourceOf(s) === source));
   const sections: ReportSection[] = [];
   for (const [set, list] of sets) {
-    for (const [source, pick] of [
-      ['practice', true],
-      ['review', false],
-    ] as const) {
-      sections.push(section(set ? `${set} ${source}` : source, pick ? null : REVIEW_NOTE, list.filter((s) => isPractice(s) === pick)));
-    }
+    for (const source of present) sections.push(section(set ? `${set} ${source}` : source, source, list.filter((s) => sourceOf(s) === source)));
   }
   return { samples: samples.length, labelled: labelled.length, split: split?.describe ?? null, sections };
 }
@@ -287,7 +390,7 @@ export function buildSessionReport(samples: ShotSample[], split: EvalSplit | nul
 const pct = (x: number | null) => (x === null ? '-' : `${Math.round(100 * x)}%`);
 const ms = (l: Latency) => (l.n === 0 ? '-' : `${Math.round(l.p50!)}/${Math.round(l.p95!)}`);
 
-const COLUMNS: { head: string; cell: (r: ReportRow) => string }[] = [
+const COLUMNS: { head: string; bound?: true; cell: (r: ReportRow) => string }[] = [
   { head: 'shots', cell: (r) => String(r.attempts) },
   { head: 'player', cell: (r) => String(r.playerAttempts) },
   { head: 'hit', cell: (r) => String(r.correct) },
@@ -296,17 +399,19 @@ const COLUMNS: { head: string; cell: (r: ReportRow) => string }[] = [
   { head: 'rejected', cell: (r) => String(r.rejected) },
   { head: 'refused', cell: (r) => String(r.rightRefusals) },
   { head: 'legit', cell: (r) => pct(r.legitSuccess) },
-  { head: 'wrong/shot', cell: (r) => formatBound(r.wrongPerAttemptUpper) },
-  { head: 'wrong/hit', cell: (r) => formatBound(r.wrongPerHitUpper) },
+  { head: 'wrong/shot', bound: true, cell: (r) => formatBound(r.wrongPerAttemptUpper) },
+  { head: 'wrong/hit', bound: true, cell: (r) => formatBound(r.wrongPerHitUpper) },
   { head: 'resolve p50/95', cell: (r) => ms(r.resolveMs) },
   { head: 'lock p50/95', cell: (r) => `${ms(r.lockMs)}${r.lockMs.n ? ` (${r.lockMs.n})` : ''}` },
+  { head: 'unlocked', cell: (r) => String(r.lockNever) },
+  { head: 'untimed', cell: (r) => String(r.lockUntimed) },
 ];
 
-/** One table as aligned text; a condition nobody labelled collapses to one line. */
-export function formatTable(t: ReportTable): string[] {
+/** One table as aligned text; a condition nobody labelled collapses to one line. `boundsNa` prints n/a in the bound columns. */
+export function formatTable(t: ReportTable, boundsNa = false): string[] {
   if (t.rows.length === 1 && t.rows[0].key === UNLABELLED) return [`${t.title}: no labels (${t.rows[0].attempts} shots unlabelled)`];
   const keyW = Math.max(t.title.length, ...t.rows.map((r) => r.key.length));
-  const cells = t.rows.map((r) => COLUMNS.map((c) => c.cell(r)));
+  const cells = t.rows.map((r) => COLUMNS.map((c) => (boundsNa && c.bound ? 'n/a' : c.cell(r))));
   const widths = COLUMNS.map((c, i) => Math.max(c.head.length, ...cells.map((row) => row[i].length)));
   const line = (key: string, values: string[]) => `${key.padEnd(keyW)}  ${values.map((v, i) => v.padStart(widths[i])).join('  ')}`;
   return [line(t.title, COLUMNS.map((c) => c.head)), ...t.rows.map((r, i) => line(r.key, cells[i]))];
@@ -315,18 +420,24 @@ export function formatTable(t: ReportTable): string[] {
 export function formatSection(s: ReportSection): string[] {
   const t = s.total;
   if (t.attempts === 0) return [`== ${s.name}: no labelled shots`];
+  const bounds = s.boundsNa
+    ? `wrong-hit rate n/a: ${s.boundsNa}`
+    : `wrong-hit rate (one-sided 95% Clopper-Pearson upper bounds) ${formatBound(t.wrongPerTargetUpper)} per target (${t.wrongTargets} of ${t.targets} round x target groups had one), and ${formatBound(t.wrongPerAttemptUpper)} per shot, ${formatBound(t.wrongPerHitUpper)} per accepted hit if every shot were independent`;
   const out = [
     `== ${s.name}: ${t.attempts} labelled shots from ${s.rounds} round${s.rounds === 1 ? '' : 's'}`,
-    `   legit-shot success ${pct(t.legitSuccess)} (${t.correct}/${t.playerAttempts}, rejections counted); wrong hits ${t.wrongPlayer} on another player + ${t.unknownFalse} on a non-player; wrong-hit rate ${formatBound(t.wrongPerAttemptUpper)} per shot and ${formatBound(t.wrongPerHitUpper)} per accepted hit (one-sided 95% upper bounds, Clopper-Pearson)`,
+    `   legit-shot success ${pct(t.legitSuccess)} (${t.correct}/${t.playerAttempts}, rejections counted); wrong hits ${t.wrongPlayer} on another player + ${t.unknownFalse} on a non-player; ${bounds}`,
+    `   lock acquisition p50/p95 ${ms(t.lockMs)} ms over ${t.lockMs.n} shot${t.lockMs.n === 1 ? '' : 's'} that locked after their target came under the dot; ${t.lockNever} never locked (failures); ${t.lockUntimed} already under the dot when the recording began (time unknown)`,
   ];
   if (s.note) out.push(`   (${s.note})`);
-  for (const table of s.tables) out.push('', ...formatTable(table));
+  for (const table of s.tables) out.push('', ...formatTable(table, s.boundsNa !== null));
   return out;
 }
 
 export const REPORT_LEGEND = [
+  'Sections: practice = ?practice, quick-enrolled targets; range = range mode in a real room, players who did the normal scan; practice/range (unsplit) = older labels that do not say which; review = review-card answers, failed shots only.',
   'shots: labelled attempts. player: labelled with a player. hit: right hits. wrongP: hit on another player. wrongU: hit on someone labelled not a player.',
   'rejected: player shots that did not land. refused: non-player shots refused. legit = hit / player (rejections in the denominator).',
-  'wrong/shot, wrong/hit: one-sided 95% Clopper-Pearson upper bound on (wrongP + wrongU) per shot and per accepted hit.',
-  'resolve: ms from tap to verdict of accepted hits. lock: ms from the earliest recorded frame (12 before the tap) to the first frame locked on the target, (n) shots that locked it.',
+  'wrong/shot, wrong/hit: one-sided 95% Clopper-Pearson upper bound on (wrongP + wrongU) per shot and per accepted hit, as if every shot were independent; shots at one target in one round are not, so the section line also bounds it per round x target group. n/a where no wrong hit could appear.',
+  'resolve: ms from tap to verdict of accepted hits. lock: ms from the first recorded frame with the shot\'s body under the dot to the first frame locked on the labelled target, (n) shots measured.',
+  'unlocked: the target was under the dot in the recorded frames and never locked (failures). untimed: already under the dot in the first recorded frame (12 before the tap) and locked there or later, so when it came under the dot, and the time, are unknown; left out of lock.',
 ];

@@ -26,7 +26,7 @@ import { FACE_CALIB, MAX_YAW_DEG, MEAN_ALPHA, MIN_FACE_PX } from '../src/vision/
 import type { ProbeImage } from '../src/realcheck/probe.ts';
 import { FACE_PROMPTS, faceStageStep, holdStep, initialFaceStage, initialScanState, judgePose, skipFaceAngle, type FaceObs, type ScanState } from '../src/vision/scan.ts';
 import { FACE_SAMPLES } from '../src/vision/embedding.ts';
-import { formatBound, wrongHitBounds } from '../src/feedback/stats.ts';
+import { formatShootBounds, shootBounds, type ShootRun } from '../src/feedback/stats.ts';
 
 const ROOT = resolve(import.meta.dirname, '..');
 /** The fixtures directory: real/ (photos, clips, extracted frames) and models/ (candidate face models). */
@@ -384,6 +384,8 @@ async function shoot(page: Page) {
     .sort();
   const pick = groups.filter((_, i) => i % Math.max(1, Math.floor(groups.length / 12)) === 0).slice(0, 12);
   const rows: Record<string, unknown>[] = [];
+  /** Every run with the photo it shot at: the units the bounds below count. */
+  const runs: ShootRun[] = [];
   const total = { shots: 0, correct: 0, wrong: 0, unclear: 0, miss: 0, offTarget: 0, wrongLockFrames: 0 };
   const missCauses: Record<string, number> = {};
   for (const photo of pick) {
@@ -400,6 +402,7 @@ async function shoot(page: Page) {
       const causes = await page.evaluate(() => (window as unknown as { __bench: { raw(): { shots: { outcome: string; cause?: string }[] } } }).__bench.raw().shots.filter((x) => x.outcome === 'miss').map((x) => x.cause ?? 'unknown'));
       for (const c of causes) missCauses[c] = (missCauses[c] ?? 0) + 1;
       rows.push({ photo, target, people, ...stats, missCauses: causes });
+      runs.push({ photo, shots: stats.shots ?? 0, correct: stats.correct ?? 0, wrong: stats.wrong ?? 0 });
       if (stats.wrong > 0 || stats.wrongLockFrames > 0) {
         // Keep everything needed to explain it: who was enrolled where, every shot, the frame trace.
         const dump = await page.evaluate(() => {
@@ -415,12 +418,10 @@ async function shoot(page: Page) {
     }
   }
   console.log(`\nshoot: ${rows.length} runs, ${total.shots} shots: correct ${total.correct}, wrong ${total.wrong}, unclear ${total.unclear}, miss ${total.miss}, off-target ${total.offTarget}, wrong-lock frames ${total.wrongLockFrames}`);
-  // What a clean run proves: the exact one-sided 95% upper bound on the wrong-hit rate, per shot
-  // fired and per shot the game turned into a hit (correct + wrong).
-  const accepted = total.correct + total.wrong;
-  const b = wrongHitBounds(total.wrong, total.shots, accepted);
-  const bounds = { confidence: 0.95, wrongPerAttemptUpper: b.perAttempt, wrongPerHitUpper: b.perHit };
-  console.log(`wrong-hit rate (one-sided 95% Clopper-Pearson upper bound): per shot ${formatBound(b.perAttempt)} (${total.wrong}/${total.shots}), per accepted hit ${formatBound(b.perHit)} (${total.wrong}/${accepted})`);
+  // What a clean run proves: exact one-sided 95% upper bounds on the wrong-hit rate, counted over
+  // photos first, since the shots of a photo are not independent trials (src/feedback/stats.ts shootBounds).
+  const bounds = shootBounds(runs);
+  for (const line of formatShootBounds(bounds)) console.log(line);
   console.log('miss causes:', JSON.stringify(missCauses));
   writeFileSync(join(OUT, 'shoot.json'), JSON.stringify({ total, bounds, missCauses, rows }, null, 1));
   return { ...total, bounds };
