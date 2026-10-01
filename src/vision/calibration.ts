@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-10-01.5';
+export const CALIBRATION_VERSION = '2026-10-01.6';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /**
@@ -201,6 +201,16 @@ export const FACE_CUE_FRESH_MS = 1000;
  * is where a swapped identity would otherwise go unnoticed until its face or outfit is checked.
  */
 export const CROSSING_IOU = 0.25;
+/**
+ * A person last seen overlapping a track who then stops being detected is presumed hidden behind (or
+ * in front of) that body, not gone: in any frame the detector may find only them and hand the track
+ * their body. Until they are seen apart from it again, or this long after the two were last seen
+ * overlapping, the track needs evidence read on each frame's own body to lock or hit (tracker.ts
+ * Track.partners). Measured on the sim (2026-10-01): a partner stayed hidden 2.4 s before the
+ * detector handed the track their body (pan-crossing-far seed 85); the hit-rate cost on the crossing
+ * scenarios is the same from 2.5 s to 6 s.
+ */
+export const HIDDEN_PARTNER_MS = 4000;
 /** Below this height ratio a detection cannot continue a track at all. */
 export const HEIGHT_MATCH_MIN = 0.6;
 /** Below this ratio the match is kept but the identity waits for fresh evidence. */
