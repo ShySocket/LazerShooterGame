@@ -44,16 +44,18 @@ test('mean-centring removes the direction every face shares', async () => {
   const { FACE_MEAN } = await import('../src/vision/faceMean');
   const { centredSimilarity, unitSimilarity, unitEmbedding, centreUnit } = await import('../src/vision/embedding');
   assert.equal(centredSimilarity(FACE_MEAN, FACE_MEAN), 0, 'the mean itself has no centred direction');
-  // Two faces the way this model produces them: the shared direction (length 0.66) plus an
-  // independent part of length 0.75 orthogonal to it, so each is a unit vector.
+  // Two faces the way this model produces them: the shared direction (the mean, length 0.43 for
+  // GhostNet) plus an independent part orthogonal to it, so each is a unit vector.
   const meanDot = FACE_MEAN.reduce((a, v) => a + v * v, 0);
+  const own = Math.sqrt(1 - meanDot);
   const face = (s: number) => {
     const raw = FACE_MEAN.map((_, i) => Math.sin(i * s));
     const proj = raw.reduce((a, v, i) => a + v * FACE_MEAN[i], 0) / meanDot;
     const perp = unitEmbedding(raw.map((v, i) => v - proj * FACE_MEAN[i]));
-    return unitEmbedding(FACE_MEAN.map((v, i) => v + 0.75 * perp[i]));
+    return unitEmbedding(FACE_MEAN.map((v, i) => v + own * perp[i]));
   };
-  assert.ok(unitSimilarity(face(0.3), face(0.7)) > 0.35, 'raw cosine says two strangers are alike');
+  // Raw cosine of two such strangers is the mean's squared length plus whatever their own parts share.
+  assert.ok(unitSimilarity(face(0.3), face(0.7)) > meanDot * 0.8, 'raw cosine says two strangers are alike');
   assert.ok(centredSimilarity(face(0.3), face(0.7)) < 0.2, 'centred cosine says they are not');
   const short = [0.6, 0.8];
   assert.equal(centreUnit(short), short, 'a vector of another length passes through untouched');

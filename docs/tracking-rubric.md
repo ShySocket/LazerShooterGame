@@ -41,6 +41,8 @@ Real-phone evidence: `node scripts/validate.mjs recordings/<date>` exits 0, with
 - [ ] **Must**: After the app is backgrounded, rotated, or the camera is switched mid-round, the first FIRE afterwards never lands on a stale frame (HUD shows NO FRESH FRAMES or CAMERA TOO SLOW until new frames arrive). <!-- R1.10 e2e:background-resume -->
 - [ ] **Should**: Ambiguous verdicts (dot within the jitter band of a nearer person's edge) stay at zero where people stand apart and under the per-scenario ceilings in `tests/sim.test.ts` (occlusion 20 %, range-8m 12 %, crossings 8 %). A rising count is where a wrong hit would hide. <!-- R1.11 auto:sim.ambiguous -->
 - [ ] **Should**: The eliminated-player race is closed: a shot fired just before the last elimination cannot land after the round is decided (`evaluateHit` refuses hits once at most one enrolled player is alive; verify by having two players fire at each other within the same second at 1 life each; exactly one is eliminated). <!-- R1.12 auto:test:last elimination -->
+- [ ] **Must**: On real photos of real people (standing groups, `npm run realcheck -- shoot`, 18 runs of 12 shots), the real models and pipeline never hit or lock the wrong person. <!-- R1.13 auto:realcheck -->
+- [ ] **Must**: A non-player whose face reads as much like a player as real different faces do (0.66) but who wears other clothes is never hit and never wears the player's name (sim `lookalike-stranger`, outfit veto). <!-- R1.14 auto:test:whose face reads like a player -->
 
 ## 2. Following a person (track continuity)
 
@@ -163,6 +165,8 @@ The demo is everyone against everyone: 3 lives, no respawn, last standing wins. 
 - [ ] **Must**: While the browser's camera permission sheet is open the app waits a full minute, says "Waiting for you to allow the camera…", and never re-prompts with fallback constraints after a timeout. <!-- R7.24 auto:test:the camera permission sheet is waited for -->
 - [ ] **Must**: The model cache keeps only complete responses under a versioned name, a load that finds a model missing clears it so Retry refetches, and an abandoned load releases its GPU tensors. <!-- R7.25 auto:test:the model cache is versioned -->
 - [ ] **Should**: With several bodies in view, the spare face crop goes to whoever has no face sample yet, then to the oldest face, instead of a blind round-robin; the live-enrolment log and the range-test log are capped. <!-- R7.26 auto:test:crop priority -->
+- [ ] **Should**: A whole round with the real models on a real clip as the camera: the person in frame is hit, a real distractor never is, everyone reaches Results. <!-- R7.27 e2e:real-vision-round -->
+- [ ] **Should**: Practice mode works on one phone with the real models: a target captured with the rear camera, the verdict is right, the shot is logged with its label. <!-- R7.28 e2e:practice-solo -->
 
 ## 8. Enrolment scan (face angles, body scans)
 

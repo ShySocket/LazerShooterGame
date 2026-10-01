@@ -31,6 +31,24 @@ When the round ends, each player's results screen shows one of their own failed 
 - "I can't tell" and Skip upload nothing. An upload that fails (no signal at the venue) waits on the phone and goes out the next time a results or lobby screen opens.
 - Storage: `feedback/rounds/{CODE-startAt}/{profiles,samples}` in the Realtime Database, write-once and not readable by clients (`database.rules.json`). Local mode keeps samples in memory instead.
 
+## Practice alone
+
+Open the game with `?practice` (the home screen links to it as **Practice alone**) to test the tracking on one phone with nobody else playing. Everything stays on the phone except the shot log:
+
+1. Type a name, tap **Start practice**, and do your own scan (it is the decoy for mirror shots).
+2. In the lobby tap **Add a target**, point the back camera at a friend, a TV or a photo, and tap **Capture**. The largest person in view becomes *Target 1* (twelve frames, face and outfit; the note says if the hips were out of view and only the face was taken). Add as many as you like, then **Start game**.
+3. Range mode and the debug overlay start on. Pick who you aim at (**Aim at**, or *Not a player* for anyone else), fire, and the banner says **HIT Target 1 (right)**, **NO LOCK** or **WRONG: locked X, you aimed at Y**. Shots deal no damage. **What to try** lists the situations worth testing.
+4. Every shot is uploaded at once to the shot feedback log below, labelled with the target you chose (queued when offline). Nothing else to do.
+
+To read the log (the rules let no client read it, so this needs the project owner's login once):
+
+```bash
+npx firebase-tools login
+npm run feedback:pull
+```
+
+`feedback:pull` saves the log under `.rubric/feedback/`, sorts every labelled shot into right hit, wrong hit, wrong hit on a non-player, right refusal and misses by cause, per build, lists every wrong one with its belief, and runs the calibration sweep below over the same shots. `--file export.json` reads a console export instead.
+
 To turn the labels into calibration changes, export the `feedback` node from the Firebase console (Realtime Database, the `feedback` node, Export JSON) or fetch it with a database secret, then:
 
 ```bash
@@ -93,6 +111,8 @@ npm run sim:full
 
 Runs every scenario over 100 seeds and exits non-zero on any wrong hit or wrong-lock frame, printing the frames leading up to each one. Use it as the gate for tracking or decision changes.
 
+Real footage (`npm run realcheck`) runs the game's own models and crops, in Chrome, on public-domain and Creative Commons photos and interview clips of real people (`npm run fixtures` downloads them from Wikimedia Commons into the git-ignored `fixtures/real/`, with attribution in `fixtures/real/SOURCES.md`): `faces` scores same-person and different-person similarity over 28 people's photos, `clips` enrols each person in an interview from its first 6 s and scores the rest against every profile, `shoot` fires at real group photos through the tracking bench and exits non-zero on any wrong hit or wrong lock. `node --import ./tests/register.mjs scripts/compare-face-models.ts` compares candidate face models (`--face=<model>` runs, models in `fixtures/models/`). `tests/e2e/realvision.spec.ts` and `tests/e2e/practice.spec.ts` play a round and a practice session with the real models on a real clip as the camera.
+
 ### 2d. Tracking bench on a real phone
 
 Open the game with `?bench` added to the URL, for example `https://your-app.vercel.app/?bench`. The bench scans a photo the way the lobby scans players, then points a virtual, slowly drifting camera at it and fires every 1.3 s, all through the real models and the real game pipeline, so it shows what that phone will do in a round with nobody else present:
@@ -147,7 +167,9 @@ To host your own copy, import the GitHub repo at https://vercel.com/new and depl
 - Good light matters more than anything. Face recognition needs the face to be at least the size of a thumbnail on screen.
 - The clothing signature carries hits from behind and at range. Bright, solid, distinct tops work best. Avoid tops that match the walls.
 - Tap **debug** during a game to see boxes, names, and confidence live. Handy for tuning **Hit confidence** in the lobby.
-- Face similarity is the cosine of **mean-centred** embeddings (`centredSimilarity` in `src/vision/embedding.ts`). Every embedding this model produces shares one dominant direction (the mean vector in `src/vision/faceMean.ts` has length 0.66), so raw cosine puts strangers at about 0.4 and occasionally 0.8; after subtracting the mean, strangers sit at a median of about 0 with a 90th percentile of 0.20 and a 99th of 0.39, while a face stays above 0.92 similar to itself down to 28 px. `FACE_CALIB` (`reject` 0.25, `accept` 0.55) is set against those numbers. Every threshold the shooting decision depends on lives in `src/vision/calibration.ts` under one `CALIBRATION_VERSION`, and each shot log entry records that version, so a log from an older build is never compared against today's numbers. Faces under 34 px are ignored and faces under 56 px count with reduced weight. If real rounds refuse good shots, compare the similarities in the shot log with these numbers before moving the thresholds.
+- Face similarity is the cosine of **mean-centred** embeddings (`centredSimilarity` in `src/vision/embedding.ts`). Every embedding the model produces shares one direction (the mean vector in `src/vision/faceMean.ts`, length 0.43), so raw cosine overstates how alike two strangers are; after subtracting the mean, different people sit at a median of 0 with a 90th percentile of 0.17. The face model is InsightFace GhostNet (strides 1) since 2026-09-26: on real footage (`npm run realcheck`, below) it kept one person's same-session frames at 0.49 or more (5th percentile) against their scan where the previous MobileNet-Swish model fell to 0.25, and separated a person from the other person in the same room by 0.26 at the 5th percentile against 0.14; `node --import ./tests/register.mjs scripts/compare-face-models.ts` reruns that comparison. `FACE_CALIB` (`reject` 0.30, `accept` 0.62) is set against those numbers (see `calibration.ts`). Every threshold the shooting decision depends on lives in `src/vision/calibration.ts` under one `CALIBRATION_VERSION`, and each shot log entry records that version, so a log from an older build is never compared against today's numbers. Faces under 34 px are ignored and faces under 56 px count with reduced weight. Scans taken with the old model are refused as out of date and must be repeated. If real rounds refuse good shots, compare the similarities in the shot log with these numbers before moving the thresholds.
+- Real faces are less clean than those numbers suggest. `npm run realcheck` (below) runs the models on real photos and clips: different people reached 0.66 to 0.75 (visually confirmed pairs), above `accept`, and one person's live frames scored 0.30 at the 5th percentile against their own scan (0.35 for the track's running mean). A face alone therefore cannot be allowed to name somebody whose clothes say otherwise: players play in the outfit they scanned, so a clothing sample covering at least the top that contradicts a player's scanned outfit (`OUTFIT_VETO`) rules that player out on that body for 4 s, whatever the face says. The lock label and the hit both respect it; a player who changed clothes gets UNCLEAR TARGET, never a wrong hit. The `lookalike-stranger` simulation (a non-player at 0.66 face similarity in other clothes) went from 34 wrong hits in 30 seeds to none.
+- `npm run realcheck` needs the real-person fixtures once: `npm run fixtures` downloads public-domain and Creative Commons photos and clips from Wikimedia Commons into `fixtures/real/` (git-ignored, attribution in `fixtures/real/SOURCES.md`).
 - During a round the shooter's phone adds strong, unambiguous face matches (centred similarity above about 0.53 on a sharp face, with no other player close) to that player's gallery for the rest of the round, so recognition adapts to the venue's light and distances. The lobby warns when two players' scans read alike to the model; hits between them then lean on outfits.
 - Enrolment stores the 8 close selfie angles plus up to 6 face samples taken during the body scan, when the phone is metres away like an opponent's, which is what a round actually sees.
 - A shot taken while the newest frame is older than the allowance in `src/vision/shot.ts` (which grows with the measured frame period up to a ceiling) is not refused: it opens a burst that must see the same person under the dot in a frame captured after the tap. Only a frame older than three times the allowance says CAMERA TOO SLOW; the shot log records the frame age and the allowance of each refused shot, and the bench (`?bench`) shows the phone's frame period directly.
@@ -155,4 +177,4 @@ To host your own copy, import the GitHub repo at https://vercel.com/new and depl
 
 ## Stack
 
-Vite + React + TypeScript, `@vladmandic/human` (BlazeFace + FaceMesh + InsightFace MobileNet-Swish embeddings + MoveNet MultiPose), Firebase Realtime Database, Web Audio for synthesized sounds, `vite-plugin-pwa`.
+Vite + React + TypeScript, `@vladmandic/human` (BlazeFace + FaceMesh + InsightFace GhostNet embeddings + MoveNet MultiPose), Firebase Realtime Database, Web Audio for synthesized sounds, `vite-plugin-pwa`.

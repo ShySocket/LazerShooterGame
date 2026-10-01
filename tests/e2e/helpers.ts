@@ -18,6 +18,7 @@ declare global {
       code: () => string | null;
       room: (code?: string) => Promise<Room | null>;
       enroll: (seed: number, twin?: number) => Promise<void>;
+      enrollFromImages: (urls: string[], seed: number) => Promise<number>;
       hit: (shooter: string, target: string) => Promise<string>;
       deleteRoom: (code: string) => Promise<void>;
       shots: () => string[];

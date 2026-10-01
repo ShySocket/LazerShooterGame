@@ -1,5 +1,5 @@
 import type { BodyProps, OutfitSig, Profile } from '../types';
-import { BELIEF_MAX_STEPS, BELIEF_REF_PERIOD_MS, CLOTHING_EVIDENCE, EVIDENCE_WEIGHTS, IDENTITY_TTL_MS, LIVE_FACE_SAMPLE_SPACING_MS, MEAN_ALPHA, MEAN_RESET_SIM, STRANGER_BASELINE } from './calibration';
+import { BELIEF_MAX_STEPS, BELIEF_REF_PERIOD_MS, CLOTHING_EVIDENCE, EVIDENCE_WEIGHTS, IDENTITY_TTL_MS, LIVE_FACE_SAMPLE_SPACING_MS, MEAN_ALPHA, MEAN_RESET_SIM, OUTFIT_VETO, STRANGER_BASELINE } from './calibration';
 import { BODY_MODEL, UNKNOWN_ID } from '../types';
 import { profileOutfitMatch, propsSimilarity } from './clothing';
 import { resetIdentity, type Track } from './tracker';
@@ -221,10 +221,33 @@ export function topBelief(track: Track): Resolution | null {
   return { id, score, margin: score - (second?.[1] ?? 0), via: track.via };
 }
 
-/** Best eligible player, for the live label. Null when the top belief is not a shootable player. */
-export function bestBelief(track: Track, eligible: Set<string>): Resolution | null {
+/**
+ * Rule players out on this body when a well-covered outfit sample contradicts their scanned outfit,
+ * and lift the veto when a later sample matches it again. See OUTFIT_VETO.
+ */
+export function updateOutfitVeto(track: Track, sig: OutfitSig, cands: Candidate[], now: number): void {
+  for (const c of cands) {
+    if (!c.profile.outfit || c.id === UNKNOWN_ID) continue;
+    const m = profileOutfitMatch(sig, c.profile.outfit);
+    if (m.coverage < OUTFIT_VETO.minCoverage) continue;
+    if (m.sim <= OUTFIT_VETO.maxSim) track.outfitVeto = { ...track.outfitVeto, [c.id]: now };
+    else if (m.sim >= OUTFIT_VETO.clearSim && track.outfitVeto?.[c.id] !== undefined) {
+      const { [c.id]: _gone, ...rest } = track.outfitVeto;
+      track.outfitVeto = rest;
+    }
+  }
+}
+
+/** Whether a contradicting outfit currently rules `id` out on this track. */
+export function outfitVetoed(track: Track, id: string, now: number): boolean {
+  const at = track.outfitVeto?.[id];
+  return at !== undefined && now >= at && now - at <= OUTFIT_VETO.holdMs;
+}
+
+/** Best eligible player, for the live label. Null when the top belief is not a shootable player or their outfit is ruled out. */
+export function bestBelief(track: Track, eligible: Set<string>, now = performance.now()): Resolution | null {
   const t = topBelief(track);
-  return t && !track.identityConflict && eligible.has(t.id) ? t : null;
+  return t && !track.identityConflict && eligible.has(t.id) && !outfitVetoed(track, t.id, now) ? t : null;
 }
 
 export { IDENTITY_TTL_MS };
@@ -234,7 +257,7 @@ export function resolveHit(track: Track, eligible: Set<string>, threshold: numbe
   if (!Number.isFinite(track.lastEvidenceAt) || now < track.lastEvidenceAt || now - track.lastEvidenceAt > IDENTITY_TTL_MS) return null;
   // After a frame that could not tell whose face was whose, the identity waits for fresh evidence.
   if (track.unconfirmed) return null;
-  const b = bestBelief(track, eligible);
+  const b = bestBelief(track, eligible, now);
   if (!b || !Number.isFinite(b.score) || !Number.isFinite(b.margin) || b.score < threshold || b.margin < margin || b.margin <= 0) return null;
   return b;
 }

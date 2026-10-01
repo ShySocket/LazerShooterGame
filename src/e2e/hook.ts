@@ -11,6 +11,13 @@ import { shotLog } from '../debug/shotLog';
  * builds strip all of it because `import.meta.env.DEV` is false.
  */
 export const isE2E = (): boolean => Boolean(import.meta.env.DEV) && new URL(location.href).searchParams.has('e2e');
+/**
+ * `?e2e&vision`: the real models load and the vision loop runs on the (file-fed) fake camera, for
+ * tests/e2e/realvision.spec.ts. Plain `?e2e` keeps the models and the loop stubbed.
+ */
+export const isE2EVision = (): boolean => isE2E() && new URL(location.href).searchParams.has('vision');
+/** The models and the vision loop are stubbed out (plain ?e2e). */
+export const e2eStubsVision = (): boolean => isE2E() && !isE2EVision();
 
 const SIG_LEN = 51;
 const HUE_BINS = 48;
@@ -49,6 +56,8 @@ export interface E2EHook {
   code: () => string | null;
   room: (code?: string) => Promise<Room | null>;
   enroll: (seed: number, twin?: number) => Promise<void>;
+  /** Enrol from real frames with the real models (?e2e&vision only); resolves to the face sample count. */
+  enrollFromImages: (urls: string[], seed: number) => Promise<number>;
   hit: (shooter: string, target: string) => Promise<string>;
   deleteRoom: (code: string) => Promise<void>;
   /** Outcomes of every FIRE press on this phone this round, oldest first. */
@@ -83,6 +92,15 @@ export function installE2E(backend: RoomBackend): void {
       const id = pid();
       if (!c || !id) throw new Error('not in a room');
       await backend.setProfile(c, id, syntheticProfile(seed, twin));
+    },
+    enrollFromImages: async (urls, seed) => {
+      const c = code();
+      const id = pid();
+      if (!c || !id) throw new Error('not in a room');
+      const { profileFromImages } = await import('./realProfile');
+      const profile = await profileFromImages(urls, syntheticProfile(seed).outfit);
+      await backend.setProfile(c, id, profile);
+      return profile.face.length;
     },
     hit: async (shooter, target) => {
       const c = code();

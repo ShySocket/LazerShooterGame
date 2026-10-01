@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { crashNotice } from '../ui/advice';
-import { backend } from '../net';
+import { crashNotice, PRACTICE_INTRO } from '../ui/advice';
+import { backend, practiceBackend } from '../net';
 import { authAvailable, signInGoogle, type Account } from '../net/auth';
 import type { DeepProfile } from '../types';
 import { isCurrentFaceScan } from '../vision/human';
@@ -57,7 +57,8 @@ export function Home({ initialCode, account, deep, notice, onProfile, onCreate, 
         LAZER<span>SHOOTER</span>
       </h1>
       <p className="sub">Real-life laser tag. Your phone is the gun.</p>
-      {backend.mode === 'local' && (
+      {practiceBackend && <div className="note">{PRACTICE_INTRO}</div>}
+      {backend.mode === 'local' && !practiceBackend && (
         <div className="note warn">
           Local mode: no Firebase config found, so this device plays alone. See README to enable multiplayer.
         </div>
@@ -89,22 +90,33 @@ export function Home({ initialCode, account, deep, notice, onProfile, onCreate, 
         <input value={name} onChange={(e) => setName(e.target.value)} maxLength={16} placeholder="e.g. Sam" autoComplete="off" />
       </label>
       <button className="btn primary" disabled={busy} onClick={() => run(() => onCreate(name.trim()))}>
-        Create a room
+        {practiceBackend ? 'Start practice' : 'Create a room'}
       </button>
-      <div className="divider">or join one</div>
-      <div className="row">
-        <input
-          className="code-input"
-          value={code}
-          onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 4))}
-          placeholder="CODE"
-          autoCapitalize="characters"
-          autoComplete="off"
-        />
-        <button className="btn" disabled={busy || code.length !== 4} onClick={() => run(() => onJoin(name.trim(), code))}>
-          Join
-        </button>
-      </div>
+      {practiceBackend ? (
+        <a className="link" href={location.pathname}>
+          Back to the real game
+        </a>
+      ) : (
+        <a className="link" href={`${location.pathname}?practice`}>
+          Practice alone (no friends needed)
+        </a>
+      )}
+      {!practiceBackend && <div className="divider">or join one</div>}
+      {!practiceBackend && (
+        <div className="row">
+          <input
+            className="code-input"
+            value={code}
+            onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 4))}
+            placeholder="CODE"
+            autoCapitalize="characters"
+            autoComplete="off"
+          />
+          <button className="btn" disabled={busy || code.length !== 4} onClick={() => run(() => onJoin(name.trim(), code))}>
+            Join
+          </button>
+        </div>
+      )}
       {(err ?? notice) && <div className="note bad">{err ?? notice}</div>}
       {incident && (
         <div className="note warn incident">

@@ -93,8 +93,11 @@ const lerp = (d: number, pts: [number, number][]): number => {
 const pBody = (d: number) => lerp(d, [[2, 0.97], [4, 0.93], [6, 0.86], [8, 0.72], [10, 0.5]]);
 const pFaceBox = (d: number) => lerp(d, [[2, 0.95], [4, 0.8], [6, 0.4], [8, 0.1]]);
 const pCrop = (d: number) => lerp(d, [[2, 0.95], [4, 0.9], [6, 0.7], [8, 0.35], [10, 0.1]]);
-/** Live-vs-enrolment similarity by distance: clean faces measure ~0.5 median, blur at 30 px keeps ~0.7 of it. */
-const simOwn = (d: number) => lerp(d, [[2, 0.55], [4, 0.5], [6, 0.42], [8, 0.36]]);
+/**
+ * Live-vs-enrolment similarity by distance. GhostNet same-session frames measured a 0.67 median at
+ * interview range (npm run realcheck, 2026-09-26); blur at 30 px keeps ~0.7 of it.
+ */
+const simOwn = (d: number) => lerp(d, [[2, 0.67], [4, 0.61], [6, 0.51], [8, 0.44]]);
 
 function unit(v: number[]): number[] {
   const n = Math.hypot(...v) || 1;
@@ -104,12 +107,14 @@ function randomUnit(rng: Rng): number[] {
   return unit(Array.from({ length: DIM }, () => rng.gauss()));
 }
 /**
- * Spread of the similarity between two unrelated faces. Measured on the real model after mean
- * centring (README, faceMean.ts): median 0, 90th percentile 0.20, 99th 0.39. A normal with this
- * standard deviation puts the 90th at 0.21 and the 99th at 0.38. The sim's vectors bypass the
- * game's centring (DIM is not 512), so their raw cosine plays the part of the centred similarity.
+ * Spread of the similarity between two unrelated faces. First measured on the real model after mean
+ * centring over 61 faces (README, faceMean.ts): 90th percentile 0.20, 99th 0.39. Re-measured on 28
+ * people's real photos (npm run realcheck, 2026-09-26): 90th 0.36 to 0.39, 99th 0.53 to 0.55, pairs up
+ * to 0.75. A normal with this standard deviation puts the 90th at 0.29 and the 99th at 0.52. The
+ * sim's vectors bypass the game's centring (DIM is not 512), so their raw cosine plays the part of
+ * the centred similarity.
  */
-const STRANGER_SIM_SD = 0.165;
+const STRANGER_SIM_SD = 0.225;
 
 /**
  * A new face whose cosine to each earlier face is an independent draw from the stranger
@@ -128,7 +133,7 @@ function unrelatedFace(rng: Rng, refs: number[][]): number[] {
     }
     basis.push(unit(v));
   }
-  const wanted = refs.map(() => Math.max(-0.6, Math.min(0.6, rng.gauss(0, STRANGER_SIM_SD))));
+  const wanted = refs.map(() => Math.max(-0.75, Math.min(0.75, rng.gauss(0, STRANGER_SIM_SD))));
   // dot(e_i, ref_j) is zero for i > j, so the coefficients follow from the references in order.
   const coef: number[] = [];
   for (let j = 0; j < refs.length; j++) {

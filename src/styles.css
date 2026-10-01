@@ -241,3 +241,10 @@ input, .code-input {
 .bench-stats td { padding: 4px 6px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
 .bench-stats td:nth-child(odd) { color: var(--muted); }
 .bench select, .bench input[type='file'] { font: inherit; }
+
+/* Practice mode (?practice): target capture in the lobby, the checklist in the range panel. */
+.practice-targets { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+.practice-targets .capture { display: flex; flex-direction: column; gap: 8px; }
+.capture-video { width: 100%; max-height: 50vh; object-fit: cover; border-radius: 8px; background: #000; }
+.range-panel .checklist ol { margin: 4px 0 0 18px; padding: 0; text-align: left; }
+.range-panel .checklist li { margin: 2px 0; }

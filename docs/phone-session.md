@@ -2,6 +2,19 @@
 
 Everything in `docs/tracking-rubric.md` that a machine can check is green (`npm run rubric`: every Must that needs no phone passes). What is left needs real phones in the real venue. One afternoon with two or three friends covers it. This page lists exactly what to do, which rubric ids each recording settles, and how to turn the results into a score.
 
+## The short version (2026-09-26): one phone, 15 minutes, nothing to write down
+
+Already checked without a phone (`npm run realcheck`, `tests/e2e/realvision.spec.ts`, `tests/e2e/practice.spec.ts`): the real models on photos of 28 real people and clips of 7, a real group-photo shooting check (0 wrong hits), a whole round and a practice session with a real clip as the camera, and the new GhostNet face model and outfit veto. What only a phone can tell is how it behaves in your hands, in your light, at your distances. The easiest way to find out:
+
+1. On your phone open https://lazer-shooter-game.vercel.app/?practice (or tap **Practice alone** on the home screen).
+2. Do your scan, then **Add a target**: point the back camera at a friend (or a TV playing a video of a person, or a printed photo) and tap **Capture**. Add a second target if someone else is around.
+3. **Start game**, choose **Aim at**, and work through **What to try** (face-on at 2, 4 and 6 m, their back, walking across, two targets crossing, *Not a player* on someone else, a mirror, dim light). A couple of shots each.
+4. That's it. Every shot is logged with who you said you aimed at. Run `npx firebase-tools login` once on the Mac, and from then on `npm run feedback:pull` (or Claude) reads the log and lists every wrong hit and every miss by cause.
+
+Note anything that felt wrong in words too (a hint that did not help, a verdict that surprised you): the log has the numbers, not the feel.
+
+The full protocol below is for the venue day with several phones and the rubric.
+
 ## Scan check first (settles R8.01, R8.06, R8.13)
 
 Before anything else, enrol once on the iPhone and once on an Android. The face stage shows `yaw N° · pitch M°` under the hint. For each prompt, turn until the hint says "Hold it" and note:

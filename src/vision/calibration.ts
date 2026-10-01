@@ -11,18 +11,19 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-09-22.1';
+export const CALIBRATION_VERSION = '2026-09-26.2';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /**
- * Thresholds on the mean-centred cosine (embedding.ts centredSimilarity). Measured on 2026-09-13 over
- * 61 faces through the game's crop pipeline: strangers median -0.03, 90th percentile 0.20, 99th 0.39;
- * a face against a downscaled copy of itself 0.92 at 28 px and 0.99 at 60 px. Raw cosine on this
- * model is unusable as an absolute score (strangers median 0.4, up to 0.8) because every embedding
- * shares one dominant direction. `reject` sits above the stranger 90th percentile, `accept` well
- * above the 99th.
+ * Thresholds on the mean-centred cosine (embedding.ts centredSimilarity) of InsightFace GhostNet
+ * (strides 1), measured with npm run realcheck on 2026-09-26: 28 people's photos (different people
+ * p90 0.17, p99 0.36) and interview clips scanned from their first 6 s (same person, same session:
+ * single frame p5 0.49, median 0.67; the track's running mean p5 0.57, p10 0.60; the other person in
+ * the same room p99 0.43; unenrolled faces p99 0.53). `reject` sits above the different-person 90th
+ * percentile, `accept` at the same-person running mean's 10th percentile. Faces of different people
+ * can still reach 0.69, which is why a contradicting outfit vetoes a face (OUTFIT_VETO).
  */
-export const FACE_CALIB = { reject: 0.25, accept: 0.55 };
+export const FACE_CALIB = { reject: 0.3, accept: 0.62 };
 /** Two centred embeddings this similar are the same person for enrolment sanity checks. */
 export const SAME_PERSON_MIN = 0.35;
 /** Two players whose scans are this alike will be confused at range; the lobby warns. */
@@ -230,6 +231,15 @@ export const FACE_FRESH_MIN_MARGIN = 0.3;
 export const TORSO_COVER_FRACTION = 0.3;
 /** A clothing audit contradicts the face identity when the outfit's top pick reaches `top` while the current identity has at most `current`. */
 export const CLOTHING_CONTRADICTION = { top: 0.75, current: 0.2 };
+/**
+ * Outfit veto (scoring.ts updateOutfitVeto). Real faces of different people reach 0.66 to 0.75 centred
+ * similarity (npm run realcheck, 2026-09-26), above FACE_CALIB.accept, so a face alone can name a
+ * look-alike stranger. Players play in the outfit they scanned: a sample covering at least the top
+ * (`minCoverage`) whose match to a player's outfit is at most `maxSim` (a contradicting garment caps
+ * the match at REGION_CONTRADICTION_CAP) rules that player out on this body for `holdMs`, whatever
+ * the face says. A later sample matching at `clearSim` or better lifts it.
+ */
+export const OUTFIT_VETO = { maxSim: 0.4, minCoverage: 0.45, holdMs: 4000, clearSim: 0.6 };
 /** Belief step per clothing frame (one reference period). */
 export const CLOTHING_BELIEF_ALPHA = 0.35;
 /** A track whose face has not been seen for this long is carried by its clothing. */

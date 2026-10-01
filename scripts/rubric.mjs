@@ -13,6 +13,7 @@
  *   auto:build         `npm run build` exits 0
  *   auto:validate      scripts/validate.mjs on recordings/ exits 0 with at least 200 labelled taps
  *   e2e:<name>         .rubric/e2e.json (written by `npm run e2e`) reports that test as passed
+ *   auto:realcheck     .rubric/realcheck/shoot.json (npm run realcheck -- shoot) has 0 wrong hits and 0 wrong-lock frames
  *   phone | manual     docs/rubric-status.json records {status, date, note} for the id
  *
  * Score: Must items share 70 points, Should 25, Nice 5; an UNTESTED item scores 0 like a FAIL.
@@ -182,6 +183,14 @@ function judge(item) {
     if (v.exit === 1) return ['FAIL', 'validate.mjs found a wrong hit'];
     if (v.labelled < 200) return ['UNTESTED', `${v.labelled} labelled taps, need 200`];
     return [v.exit === 0 ? 'PASS' : 'FAIL', `exit ${v.exit}, ${v.correct}/${v.labelled} correct, 0 wrong`];
+  }
+  if (kind === 'auto' && arg === 'realcheck') {
+    // Written by `npm run realcheck -- shoot` (needs the fixtures from `npm run fixtures`).
+    const f = at('.rubric/realcheck/shoot.json');
+    if (!existsSync(f)) return ['UNTESTED', 'no .rubric/realcheck/shoot.json (npm run fixtures, then npm run realcheck -- shoot)'];
+    const { total } = JSON.parse(readFileSync(f, 'utf8'));
+    const ok = total.wrong === 0 && total.wrongLockFrames === 0 && total.shots > 0;
+    return [ok ? 'PASS' : 'FAIL', `${total.shots} real-photo shots: ${total.correct} correct, ${total.wrong} wrong, ${total.wrongLockFrames} wrong-lock frames`];
   }
   if (kind === 'e2e') {
     const t = evidence.e2e?.tests?.[arg];

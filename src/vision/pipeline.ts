@@ -11,10 +11,12 @@ import {
   combineEvidence,
   faceEvidence,
   IDENTITY_TTL_MS,
+  outfitVetoed,
   resolveHit,
   topBelief,
   updateBelief,
   updateFaceMean,
+  updateOutfitVeto,
   type Candidate,
   type Resolution,
 } from './scoring';
@@ -277,6 +279,7 @@ export class VisionPipeline<C = unknown> {
         const obs = ops.sampleOutfit!(d);
         if (!obs) return;
         t.lastClothingAt = now;
+        if (obs.sig) updateOutfitVeto(t, obs.sig, candidates, now);
         // An unconfirmed identity may not be propped up by its own old belief: it has to earn it back.
         const ce = obs.sig ? clothingEvidence(obs.sig, candidates, t.unconfirmed ? undefined : t.belief) : null;
         const be = obs.props ? bodyEvidence(obs.props, candidates) : null;
@@ -398,10 +401,11 @@ export class VisionPipeline<C = unknown> {
       const hit = resolveHit(inSight, eligible, hitThreshold, hitMargin, decisionAt);
       if (hit) lock = { kind: 'lock', id: hit.id };
       else {
-        const b = bestBelief(inSight, eligible);
+        const b = bestBelief(inSight, eligible, decisionAt);
         const top = topBelief(inSight);
         if (b && b.score > 0.2) lock = { kind: 'maybe', id: b.id, score: b.score };
-        else if (top && top.score > 0.3) lock = { kind: 'top', id: top.id };
+        // A name the outfit has ruled out is not shown even as a guess.
+        else if (top && top.score > 0.3 && !outfitVetoed(inSight, top.id, decisionAt)) lock = { kind: 'top', id: top.id };
         else lock = { kind: 'unknown' };
       }
     }
@@ -491,7 +495,7 @@ export class VisionPipeline<C = unknown> {
     // A burst opened from an old frame is still waiting for the slow frame in flight, so it gets that
     // much longer before it gives up.
     const burstMs = this.burstMs() + (staleStart ? allowanceMs : 0);
-    const believed = bestBelief(best, eligible);
+    const believed = bestBelief(best, eligible, now);
     const shot: PendingShot<C> = { trackId: best.id, startedAt: now, deadline: now + burstMs, framesLeft: BURST_FRAMES, zoom: false, track: best, context, expectedId: believed && believed.score >= hitThreshold ? believed.id : null };
     this.pending = shot;
     return { kind: 'pending', token: shot, deadline: shot.deadline, burstMs };

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { backend } from './net';
+import { backend, practiceBackend } from './net';
 import { HOST_GRACE_MS, isPresent } from './net/backend';
 import { authAvailable, loadUser, onAccount, saveUserName, type Account } from './net/auth';
 import type { DeepProfile, Room } from './types';
@@ -12,7 +12,7 @@ import { Profile } from './screens/Profile';
 import { loadHuman } from './vision/human';
 import { applyPendingUpdate, onUpdatePending, updatePending } from './pwa';
 import { recordIncident, wasReloaded } from './diag';
-import { isE2E } from './e2e/hook';
+import { e2eStubsVision, isE2E, isE2EVision } from './e2e/hook';
 import { connectState, rejoinFailure, updateAllowed } from './ui/advice';
 
 function guestPid(): string {
@@ -77,7 +77,7 @@ export default function App() {
   }, [swPending, code, showProfile]);
   // Models are ~24 MB; start fetching while the player is still typing a name.
   useEffect(() => {
-    if (!isE2E()) void loadHuman().catch(() => undefined);
+    if (!e2eStubsVision()) void loadHuman().catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -124,22 +124,23 @@ export default function App() {
   }, [hostDown, code]);
 
   const enter = (c: string, name: string) => {
-    writeLastRoom({ code: c, name, t: Date.now() });
+    // A practice room lives only in this page's memory: nothing to rejoin after a reload.
+    if (!practiceBackend) writeLastRoom({ code: c, name, t: Date.now() });
     setCode(c);
-    history.replaceState(null, '', `${location.pathname}?room=${c}${isE2E() ? '&e2e' : ''}`);
+    history.replaceState(null, '', `${location.pathname}?room=${c}${isE2E() ? '&e2e' : ''}${isE2EVision() ? '&vision' : ''}${practiceBackend ? '&practice' : ''}`);
   };
   const leave = () => {
     if (code) void backend.leaveRoom(code, pid).catch(() => undefined);
     writeLastRoom(null);
     setCode(null);
-    history.replaceState(null, '', `${location.pathname}${isE2E() ? '?e2e' : ''}`);
+    history.replaceState(null, '', `${location.pathname}${isE2E() ? '?e2e' : practiceBackend ? '?practice' : ''}${isE2EVision() ? '&vision' : ''}${isE2E() && practiceBackend ? '&practice' : ''}`);
   };
 
   // After a reload, go straight back into the room this phone was in instead of landing on Home.
   useEffect(() => {
     if (account === undefined || !deepLoaded || rejoinTried.current) return;
     rejoinTried.current = true;
-    const last = readLastRoom();
+    const last = practiceBackend ? null : readLastRoom();
     const url = codeFromUrl();
     if (!last || !url || last.code !== url) return;
     if (wasReloaded()) recordIncident('reload', `The page reloaded on its own while in room ${url}.`);

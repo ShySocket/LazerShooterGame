@@ -29,7 +29,7 @@ export const humanConfig: Partial<Config> = {
     liveness: { enabled: false },
     gear: { enabled: false },
     // Untyped in Human's config but honoured by the pipeline: overwrites face.embedding with a 512-d ArcFace vector.
-    ...({ insightface: { enabled: true, modelPath: 'insightface-mobilenet-swish.json', skipFrames: 0, skipTime: 0 } } as object),
+    ...({ insightface: { enabled: true, modelPath: 'insightface-ghostnet-strides1.json', skipFrames: 0, skipTime: 0 } } as object),
   },
   body: { enabled: true, modelPath: 'movenet-multipose.json', maxDetected: 6, minConfidence: 0.25, skipFrames: 0, skipTime: 0 },
   hand: { enabled: false },
@@ -61,7 +61,7 @@ let ready = false;
 let generation = 0;
 
 /** The models the game needs, checked after Human's load (it logs some download failures without rejecting). */
-export const REQUIRED_MODELS = ['blazeface', 'facemesh', 'insightface-mobilenet-swish', 'movenet-multipose'];
+export const REQUIRED_MODELS = ['blazeface', 'facemesh', 'insightface-ghostnet-strides1', 'movenet-multipose'];
 
 
 /** Progress of the current load: which required models are in, and how many bytes so far. */

@@ -42,6 +42,8 @@ interface Shot {
   target: string;
   resolved?: string;
   elapsedMs: number;
+  /** For a miss: what was under the dot in the last frame (trace `under`): a detection index, -1 none, -2 ambiguous. */
+  cause?: 'off-torso' | 'no-detection' | 'covered';
 }
 
 interface FrameTrace {
@@ -55,6 +57,9 @@ interface FrameTrace {
   face: boolean;
   /** Boxes of every detection this frame, rounded, with their track ids: x,y,w,h. */
   boxes: string;
+  /** Enrolled people whose scanned body contains the aim point (the bench's ground truth), and the aim point. */
+  truth?: string;
+  aim?: string;
 }
 
 export interface BenchStats {
@@ -129,6 +134,8 @@ export function Bench() {
   const zoom = useRef(new ZoomPass());
   const sampler = useRef(new FrameSampler());
   const windowRef = useRef<Window | null>(null);
+  /** Recent virtual-camera windows by draw time: a frame is judged against the window it actually showed. */
+  const windowLog = useRef<{ t: number; win: Window }[]>([]);
   const stats = useRef<BenchStats>(emptyStats());
   const pipeline = useRef(new VisionPipeline<{ target: string }>({ candidates: [], exclusiveIds: new Set(), eligible: new Set(), hitThreshold: DEFAULT_SETTINGS.hitThreshold, hitMargin: DEFAULT_SETTINGS.hitMargin }));
   const pendingTimer = useRef<number | undefined>(undefined);
@@ -176,14 +183,17 @@ export function Bench() {
   }, []);
 
   // ?bench&auto[=still|drift|range] runs the sample-person check hands-free, for devices that cannot be tapped remotely.
+  // &photo=<url> scans another image instead and &target=<n> aims at its n-th enrolled person (scripts/realcheck.ts shoot).
   const auto = useMemo(() => new URL(location.href).searchParams.get('auto'), []);
+  const autoPhoto = useMemo(() => new URL(location.href).searchParams.get('photo'), []);
+  const autoTarget = useMemo(() => Number(new URL(location.href).searchParams.get('target') ?? 0), []);
   const autoStage = useRef<'idle' | 'loaded' | 'scanned' | 'running'>('idle');
   useEffect(() => {
     if (auto === null || !ready) return;
     if (autoStage.current === 'idle') {
       autoStage.current = 'loaded';
       if (auto === 'still') setMoving(false);
-      void loadImage(import.meta.env.BASE_URL + '_sample.jpg', 'sample person');
+      void loadImage(autoPhoto ?? import.meta.env.BASE_URL + '_sample.jpg', autoPhoto ?? 'sample person');
     } else if (autoStage.current === 'loaded' && photo && people.length === 0) {
       autoStage.current = 'scanned';
       void scan();
@@ -277,7 +287,7 @@ export function Bench() {
       });
     }
     setPeople(found);
-    setTargetId(found[0]?.id ?? '');
+    setTargetId(found[Math.min(autoTarget, found.length - 1)]?.id ?? '');
     setMsg(
       found.length
         ? `Enrolled ${found.length} of ${dets.length} people (${found.filter((p) => p.profile.outfit.front.top.length).length} with an outfit). Pick a target and start.`
@@ -303,6 +313,8 @@ export function Bench() {
     const draw = () => {
       const win = windowAt(photo.width, photo.height, (performance.now() - t0) / 1000, motionRef.current);
       windowRef.current = win;
+      windowLog.current.push({ t: performance.now(), win });
+      if (windowLog.current.length > 120) windowLog.current.shift();
       // A plain wall behind the photo when the window is larger than it (range sweep).
       ctx.fillStyle = '#6f6a63';
       ctx.fillRect(0, 0, CAM_W, CAM_H);
@@ -338,8 +350,17 @@ export function Bench() {
     return new Set(peopleRef.current.filter((p) => containsPoint(toCamera(p.body, win), cx, cy)).map((p) => p.id));
   };
 
+  /** The window drawn last before `t`: what a frame captured at `t` shows. */
+  const windowAtTime = (t: number): Window | null => {
+    const log = windowLog.current;
+    for (let i = log.length - 1; i >= 0; i--) if (log[i].t <= t) return log[i].win;
+    return windowRef.current;
+  };
+
   const onFrame = async (res: Result, human: Human, frame: VisionFrame) => {
-    const win = windowRef.current;
+    // Judge (aim and truth) against the window this frame was captured from, not the one on screen
+    // now: the camera drifts while a frame is processed, and a body edge would otherwise flicker.
+    const win = windowAtTime(frame.capturedAt);
     const crosshair = aim(win);
     if (!win || !crosshair) return;
     const dets = buildDetections(res.body, res.face);
@@ -382,6 +403,8 @@ export function Bench() {
       dets: dets.length,
       under: outcome.inSight ? idx : idx >= 0 ? -2 : -1,
       track: outcome.inSight?.id ?? null,
+      truth: [...under].join(','),
+      aim: `${cx.toFixed(3)},${cy.toFixed(3)}`,
       lock: l ? (l.kind === 'lock' ? 'LOCK ' + l.id : l.kind === 'maybe' ? `${l.id}? ${Math.round(l.score * 100)}` : l.kind) : '',
       top: tb ? `${tb.id} ${Math.round(tb.score * 100)}/${Math.round(tb.margin * 100)} ${tb.via}` : '',
       face: Boolean(idx >= 0 && dets[idx].face),
@@ -429,7 +452,13 @@ export function Bench() {
     const under = truthUnder(crosshair, win);
     if (r.kind === 'busy') return;
     if (r.kind === 'stale' || r.kind === 'no-camera') stats.current.shots.push({ at: Date.now(), outcome: r.kind, target, elapsedMs: r.kind === 'stale' ? r.frameAgeMs : 0 });
-    else if (r.kind === 'miss') stats.current.shots.push({ at: Date.now(), outcome: under.has(target) ? 'miss' : 'off-target', target, elapsedMs: 0 });
+    else if (r.kind === 'miss') {
+      // Why nothing was under the dot, from the last frame: the dot inside a detected body's box but off its
+      // observed torso or covered by another person (the torso rule, by design), or no detection there at all.
+      const last = stats.current.trace.at(-1);
+      const cause = !last ? undefined : last.under === -2 ? 'off-torso' : last.under === -1 ? 'no-detection' : 'covered';
+      stats.current.shots.push({ at: Date.now(), outcome: under.has(target) ? 'miss' : 'off-target', target, elapsedMs: 0, cause });
+    }
     else if (r.kind === 'instant') settle(r.settlement.resolution?.id, true, 0, target, under);
     else {
       const { token, burstMs } = r;

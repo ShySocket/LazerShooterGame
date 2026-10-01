@@ -33,6 +33,8 @@ export interface Track {
    * kept, but it may not show a lock or take a hit until fresh evidence updates the belief again.
    */
   unconfirmed: boolean;
+  /** Players ruled out on this body by a contradicting outfit, with when (scoring.ts updateOutfitVeto). Survives resetIdentity. */
+  outfitVeto?: Record<string, number>;
   via: 'face' | 'clothing' | 'none';
   lastFaceAt: number;
   /** When clothing pixels were last sampled for this track (evidence or audit). */

@@ -9,3 +9,5 @@ public/_sample.jpg
 .rubric/
 test-results/
 playwright-report/
+fixtures/real/
+fixtures/models/

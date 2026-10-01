@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { isPresent } from '../net/backend';
-import { backend, MIN_PLAYERS } from '../net';
-import { HIT_CONFIDENCE_NOTE, lobbyHint, MUTE_SWITCH_NOTE, OFFLINE_TEXT, shareFallback } from '../ui/advice';
+import { backend, MIN_PLAYERS, practiceBackend } from '../net';
+import { HIT_CONFIDENCE_NOTE, lobbyHint, MUTE_SWITCH_NOTE, OFFLINE_TEXT, PRACTICE_INTRO, shareFallback } from '../ui/advice';
 import { useConnection } from '../hooks/useConnection';
 import { CLOTHING_CONFLICT, type Player, type Room, type RoomSettings } from '../types';
 import { outfitConflict } from '../vision/clothing';
@@ -9,6 +9,7 @@ import { centredSimilarity, FACE_CONFLICT, isCurrentFaceScan } from '../vision/h
 import { haptic, sfx, unlockAudio } from '../audio/sfx';
 import { useAudioState } from '../hooks/useAudioState';
 import { ShotReview } from '../feedback/ShotReview';
+import { PracticeTargets } from './PracticeTargets';
 
 interface Props {
   room: Room;
@@ -114,9 +115,11 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
           <div className="label">Room code</div>
           <div className="code">{room.code}</div>
         </div>
-        <button className="btn" onClick={share}>
-          {copied ? 'Copied!' : 'Share link'}
-        </button>
+        {!practiceBackend && (
+          <button className="btn" onClick={share}>
+            {copied ? 'Copied!' : 'Share link'}
+          </button>
+        )}
       </div>
 
       {shareNote && <div className="note">{shareNote}</div>}
@@ -130,6 +133,9 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
       <p className="readout">{MUTE_SWITCH_NOTE}</p>
 
       <ShotReview room={room} pid={pid} />
+
+      {practiceBackend && <p className="note">{PRACTICE_INTRO}</p>}
+      {practiceBackend && isHost && <PracticeTargets room={room} />}
 
       <h3>Players ({connected.length})</h3>
       <ul className="players">

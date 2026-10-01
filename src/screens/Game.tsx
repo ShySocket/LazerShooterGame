@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Human, Result } from '@vladmandic/human';
-import { backend, MIN_PLAYERS } from '../net';
+import { backend, MIN_PLAYERS, practiceBackend } from '../net';
 import { decideRoundEnd } from '../net/backend';
-import { hitFailureText, OFFLINE_TEXT, RANGE_TARGET_NOTE, verdictAdvice } from '../ui/advice';
+import { hitFailureText, OFFLINE_TEXT, PRACTICE_CHECKLIST, practiceVerdict, RANGE_TARGET_NOTE, verdictAdvice } from '../ui/advice';
 import { useConnection } from '../hooks/useConnection';
 import { withTimeout } from '../net/withTimeout';
 import { NET_CALIB } from '../vision/calibration';
@@ -15,7 +15,7 @@ import { useTorch } from '../hooks/useTorch';
 import { buildDetections, type Track } from '../vision/tracker';
 import { crosshairRect, indexInSight, type NBox } from '../vision/geometry';
 import { FrameSampler } from '../vision/clothing';
-import { topBelief, type Candidate } from '../vision/scoring';
+import { topBelief, type Candidate, type Resolution } from '../vision/scoring';
 import { compactEmbedding, isCurrentFaceScan } from '../vision/human';
 import { ZoomPass } from '../vision/zoom';
 import { VisionPipeline, type LockState, type ShotSettlement } from '../vision/pipeline';
@@ -30,7 +30,7 @@ import { roundTo } from '../util/num';
 import { ShotRecorder } from '../feedback/recorder';
 import { FrameKeeper, renderShotPhoto } from '../feedback/photo';
 import { feedbackStore } from '../feedback/store';
-import { IdMap, REVIEWABLE_OUTCOMES } from '../feedback/sample';
+import { IdMap, REVIEWABLE_OUTCOMES, trimSample, type ProfilesSnapshot, type ShotLabel } from '../feedback/sample';
 
 interface Props {
   room: Room;
@@ -65,7 +65,9 @@ export function Game({ room, me, pid, onLeave }: Props) {
   const online = useConnection();
   const torch = useTorch(videoRef);
 
-  const [debug, setDebug] = useState(false);
+  // Practice mode opens with the overlay and range mode on: every shot is labelled with its target.
+  const practice = Boolean(practiceBackend);
+  const [debug, setDebug] = useState(practice);
   // ?record captures every frame's detections, crops and outfits plus every tap as numbers (never
   // pixels) for offline replay through the same pipeline: npm run replay <folder>.
   const replayRecorder = useRef<Recorder | null>(null);
@@ -73,7 +75,10 @@ export function Game({ room, me, pid, onLeave }: Props) {
   const recording = useMemo(() => new URL(location.href).searchParams.has('record'), []);
   const debugRef = useRef(debug);
   debugRef.current = debug;
-  const [rangeMode, setRangeMode] = useState(false);
+  const [rangeMode, setRangeMode] = useState(practice);
+  const [showChecklist, setShowChecklist] = useState(false);
+  /** The round's id map and profile snapshot, for uploading practice shots as they happen. */
+  const practiceRound = useRef<{ idMap: IdMap; profiles: ProfilesSnapshot; sent: boolean } | null>(null);
   const [rangeDist, setRangeDist] = useState(4);
   const [rangeTargetId, setRangeTargetId] = useState('');
   const [rangeTick, setRangeTick] = useState(0);
@@ -234,6 +239,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
         const idMap = new IdMap(ids);
         const profiles = Object.fromEntries(candidates.map((c) => [idMap.pid(c.id), { ...c.profile, face: (c.profile.face ?? []).map(compactEmbedding) }]));
         void feedbackStore.beginRound({ key, code: room.code, startAt, ids: idMap.all(), profiles });
+        practiceRound.current = practice ? { idMap, profiles, sent: false } : null;
         keeper.current.clear();
         photos.current.clear();
       }
@@ -326,9 +332,30 @@ export function Game({ room, me, pid, onLeave }: Props) {
     if (shotId) recordVerdict(shotId, outcome, track, extra);
   };
 
+  /**
+   * Practice: every shot goes to the feedback log at once, labelled with the target the shooter said
+   * they were aiming at (Not a player = none), so `npm run feedback:pull` can score it offline.
+   */
+  const uploadPracticeShot = (context: ShotContext, r: Resolution | null, track: Track | null, resolveMs: number, zoomed: boolean) => {
+    const round = practiceRound.current;
+    const sample = context.shotId
+      ? recorder.current.endShot(context.shotId, { outcome: r ? 'hit' : track ? 'unclear' : 'miss', resolvedTo: r?.id ?? null, via: r?.via ?? null, resolveMs, zoom: zoomed, track, settledBy: settledBy.current })
+      : null;
+    if (!round || !sample || !context.expectedId) return;
+    const base = { answeredAt: Date.now(), reviewMs: 0 };
+    const label: ShotLabel = context.expectedId === UNKNOWN_ID ? { kind: 'none', ...base } : { kind: 'player', target: round.idMap.pid(context.expectedId), ...base };
+    const labelled = trimSample({ ...sample, label });
+    const profiles = round.sent ? null : round.profiles;
+    round.sent = true;
+    withTimeout(backend.submitShotFeedback(sample.round.key, labelled, profiles), NET_CALIB.hitTimeoutMs, 'the practice log').catch(() =>
+      feedbackStore.enqueue({ id: sample.shot.id, round: sample.round.key, sample: labelled, profiles }),
+    );
+  };
+
   /** A shot has a verdict: either register it, or in range-test mode just record how the lock behaved. */
   const settleShot = ({ track, resolution: r, elapsedMs: resolveMs, zoomed, context }: ShotSettlement<ShotContext>) => {
     if (context.practice) {
+      if (practice) uploadPracticeShot(context, r, track, resolveMs, zoomed);
       rangeTest.add({
         t: Date.now(),
         distance: context.distance,
@@ -342,7 +369,12 @@ export function Game({ room, me, pid, onLeave }: Props) {
         zoom: zoomed,
       });
       setRangeTick((n) => n + 1);
-      if (r) {
+      if (practice) {
+        const v = practiceVerdict(context.expectedId === UNKNOWN_ID ? 'nobody' : (labels[context.expectedId] ?? '?'), r ? (labels[r.id] ?? '?') : null);
+        if (v.kind === 'good') sfx.hit();
+        else sfx.unclear();
+        show(`${v.text} · ${resolveMs} ms`, v.kind === 'bad' ? 'bad' : v.kind, 2200);
+      } else if (r) {
         sfx.hit();
         show(`LOCK ${labels[r.id]} ${Math.round(r.score * 100)}% in ${resolveMs}ms`, 'good', 1800);
       } else {
@@ -470,7 +502,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
     replayRecorder.current?.fire(performance.now(), ch, context.practice ? context.expectedId : undefined, eligible);
     const result = pipeline.current.fire(context, ch, usable);
     settledBy.current = 'tap';
-    if (result.kind !== 'busy' && !context.practice && L && recorder.current.active()) {
+    if (result.kind !== 'busy' && (!context.practice || practice) && L && recorder.current.active()) {
       const tapAt = performance.now();
       const idx = indexInSight(L.dets.map((d) => d.box), ch);
       const track = result.kind === 'instant' ? result.settlement.track : idx >= 0 ? L.tracks[idx] : null;
@@ -658,6 +690,20 @@ export function Game({ room, me, pid, onLeave }: Props) {
             </table>
           )}
           <span className="tag">{rangeTargetId ? 'Shots here deal no damage.' : RANGE_TARGET_NOTE}</span>
+          {practice && (
+            <div className="checklist">
+              <button className="link" onClick={() => setShowChecklist((v) => !v)}>
+                {showChecklist ? 'Hide' : 'What to try'}
+              </button>
+              {showChecklist && (
+                <ol>
+                  {PRACTICE_CHECKLIST.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ol>
+              )}
+            </div>
+          )}
         </div>
       )}
 

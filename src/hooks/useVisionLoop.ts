@@ -3,7 +3,7 @@ import type { Human, Result } from '@vladmandic/human';
 import { abandonHumanLoad, configurePass, loadHuman, withHumanSession, type HumanPass } from '../vision/human';
 import { failureDecision } from '../vision/schedule';
 import { visionProfile, waitForVideoFrame } from '../vision/frameClock';
-import { isE2E } from '../e2e/hook';
+import { e2eStubsVision } from '../e2e/hook';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** A presented-frame timestamp older than this against the copy is not the copied frame's. */
@@ -48,7 +48,7 @@ export function useVisionLoop(
   opts.current = options;
   useEffect(() => {
     if (!active) return;
-    if (isE2E()) return syntheticLoop(video, cb);
+    if (e2eStubsVision()) return syntheticLoop(video, cb);
     let running = true;
     const frame = document.createElement('canvas');
     const ctx = frame.getContext('2d');

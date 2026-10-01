@@ -178,3 +178,31 @@ export function cameraRequestPlan(permission: CameraPermission): CameraRequestPl
   if (permission === 'prompt') return { timeoutMs: CAM_CALIB.promptTimeoutMs, waitingText: 'Waiting for you to allow the camera…', fallbacksAfterTimeout: false };
   return { timeoutMs: CAM_CALIB.requestTimeoutMs, waitingText: 'Starting camera', fallbacksAfterTimeout: true };
 }
+
+// ---- Practice mode (?practice, src/net/practice.ts) -----------------------------------------------
+
+/** What a capture got: how many frames gave a face, and whether the outfit could be read. */
+export function practiceCaptureNote(name: string, faces: number, frames: number, outfit: boolean): string {
+  const face = faces >= frames / 2 ? `${name} added.` : `${name} added, but only ${faces} of ${frames} frames showed a usable face: capture again closer or in better light if shots on them refuse.`;
+  return outfit ? face : `${face} No outfit: the hips were not in view, so only the face identifies them (step back and capture again to add it).`;
+}
+
+/** The things worth trying in a practice session, in the order that teaches the most. */
+export const PRACTICE_CHECKLIST: readonly string[] = [
+  'Face-on at 2 m, then 4 m, then 6 m',
+  'Their back turned (outfit only)',
+  'Walking across the view',
+  'Two targets side by side, then crossing',
+  'Someone who is not a target ("Not a player")',
+  'Yourself in a mirror',
+  'Dim light, and against a bright window',
+];
+
+export const PRACTICE_INTRO = 'Practice: everything stays on this phone. Add targets with the back camera (a friend, a TV, a photo), pick who you aim at, and every shot is logged with that answer so the tracking can be tuned. Shots deal no damage.';
+
+/** The banner after a practice shot: what the game decided against what you said you aimed at. */
+export function practiceVerdict(expected: string, resolved: string | null): { text: string; kind: 'good' | 'warn' | 'bad' } {
+  if (resolved === null) return { text: expected === 'nobody' ? 'NO LOCK (right: not a player)' : `NO LOCK on ${expected}`, kind: expected === 'nobody' ? 'good' : 'warn' };
+  if (resolved === expected) return { text: `HIT ${resolved} (right)`, kind: 'good' };
+  return { text: `WRONG: locked ${resolved}, you aimed at ${expected}`, kind: 'bad' };
+}

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { abandonHumanLoad, isHumanReady, loadHuman, modelStats, REQUIRED_MODELS } from '../vision/human';
-import { isE2E } from '../e2e/hook';
+import { e2eStubsVision } from '../e2e/hook';
 import { LOAD_CALIB } from '../vision/calibration';
 import { isStalled, loadProgress, STALL_TEXT } from '../ui/advice';
 
@@ -12,7 +12,7 @@ export function useHumanStatus(): { ready: boolean; status: string; failed: bool
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     // The browser test harness never loads the models: a fake camera has nobody to detect.
-    if (isE2E()) {
+    if (e2eStubsVision()) {
       setReady(true);
       setStatus('Ready (e2e)');
       return;

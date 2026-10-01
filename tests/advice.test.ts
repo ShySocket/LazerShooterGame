@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { connectState, crashNotice, HIT_CONFIDENCE_NOTE, RANGE_TARGET_NOTE, updateAllowed, verdictAdvice, isStalled, loadProgress, lobbyHint, rejoinFailure, saveError, shareFallback, STALL_TEXT } from '../src/ui/advice';
 import { LOAD_CALIB } from '../src/vision/calibration';
 
-const REQUIRED = ['blazeface', 'facemesh', 'insightface-mobilenet-swish', 'movenet-multipose'];
+const REQUIRED = ['blazeface', 'facemesh', 'insightface-ghostnet-strides1', 'movenet-multipose'];
 
 test('loading text counts the required models and the bytes so far', () => {
   const p = loadProgress(
@@ -95,4 +95,16 @@ test('crash notice speaks plainly and keeps the raw text behind details', () => 
   const r = crashNotice({ t: 0, kind: 'reload', message: 'The page reloaded on its own while in room ABCD.' });
   assert.match(r.summary, /room ABCD/);
   assert.match(r.summary, /join again/);
+});
+
+test('practice messages: capture notes name what is missing, verdicts compare with the aimed target', async () => {
+  const { practiceCaptureNote, practiceVerdict, PRACTICE_CHECKLIST } = await import('../src/ui/advice');
+  assert.equal(practiceCaptureNote('Target 1', 12, 12, true), 'Target 1 added.');
+  assert.match(practiceCaptureNote('Target 1', 3, 12, true), /only 3 of 12 frames/);
+  assert.match(practiceCaptureNote('Target 2', 12, 12, false), /No outfit/);
+  assert.deepEqual(practiceVerdict('Target 1', 'Target 1'), { text: 'HIT Target 1 (right)', kind: 'good' });
+  assert.equal(practiceVerdict('Target 1', 'Target 2').kind, 'bad');
+  assert.equal(practiceVerdict('nobody', null).kind, 'good');
+  assert.equal(practiceVerdict('Target 1', null).kind, 'warn');
+  assert.ok(PRACTICE_CHECKLIST.length >= 5);
 });
