@@ -18,6 +18,7 @@ import { FACE_CALIB, MAX_YAW_DEG, MEAN_ALPHA, MIN_FACE_PX } from '../src/vision/
 import type { ProbeImage } from '../src/realcheck/probe.ts';
 import { FACE_PROMPTS, faceStageStep, holdStep, initialFaceStage, initialScanState, judgePose, skipFaceAngle, type FaceObs, type ScanState } from '../src/vision/scan.ts';
 import { FACE_SAMPLES } from '../src/vision/embedding.ts';
+import { formatBound, wrongHitBounds } from '../src/feedback/stats.ts';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const FIX = join(ROOT, 'fixtures', 'real');
@@ -392,9 +393,15 @@ async function shoot(page: Page) {
     }
   }
   console.log(`\nshoot: ${rows.length} runs, ${total.shots} shots: correct ${total.correct}, wrong ${total.wrong}, unclear ${total.unclear}, miss ${total.miss}, off-target ${total.offTarget}, wrong-lock frames ${total.wrongLockFrames}`);
+  // What a clean run proves: the exact one-sided 95% upper bound on the wrong-hit rate, per shot
+  // fired and per shot the game turned into a hit (correct + wrong).
+  const accepted = total.correct + total.wrong;
+  const b = wrongHitBounds(total.wrong, total.shots, accepted);
+  const bounds = { confidence: 0.95, wrongPerAttemptUpper: b.perAttempt, wrongPerHitUpper: b.perHit };
+  console.log(`wrong-hit rate (one-sided 95% Clopper-Pearson upper bound): per shot ${formatBound(b.perAttempt)} (${total.wrong}/${total.shots}), per accepted hit ${formatBound(b.perHit)} (${total.wrong}/${accepted})`);
   console.log('miss causes:', JSON.stringify(missCauses));
-  writeFileSync(join(OUT, 'shoot.json'), JSON.stringify({ total, missCauses, rows }, null, 1));
-  return total;
+  writeFileSync(join(OUT, 'shoot.json'), JSON.stringify({ total, bounds, missCauses, rows }, null, 1));
+  return { ...total, bounds };
 }
 
 // ---- scan ----------------------------------------------------------------------------------------
