@@ -143,7 +143,9 @@ test('players with look-alike faces are never confused with each other', async (
 /**
  * Seeds that once produced a wrong hit or a wrong lock in a 100-seed sweep (2026-09-13 review). The
  * occlusion ones were instant hits from a frame whose geometry predated the nearer player moving out
- * from under the dot; the stranger ones were single false player-lock frames.
+ * from under the dot; the stranger ones were single false player-lock frames. crossing-lookalike-faces
+ * 63 (2026-10-01): her track hopped onto his body during the crossing with no jump to notice, and a
+ * burst opened on her settled on him 1.1 s later (pipeline.ts outfitReversals and transitionAt).
  */
 const REGRESSION_SEEDS: [string, number][] = [
   ['occlusion', 60],
@@ -154,6 +156,7 @@ const REGRESSION_SEEDS: [string, number][] = [
   // 2026-10-01: Bob hidden behind Alice for 2.4 s during a pan; a frame found only his body, her track
   // took it and showed LOCK alice with the dot on him (tracker.ts Track.partners, HIDDEN_PARTNER_MS).
   ['pan-crossing-far', 85],
+  ['crossing-lookalike-faces', 63],
 ];
 for (const [name, seed] of REGRESSION_SEEDS) {
   test(`regression: ${name} seed ${seed} has no wrong hit and no wrong lock`, async () => {
@@ -208,7 +211,9 @@ test('identity does not ride across a crossing, and a wrongly vetoed player cost
     assert.equal(a.wrong, 0, describe(a));
     assert.equal(a.wrongLockFrames, 0, describe(a));
   }
-  // Fairness: a misread outfit costs refusals, never the player for good (100 seeds: 78% land).
+  // Fairness: a misread outfit costs refusals, never the player for good (100 seeds: 77% land; 80%
+  // before 2026-10-01, when a misread veto lifted by a clean read became a reason to withhold a burst
+  // that had no accepted name at the tap, since the game cannot tell it from a hop onto another body).
   assert.ok(hitRate(await run('vetoed-player')) >= 0.6, 'a wrongly vetoed player is still hit most of the time');
   const { OUTFIT_VETO, CLOTHING_AUDIT_MS } = await import('../src/vision/calibration');
   assert.ok(OUTFIT_VETO.holdMs >= 2 * CLOTHING_AUDIT_MS, 'a veto must outlast the clothing audit, or it lapses between samples');

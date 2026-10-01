@@ -51,10 +51,10 @@ const PERIOD = 220;
 const body = (box: NBox, hit: NBox, extra: Partial<Detection> = {}): Detection => ({ box, hit, body: { keypoints: [] } as unknown as Detection['body'], ...extra });
 
 /** A pipeline with a scripted clock, plus the ops that hand Bob's face to any crop of a Bob-sized box. */
-function harness() {
+function harness(candidates: Candidate[] = CANDIDATES) {
   const clock = { now: 0 };
   const pipeline = new VisionPipeline<{ tap: number }>(
-    { candidates: CANDIDATES, exclusiveIds: new Set(CANDIDATES.map((c) => c.id)), eligible: new Set(['alice', 'bob']), hitThreshold: 0.5, hitMargin: 0.2 },
+    { candidates, exclusiveIds: new Set(candidates.map((c) => c.id)), eligible: new Set(['alice', 'bob']), hitThreshold: 0.5, hitMargin: 0.2 },
     () => clock.now,
   );
   const cropCalls: number[] = [];
@@ -415,4 +415,53 @@ test('while someone may be hidden behind the target, a lock or hit needs evidenc
   h.clock.now = h.t + 5;
   const shot = h.pipeline.fire({ tap: h.clock.now }, CROSSHAIR);
   assert.notEqual(shot.kind, 'instant', 'nor an instant hit from that frame');
+});
+
+// ---- crossing-lookalike-faces seed 63 (2026-10-01): a track that hops onto the crossing partner ----
+
+test('a track whose body\'s outfit flips from ruling a player out to clearly matching them has hopped: a burst opened before cannot land on them', async () => {
+  // Outfits as separate colours: her top and trousers, his top and trousers, the shooter's.
+  const hist = (i: number) => Array.from({ length: 6 }, (_, k) => (k === i ? 1 : 0));
+  const outfit = (top: number, thighs: number) => ({ front: { top: hist(top), thighs: hist(thighs) }, back: { top: hist(top), thighs: hist(thighs) } });
+  const candidates: Candidate[] = [
+    { id: 'me', profile: { faceModel: 'test', face: [ME_FACE], outfit: outfit(4, 5) } },
+    { id: 'alice', profile: { faceModel: 'test', face: [ALICE_FACE], outfit: outfit(0, 2) } },
+    { id: 'bob', profile: { faceModel: 'test', face: [BOB_FACE], outfit: outfit(1, 3) } },
+  ];
+  const h = harness(candidates);
+  // Phase 1, her body under the dot: only her top is readable, 0.65 like hers and 0.35 like his. That
+  // rules him out on this body (OUTFIT_VETO) but names nobody: the belief stays "unknown", so neither
+  // the face hop check nor the burst's expected identity can protect the shot.
+  h.ops.sampleOutfit = () => ({ sig: { top: [0.65, 0.35, 0, 0, 0, 0] }, props: null });
+  h.ops.cropFaces = async () => [];
+  let last;
+  for (let i = 0; i < 6; i++) last = await h.frame([body(BOB_BOX, BOB_HIT)]);
+  const her = last!.tracks[0];
+  assert.equal(Object.entries(her.belief).sort((a, b) => b[1] - a[1])[0][0], '_unknown', `the tap-time belief names nobody: ${JSON.stringify(her.belief)}`);
+  assert.ok(her.outfitVeto?.bob, 'his outfit is ruled out on her body');
+  const { tap } = h.tapStale();
+  // Phase 2: her body is skipped and her track takes his body a third of a box to the left (no jump
+  // to notice). His full outfit and his face are read on it from now on.
+  const HIS_BOX: NBox = [0.26, 0.24, 0.35, 0.61];
+  const HIS_HIT: NBox = [0.34, 0.26, 0.19, 0.35];
+  h.ops.sampleOutfit = () => ({ sig: { top: hist(1), thighs: hist(3) }, props: null });
+  h.ops.cropFaces = async (region) => (region[2] > 0.3 ? [{ box: [region[0] + 0.12, 0.26, 0.08, 0.1], embedding: BOB_FACE, quality: 1 }] : []);
+  let settled: { resolution: { id: string } | null } | null = null;
+  let capturedAt = h.clock.now + 20;
+  for (let i = 0; i < 8 && !settled && h.pipeline.hasPending(); i++) {
+    const out = await h.frame([body(HIS_BOX, HIS_HIT)], capturedAt);
+    assert.equal(out.tracks[0].id, her.id, 'the same track continues onto his body');
+    if (i === 0) assert.ok((out.tracks[0].reacquireAt ?? 0) > tap, 'the outfit flip is an uncertain transition');
+    settled = out.settled;
+    capturedAt = h.t;
+  }
+  assert.equal(settled?.resolution?.id ?? null, null, `a tap on her must not register on him: ${JSON.stringify(settled?.resolution)}`);
+  // Fairness: the hop costs a re-acquisition, not the player. Once re-earned on his own body, a fresh
+  // tap on him lands.
+  let lock;
+  for (let i = 0; i < 4; i++) lock = (await h.frame([body(HIS_BOX, HIS_HIT)])).lock;
+  assert.deepEqual(lock, { kind: 'lock', id: 'bob' }, 'his identity is re-earned on his own body');
+  h.clock.now = h.t - PERIOD + 50;
+  const shot = h.pipeline.fire({ tap: h.clock.now }, CROSSHAIR);
+  assert.equal(shot.kind === 'instant' ? shot.settlement.resolution?.id : shot.kind, 'bob');
 });

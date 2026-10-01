@@ -53,6 +53,11 @@ export interface Track {
    * (scoring.ts reacquired) the track may not lock or take a hit.
    */
   reacquireAt?: number;
+  /**
+   * When this track last went through an uncertain transition, kept after the identity is re-earned
+   * (`reacquireAt` is cleared then): a burst opened before it never lands on this track (pipeline.ts).
+   */
+  transitionAt?: number;
   /** Clothing evidence samples taken since `reacquireAt` (back views re-earn the identity this way). */
   clothingSince?: number;
   /** The last single-frame face read on this track: whom it named, by how much, and when (overlap rule). */
@@ -263,6 +268,7 @@ export function markUncertain(track: Track, now: number): void {
   track.lastOutfitReadAt = 0;
   track.outfitSupport = undefined;
   track.reacquireAt = now;
+  track.transitionAt = now;
   track.clothingSince = 0;
 }
 
