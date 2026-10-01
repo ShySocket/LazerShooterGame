@@ -1,5 +1,4 @@
 import { SCAN_CALIB } from './calibration';
-import { faceSimilarity } from './embedding';
 import type { NBox } from './geometry';
 
 export { SCAN_CALIB };
@@ -200,45 +199,90 @@ export function angleNote(prompt: FacePrompt, reason: PoseReason, yawDeg: number
   return '';
 }
 
-// ---- Identity during the face scan: continuity, then a frontal re-verify after a break -----------
+// ---- The whole face stage as one pure step (Scanner.tsx and scripts/realcheck.ts replay call it) --
 
-export interface Continuity {
-  /** When a face was last seen, and its box (normalised), null before the first. */
-  lastSeen: number;
+/** One camera frame as the face stage sees it, after the detector, the size gate and the crop. */
+export interface FaceObs {
+  /** Capture time, ms. */
+  t: number;
+  /** Faces the full-frame pass found, and the box of the face when there is exactly one. */
+  faces: number;
   box: NBox | null;
-  /** Set when the face went missing, doubled or jumped after identity was established. */
-  broken: boolean;
+  /** Why this frame cannot give a sample (a gate hint), '' when it can. */
+  blocked: string;
+  yaw: number;
+  pitch: number;
+  /** Unit embedding of the face from the square crop; empty when blocked. */
+  embedding: number[];
 }
 
-export const initialContinuity = (): Continuity => ({ lastSeen: 0, box: null, broken: false });
-
-/**
- * Fold one frame into the continuity: `face` is the single face box seen this frame, or null when
- * there was none or more than one (`faces` says which). The first face establishes the person; a
- * second face, a gap longer than `gapMs` or a centre jump of more than `jump` face widths breaks it.
- */
-export function continuityStep(c: Continuity, face: NBox | null, faces: number, now: number, gapMs = SCAN_CALIB.continuityGapMs, jump = SCAN_CALIB.continuityJump): Continuity {
-  if (faces > 1) return { ...c, broken: c.box !== null || c.broken };
-  if (!face) return c.box && now - c.lastSeen > gapMs ? { ...c, broken: true } : c;
-  if (!c.box) return { lastSeen: now, box: face, broken: c.broken };
-  const gap = now - c.lastSeen > gapMs;
-  const dx = face[0] + face[2] / 2 - (c.box[0] + c.box[2] / 2);
-  const dy = face[1] + face[3] / 2 - (c.box[1] + c.box[3] / 2);
-  const moved = Math.hypot(dx, dy) > jump * Math.max(face[2], c.box[2]);
-  return { lastSeen: now, box: face, broken: c.broken || gap || moved };
+export interface FaceFrame {
+  embedding: number[];
+  yaw: number;
+  pitch: number;
+  progress: number;
+  t: number;
 }
 
-export const REVERIFY_TEXT = 'Lost track of your face. Look straight at the camera to continue.';
-export const NOT_SAME_TEXT = 'This is not the face the scan started with. The same person please, or Restart scan.';
+export interface FaceStage {
+  scan: ScanState;
+  samples: { embedding: number[]; yaw: number }[];
+  /** When the current prompt began, and no sample before `settleUntil` (a pause after each one). */
+  promptStart: number;
+  settleUntil: number;
+  best: FaceFrame | null;
+  last: FaceFrame | null;
+}
+
+export const initialFaceStage = (t: number): FaceStage => ({ scan: initialScanState(), samples: [], promptStart: t, settleUntil: t + SCAN_CALIB.settleMs, best: null, last: null });
+
+export interface FaceStep {
+  stage: FaceStage;
+  hint: string;
+  accepted: boolean;
+  /** Skip this angle may be offered. */
+  skippable: boolean;
+}
+
+function accept(st: FaceStage, fr: FaceFrame, scan: ScanState, latch: Partial<Pick<ScanState, 'yawSign' | 'pitchSign'>>, t: number): FaceStep {
+  return {
+    stage: { ...st, scan: { ...scan, ...latch, hold: 0 }, samples: [...st.samples, { embedding: fr.embedding, yaw: fr.yaw }], promptStart: t, settleUntil: t + SCAN_CALIB.settleMs, best: null },
+    hint: '',
+    accepted: true,
+    skippable: false,
+  };
+}
 
 /**
- * After a break, the scan continues only from a frontal frame that matches the frontal samples
- * already taken (the only angle at which the face model tells people apart reliably).
+ * One frame of the face stage. Who is being scanned is the one face in frame: a frame with no face
+ * or several gives no sample (the caller's `blocked`). Face similarity is deliberately not used here:
+ * with GhostNet the same person turned, or even facing the camera in another frame, can score below
+ * other people (npm run realcheck scan, 2026-10-01), so any similarity gate refuses real players,
+ * which is what broke Sai's scan. A sample is taken on a held pose, or after the patience the best
+ * right-way frame stands in; Skip this angle is offered later still.
  */
-export function reverify(yawDeg: number, embedding: number[], frontal: number[][], min = SCAN_CALIB.reverifyMin, sim: (a: number[], b: number[]) => number = faceSimilarity): 'ok' | 'look-straight' | 'not-same' {
-  if (Math.abs(yawDeg) > SCAN_CALIB.straightYaw[1]) return 'look-straight';
-  if (!frontal.length) return 'ok';
-  return frontal.some((f) => sim(embedding, f) >= min) ? 'ok' : 'not-same';
+export function faceStageStep(st: FaceStage, obs: FaceObs): FaceStep {
+  const skippable = canSkipAngle(obs.t - st.promptStart);
+  if (obs.t < st.settleUntil) return { stage: st, hint: '', accepted: false, skippable: false };
+  if (obs.blocked || !obs.embedding.length) return { stage: st, hint: obs.blocked || 'Hold still and face the camera a little more.', accepted: false, skippable: skippable && Boolean(st.last) };
+  const prompt = promptFor(st.samples.length);
+  let judgement = judgePose(prompt, obs.yaw, obs.pitch, st.scan);
+  if (judgement.ok && Math.abs(obs.yaw) > SCAN_CALIB.enrolYawMax) judgement = { ok: false, reason: 'turn-less', latch: {} };
+  const fr: FaceFrame = { embedding: obs.embedding, yaw: obs.yaw, pitch: obs.pitch, progress: promptProgress(prompt, obs.yaw, obs.pitch, st.scan), t: obs.t };
+  const best = Math.abs(obs.yaw) <= SCAN_CALIB.enrolYawMax && (!st.best || fr.progress > st.best.progress) ? fr : st.best;
+  let stage: FaceStage = { ...st, last: fr, best };
+  const held = holdStep(stage.scan, judgement);
+  if (held.ready) return accept(stage, fr, held.state, {}, obs.t);
+  stage = { ...stage, scan: held.state };
+  if (best && patienceAccepts(prompt, best.progress, obs.t - stage.promptStart)) return accept(stage, best, stage.scan, patienceLatch(prompt, best.yaw, best.pitch, stage.scan), obs.t);
+  return { stage, hint: [hintFor(prompt, judgement.reason), angleNote(prompt, judgement.reason, obs.yaw, obs.pitch)].filter(Boolean).join(' '), accepted: false, skippable };
+}
+
+/** Skip this angle: the face's last frame stands in, if it was seen within the last 1.5 s (null otherwise). */
+export function skipFaceAngle(st: FaceStage, t: number): FaceStep | null {
+  const fr = st.last;
+  if (!fr || t - fr.t > 1500) return null;
+  return accept(st, fr, st.scan, patienceLatch(promptFor(st.samples.length), fr.yaw, fr.pitch, st.scan), t);
 }
 
 // ---- Body stages ---------------------------------------------------------------------------------

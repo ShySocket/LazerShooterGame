@@ -42,9 +42,9 @@ export const MAX_YAW_DEG = 45;
  * The eight-angle face scan. Bands are absolute yaw in degrees, wide on purpose: the mesh-derived
  * angle underestimates a real turn and a player cannot hold a 17-degree band. Left and right only
  * have to be opposite signs (the mirrored preview and the model's sign convention cancel), latched
- * on the first turned sample; the same for chin up and down. A sample counts as the same person when it
- * is the same face seen continuously since the scan started (see continuityStep below); a turned head
- * is never compared with the frontal one by similarity, which this face model cannot do reliably.
+ * on the first turned sample; the same for chin up and down. The person scanned is the one face in
+ * frame (several faces give no sample); face similarity is not used during the scan, because with
+ * GhostNet the same person can score below other people at other angles (realcheck scan, 2026-10-01).
  * Enrolment keeps samples up to `enrolYawMax`; matching in a round still uses MAX_YAW_DEG.
  */
 export const SCAN_CALIB = {
@@ -60,28 +60,13 @@ export const SCAN_CALIB = {
   minCropOverlap: 0.25,
   enrolYawMax: 60,
   /**
-   * Identity during the face scan is continuity, not embedding similarity: with GhostNet the same
-   * person turned 15-35 degrees scores 0.26-0.33 against their own frontal face while other people
-   * reach 0.35-0.51 (npm run realcheck clips, 2026-10-01), so no threshold separates a turned head
-   * from a stranger. One face seen every frame, its centre moving less than `continuityJump` face
-   * widths between frames and never missing longer than `continuityGapMs`, is the same person.
-   */
-  continuityGapMs: 700,
-  continuityJump: 1,
-  /**
-   * After a break (face lost, a second face, a jump) the scan continues only from a frontal frame
-   * at least this similar to the frontal samples: same person frontal-vs-frontal p1 0.60, other
-   * people at most 0.51 (same realcheck data).
-   */
-  reverifyMin: 0.55,
-  /**
    * No prompt may dead-end. After `promptPatienceMs` on one prompt the best frame seen counts if it
    * went at least `patienceFraction` of the way to the band in the right direction (phones read a
    * real turn as less than it is); after `promptSkipMs` the player may skip the angle.
    */
   promptPatienceMs: 6000,
   patienceFraction: 0.5,
-  promptSkipMs: 12000,
+  promptSkipMs: 10000,
   /** Pause after an accepted sample before the next one may be taken. */
   settleMs: 400,
   /** The face stage detects on a copy no wider than this; a selfie-distance face is still hundreds of pixels. */

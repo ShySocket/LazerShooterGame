@@ -16,7 +16,8 @@ import { chromium, type Page } from '@playwright/test';
 import { centredSimilarity } from '../src/vision/embedding.ts';
 import { FACE_CALIB, MAX_YAW_DEG, MEAN_ALPHA, MIN_FACE_PX } from '../src/vision/calibration.ts';
 import type { ProbeImage } from '../src/realcheck/probe.ts';
-import { FACE_PROMPTS, holdStep, initialScanState, judgePose, type ScanState } from '../src/vision/scan.ts';
+import { FACE_PROMPTS, faceStageStep, holdStep, initialFaceStage, initialScanState, judgePose, skipFaceAngle, type FaceObs, type ScanState } from '../src/vision/scan.ts';
+import { FACE_SAMPLES } from '../src/vision/embedding.ts';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const FIX = join(ROOT, 'fixtures', 'real');
@@ -442,7 +443,48 @@ async function scan(page: Page) {
     console.log(`${file}: ${series.length}/${frames.length} frames with a face, yaw ${row.yaw.join('..')}°, pitch ${row.pitch.join('..')}°, prompts ${row.prompts}`);
     for (const m of missing) console.log('    not reached:', m);
   }
-  writeFileSync(join(OUT, 'scan.json'), JSON.stringify(rows, null, 1));
+  // The face stage itself (scan.ts faceStageStep, what Scanner.tsx runs) over each clip as a camera,
+  // tapping Skip this angle whenever it is offered; and over a splice of two people.
+  const toObs = (f: ProbeImage & { t: number }, offset = 0): FaceObs => {
+    const face = f.faces.length === 1 ? f.faces[0] : null;
+    const blocked = f.faces.length === 0 ? 'No face found.' : f.faces.length > 1 ? 'Only one face in frame please.' : face!.score < 0.7 ? 'Move into better light and face the camera.' : face!.px < 48 ? 'Move closer so your face is clear.' : '';
+    return { t: (f.t + offset) * 1000, faces: f.faces.length, box: face ? face.box : null, blocked, yaw: face && Number.isFinite(face.yawSigned) ? face.yawSigned : 0, pitch: face && Number.isFinite(face.pitch) ? face.pitch : 0, embedding: face && Number.isFinite(face.yawSigned) ? face.embedding : [] };
+  };
+  const replay = (obs: FaceObs[]) => {
+    let st = initialFaceStage(obs[0]?.t ?? 0);
+    let doneAt: number | null = null;
+    let skips = 0;
+    let patience = 0;
+    for (const o of obs) {
+      let r = faceStageStep(st, o);
+      if (!r.accepted && r.skippable) {
+        const k = skipFaceAngle(r.stage, o.t);
+        if (k) {
+          r = k;
+          skips++;
+        }
+      }
+      if (r.accepted && r.stage.samples.at(-1)!.embedding !== o.embedding) patience++;
+      st = r.stage;
+      if (st.samples.length >= FACE_SAMPLES) {
+        doneAt = o.t;
+        break;
+      }
+    }
+    return { samples: st.samples.length, doneS: doneAt === null ? null : Math.round((doneAt - obs[0].t) / 100) / 10, skips, patience };
+  };
+  const stageRows: Record<string, unknown>[] = [];
+  const byClip = new Map<string, (ProbeImage & { t: number })[]>();
+  for (const file of names.filter((f) => f.startsWith('talker-'))) {
+    const frames = await probeVideo(page, `/__fixtures/clips/${file}`, 10);
+    byClip.set(file, frames);
+    // A clip played twice in a row, as Chrome loops a camera file.
+    const obs = [...frames.map((f) => toObs(f)), ...frames.map((f) => toObs(f, frames.length / 10))];
+    const r = replay(obs);
+    stageRows.push({ clip: file, ...r });
+    console.log(`face stage ${file}: ${r.samples}/8 samples${r.doneS !== null ? ` in ${r.doneS} s` : ''}, ${r.patience} by patience, ${r.skips} skipped`);
+  }
+  writeFileSync(join(OUT, 'scan.json'), JSON.stringify({ prompts: rows, faceStage: stageRows }, null, 1));
   return rows;
 }
 
