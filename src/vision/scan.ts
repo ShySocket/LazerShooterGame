@@ -158,6 +158,54 @@ export function hintFor(prompt: FacePrompt, reason: PoseReason): string {
   }
 }
 
+// ---- Patience: no prompt can dead-end -------------------------------------------------------------
+
+/**
+ * How far this frame went towards the prompt, in degrees and in the direction the prompt wants
+ * (-Infinity the wrong way). A straight prompt scores the closer to 0, the better.
+ */
+export function promptProgress(prompt: FacePrompt, yawDeg: number, pitchDeg: number, state: ScanState): number {
+  if (prompt.tilt) {
+    const want = state.pitchSign === 0 ? Math.sign(pitchDeg) : prompt.tilt === 'up' ? state.pitchSign : -state.pitchSign;
+    return Math.sign(pitchDeg) === want ? Math.abs(pitchDeg) : -Infinity;
+  }
+  if (prompt.side) {
+    const want = state.yawSign === 0 ? Math.sign(yawDeg) : prompt.side === 'a' ? state.yawSign : -state.yawSign;
+    return Math.sign(yawDeg) === want ? Math.abs(yawDeg) : -Infinity;
+  }
+  if (prompt.yaw) return -Math.abs(yawDeg);
+  return 0;
+}
+
+/**
+ * After `patienceMs` on a prompt, whether the best frame seen may stand in for it: a turn or tilt
+ * that went at least `fraction` of the way to the band, or a "straight" within twice its band.
+ */
+export function patienceAccepts(prompt: FacePrompt, best: number, elapsedMs: number, patienceMs = SCAN_CALIB.promptPatienceMs, fraction = SCAN_CALIB.patienceFraction): boolean {
+  if (elapsedMs < patienceMs || !Number.isFinite(best)) return false;
+  if (prompt.tilt) return best >= SCAN_CALIB.tiltPitch[0] * fraction;
+  if (prompt.side && prompt.yaw) return best >= prompt.yaw[0] * fraction;
+  if (prompt.yaw) return -best <= prompt.yaw[1] * 2;
+  return true;
+}
+
+/** The conventions a patience-accepted frame latches, as a normal accepted sample would. */
+export function patienceLatch(prompt: FacePrompt, yawDeg: number, pitchDeg: number, state: ScanState): Partial<Pick<ScanState, 'yawSign' | 'pitchSign'>> {
+  if (prompt.side && state.yawSign === 0) return { yawSign: prompt.side === 'a' ? Math.sign(yawDeg) || 1 : -(Math.sign(yawDeg) || 1) };
+  if (prompt.tilt && state.pitchSign === 0) return { pitchSign: prompt.tilt === 'up' ? Math.sign(pitchDeg) || 1 : -(Math.sign(pitchDeg) || 1) };
+  return {};
+}
+
+export const canSkipAngle = (elapsedMs: number, skipMs = SCAN_CALIB.promptSkipMs): boolean => elapsedMs >= skipMs;
+export const SKIP_ANGLE_TEXT = 'Skip this angle';
+
+/** The live angle against the target, for "turn more" and "tilt more": phones read a turn as less than it feels. */
+export function angleNote(prompt: FacePrompt, reason: PoseReason, yawDeg: number, pitchDeg: number): string {
+  if (reason === 'turn-more' && prompt.side && prompt.yaw) return `Now ${Math.round(Math.abs(yawDeg))}°, aim for ${prompt.yaw[0]}°.`;
+  if (reason === 'tilt-more' && prompt.tilt) return `Now ${Math.round(Math.abs(pitchDeg))}°, aim for ${SCAN_CALIB.tiltPitch[0]}°.`;
+  return '';
+}
+
 // ---- Identity during the face scan: continuity, then a frontal re-verify after a break -----------
 
 export interface Continuity {

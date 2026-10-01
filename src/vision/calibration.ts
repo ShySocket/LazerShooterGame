@@ -73,6 +73,14 @@ export const SCAN_CALIB = {
    * people at most 0.51 (same realcheck data).
    */
   reverifyMin: 0.55,
+  /**
+   * No prompt may dead-end. After `promptPatienceMs` on one prompt the best frame seen counts if it
+   * went at least `patienceFraction` of the way to the band in the right direction (phones read a
+   * real turn as less than it is); after `promptSkipMs` the player may skip the angle.
+   */
+  promptPatienceMs: 6000,
+  patienceFraction: 0.5,
+  promptSkipMs: 12000,
   /** Pause after an accepted sample before the next one may be taken. */
   settleMs: 400,
   /** The face stage detects on a copy no wider than this; a selfie-distance face is still hundreds of pixels. */

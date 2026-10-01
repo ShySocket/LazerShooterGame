@@ -212,3 +212,24 @@ test('re-verify after a break: only a frontal frame that matches the frontal sam
   // Measured on GhostNet: same person frontal-vs-frontal p1 0.60, other people at most 0.51.
   assert.ok(SCAN_CALIB.reverifyMin > 0.51 && SCAN_CALIB.reverifyMin < 0.6);
 });
+
+test('patience: after six seconds the best right-way frame stands in for the prompt; after twelve the angle can be skipped', async () => {
+  const { angleNote, canSkipAngle, patienceAccepts, patienceLatch, promptProgress } = await import('../src/vision/scan');
+  const latched: ScanState = { ...initialScanState(), yawSign: 1 };
+  // Slight left latched as +; slight right wants -.
+  assert.equal(promptProgress(P(2), -9, 0, latched), 9);
+  assert.equal(promptProgress(P(2), 9, 0, latched), -Infinity, 'the wrong way never counts');
+  assert.equal(patienceAccepts(P(2), 9, SCAN_CALIB.promptPatienceMs - 1), false, 'not before the patience runs out');
+  assert.equal(patienceAccepts(P(2), 9, SCAN_CALIB.promptPatienceMs), true, '9 degrees is past half of 12');
+  assert.equal(patienceAccepts(P(2), 4, 60_000), false, 'barely moving never stands in for a turn');
+  assert.equal(patienceAccepts(P(3), 14, SCAN_CALIB.promptPatienceMs), true, 'further: half of 25');
+  assert.equal(patienceAccepts(P(5), 5, SCAN_CALIB.promptPatienceMs), true, 'tilt: half of 8');
+  assert.equal(patienceAccepts(P(0), -20, SCAN_CALIB.promptPatienceMs), true, 'straight: within twice its band');
+  assert.equal(patienceAccepts(P(7), 0, SCAN_CALIB.promptPatienceMs), true, 'the smile has no pose');
+  assert.deepEqual(patienceLatch(P(1), -10, 0, initialScanState()), { yawSign: -1 }, 'a patience sample latches like a normal one');
+  assert.equal(canSkipAngle(SCAN_CALIB.promptSkipMs - 1), false);
+  assert.equal(canSkipAngle(SCAN_CALIB.promptSkipMs), true);
+  assert.equal(angleNote(P(1), 'turn-more', 7.4, 0), 'Now 7°, aim for 12°.');
+  assert.equal(angleNote(P(5), 'tilt-more', 0, -3), 'Now 3°, aim for 8°.');
+  assert.equal(angleNote(P(1), 'turn-less', 50, 0), '');
+});
