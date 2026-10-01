@@ -44,7 +44,11 @@ async function main(): Promise<void> {
   const players = labelled.filter((s) => s.label.kind === 'player').length;
   info(`${samples.length} samples from ${rounds.size} rounds (builds ${commits.join(', ') || 'none'}); ${labelled.length} labelled: ${players} name a player, ${labelled.length - players} say "should not count"`);
   if (tuning.note) info(tuning.note);
-  if (labelled.length === 0) return;
+  if (labelled.length === 0) {
+    // --json promises JSON on stdout: an empty sweep, not nothing.
+    if (json) console.log('[]');
+    return;
+  }
   const played = evaluate(labelled, {}, asPlayed);
   info(`As played:  correct ${played.correct}  wrong ${played.wrong}  miss ${played.miss}  score ${played.score}`);
   info(`Replay with the defaults agrees with the game's own verdict on ${Math.round(agreement(labelled) * 100)}% of samples`);

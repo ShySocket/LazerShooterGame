@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-10-01.6';
+export const CALIBRATION_VERSION = '2026-10-01.7';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /**
