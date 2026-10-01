@@ -80,6 +80,9 @@ test('[join-in-progress] a newcomer opening the link mid-round is told to wait, 
   await expect(p1.page.getByRole('button', { name: 'Back to lobby' })).toBeVisible();
   await expect(p2.page.locator('.title')).toBeVisible();
   await p1.page.getByRole('button', { name: 'Back to lobby' }).click();
+  // The reset is one transaction over the whole room; a newcomer arriving before it commits is still
+  // (rightly) told the room is mid-game, so wait for the lobby as a person would see it.
+  await waitForRoom(p1, (r) => r.status === 'lobby', 'the room back in the lobby', 20_000);
   await joinRoom(p3, code);
   await enroll(p3, 3);
   await expect(p1.page.getByRole('button', { name: 'Start game' })).toBeEnabled();
