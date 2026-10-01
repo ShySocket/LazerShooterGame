@@ -93,11 +93,6 @@ export function holdStep(state: ScanState, judgement: Judgement, holdFrames = SC
   return { state: { ...state, ...judgement.latch, hold: 0 }, ready: true };
 }
 
-/** A sample is the same person when it matches any accepted sample: a turned head chains through the adjacent angle. */
-export function samePerson(candidate: number[], accepted: number[][], min = SCAN_CALIB.samePerson, sim: (a: number[], b: number[]) => number = faceSimilarity): boolean {
-  if (!accepted.length) return true;
-  return accepted.some((a) => sim(candidate, a) >= min);
-}
 
 /**
  * The face box is large enough for a trustworthy enrolment embedding, measured in full-frame pixels:
@@ -136,7 +131,6 @@ export function gateHint(reason: FaceGateReason): string {
   }
 }
 
-export const SAME_FACE_TEXT = 'This looks like a different face than the earlier frames: better light, hat and glasses off, or Restart scan.';
 
 /** What to tell the player, given the prompt and why the frame did not count. */
 export function hintFor(prompt: FacePrompt, reason: PoseReason): string {

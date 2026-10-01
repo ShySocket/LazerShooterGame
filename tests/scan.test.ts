@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { bodySampleDecision, bystanderDecision, FACE_PROMPTS, faceGate, gateHint, SAME_FACE_TEXT, settleDone, smallRoomHint, SMALL_ROOM_TEXT, STEP_BACK_TEXT, faceBigEnough, farFacesDone, hintFor, holdStep, initialScanState, judgePose, promptFor, samePerson, SCAN_CALIB, type ScanState } from '../src/vision/scan';
+import { bodySampleDecision, bystanderDecision, FACE_PROMPTS, faceGate, gateHint, settleDone, smallRoomHint, SMALL_ROOM_TEXT, STEP_BACK_TEXT, faceBigEnough, farFacesDone, hintFor, holdStep, initialScanState, judgePose, promptFor, SCAN_CALIB, type ScanState } from '../src/vision/scan';
 import { iou, type NBox } from '../src/vision/geometry';
 import { FACE_SAMPLES } from '../src/vision/embedding';
 
@@ -107,17 +107,6 @@ test('the hold resets on a failed frame and the sample is taken after the hold',
   assert.equal(s.hold, 0, 'an accepted sample starts the next prompt from zero');
 });
 
-test('same-person chain: a 55-degree sample passes through the 30-degree sample when the frontal one is too different', () => {
-  const frontal = [0];
-  const thirty = [30];
-  const fiftyFive = [55];
-  const sim = (a: number[], b: number[]) => (Math.abs(a[0] - b[0]) <= 30 ? 0.5 : 0.2);
-  assert.equal(samePerson(fiftyFive, [frontal], SCAN_CALIB.samePerson, sim), false, 'against the frontal frame alone it fails');
-  assert.equal(samePerson(fiftyFive, [frontal, thirty], SCAN_CALIB.samePerson, sim), true, 'the adjacent angle vouches for it');
-  assert.equal(samePerson(fiftyFive, [], SCAN_CALIB.samePerson, sim), true, 'the first sample has nothing to match');
-  assert.ok(SCAN_CALIB.samePerson >= 0.25, 'never below FACE_CALIB.reject');
-});
-
 test('minimum face size for enrolment is 48 px, not 64', () => {
   assert.equal(SCAN_CALIB.minFacePx, 48);
   assert.ok(faceBigEnough(50, 70));
@@ -173,8 +162,6 @@ test('low light is named as the fix, not holding still, and each cheap gate has 
   assert.equal(faceGate({ faces: 1, score: 0.9, cropCount: 1, cropOverlap: 0.1 }), 'crop');
   assert.equal(gateHint('crop'), 'Keep just your face in the frame.');
   assert.equal(faceGate({ faces: 1, score: 0.9, cropCount: 1, cropOverlap: 0.6 }), 'ok');
-  assert.match(SAME_FACE_TEXT, /better light/);
-  assert.match(SAME_FACE_TEXT, /Restart scan/);
 });
 
 test('the face size gate is measured in full-frame pixels, so a 720p phone is not held closer', () => {
