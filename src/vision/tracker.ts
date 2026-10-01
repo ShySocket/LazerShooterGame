@@ -1,5 +1,5 @@
 import type { BodyResult, FaceResult } from '@vladmandic/human';
-import { ACCEL_MAX_SHIFT, ACCEL_MIN_SAMPLES, ASSOCIATION_MARGIN, CENTRE_JUMP_CONFIRM, CONFIRMED_OBSERVATIONS, CROSSING_IOU, FACE_CUE, FACE_CUE_FRESH_MS, LIVE_RIVAL_MIN, LOST_RECLAIM, MATCH_MIN_SCORE, MATCH_WIN_MARGIN, STATIONARY_HYPOTHESIS, TENTATIVE_WIN_MARGIN, HEIGHT_CONFIRM_MIN, HEIGHT_MATCH_MIN, LOST_TRACK_MS, MAX_TRACK_GAP_MS, TRACK_GAP_MS } from './calibration';
+import { ACCEL_MAX_SHIFT, ACCEL_MIN_SAMPLES, ASSOCIATION_MARGIN, CENTRE_JUMP_CONFIRM, CONFIRMED_OBSERVATIONS, CROSSING_IOU, HIDDEN_NEIGHBOUR_MS, FACE_CUE, FACE_CUE_FRESH_MS, LIVE_RIVAL_MIN, LOST_RECLAIM, MATCH_MIN_SCORE, MATCH_WIN_MARGIN, STATIONARY_HYPOTHESIS, TENTATIVE_WIN_MARGIN, HEIGHT_CONFIRM_MIN, HEIGHT_MATCH_MIN, LOST_TRACK_MS, MAX_TRACK_GAP_MS, TRACK_GAP_MS } from './calibration';
 import { clampBox, intersectArea, iou, toNBox, type NBox } from './geometry';
 
 export interface Detection {
@@ -60,6 +60,7 @@ export interface Track {
   /** Whether the previous frame had this track overlapping another or ambiguously associated (onset detection). */
   overlapping?: boolean;
   ambiguous?: boolean;
+  hidden?: Record<number, { at: number; box: NBox }>;
   via: 'face' | 'clothing' | 'none';
   lastFaceAt: number;
   /** When clothing pixels were last sampled for this track (evidence or audit). */
@@ -405,6 +406,12 @@ export class Tracker {
         if (iou(out[i].box, out[j].box) >= CROSSING_IOU) {
           overlap.add(out[i]);
           overlap.add(out[j]);
+          const remember = (t: Track, p: Track) => {
+            const active = t.hidden && Object.values(t.hidden).some((e) => now - e.at <= HIDDEN_NEIGHBOUR_MS);
+            if (isConfirmed(p) || active) t.hidden = { ...t.hidden, [p.id]: { at: now, box: [...p.box] } };
+          };
+          remember(out[i], out[j]);
+          remember(out[j], out[i]);
         }
       }
       // A neighbour lost here a moment ago (within the lost-track window, not just the coasting gap)
@@ -414,6 +421,14 @@ export class Tracker {
         if (c.lastSeen === now || now - c.lastSeen > ttlMs) continue;
         if (iou(out[i].box, c.box) >= CROSSING_IOU) overlap.add(out[i]);
       }
+    }
+    const seen = new Set(out.map((o) => o.id));
+    for (const t of out) {
+      if (!t.hidden) continue;
+      const apart = out.filter((o) => o !== t && isConfirmed(o) && iou(o.box, t.box) < CROSSING_IOU);
+      const kept = Object.entries(t.hidden).filter(([id, e]) => (seen.has(Number(id)) ? e.at === now : now - e.at <= HIDDEN_NEIGHBOUR_MS && !apart.some((o) => iou(o.box, e.box) >= CROSSING_IOU)));
+      t.hidden = kept.length ? Object.fromEntries(kept) : undefined;
+      if (t.hidden) overlap.add(t);
     }
     for (const t of out) {
       if (overlap.has(t)) {

@@ -200,6 +200,7 @@ export const FACE_CUE_FRESH_MS = 1000;
  * is where a swapped identity would otherwise go unnoticed until its face or outfit is checked.
  */
 export const CROSSING_IOU = 0.25;
+export const HIDDEN_NEIGHBOUR_MS = Number((globalThis as any).process?.env?.HNM ?? 3000);
 /** Below this height ratio a detection cannot continue a track at all. */
 export const HEIGHT_MATCH_MIN = 0.6;
 /** Below this ratio the match is kept but the identity waits for fresh evidence. */
