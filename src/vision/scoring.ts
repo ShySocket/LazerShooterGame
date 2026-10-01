@@ -313,9 +313,13 @@ export function resolveHit(track: Track, eligible: Set<string>, threshold: numbe
   // During an overlap the belief may have been carried over from the other body: this body's own
   // latest face must name the same player clearly, on its own. The same holds in a frame at the
   // detector's body cap, where an undetected person may share this box or have handed it over.
+  // The read's age is measured in capture time against the frame this body was last seen in, not
+  // against `now`: on a slow phone the decision comes more than OVERLAP_FACE_FRESH_MS after the
+  // capture, and a read from that very frame would otherwise always be too old (review of
+  // 2026-10-01). How old the frame itself may be is the callers' rule (geometryFresh, freshFrame).
   if (track.overlapping || track.ambiguous || track.crowded) {
     const r = track.lastRead;
-    if (!r || now - r.at > OVERLAP_FACE_FRESH_MS || now < r.at || r.id !== b.id || r.margin < margin) return null;
+    if (!r || r.at > track.lastSeen || track.lastSeen - r.at > OVERLAP_FACE_FRESH_MS || r.id !== b.id || r.margin < margin) return null;
   }
   return b;
 }

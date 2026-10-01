@@ -368,7 +368,10 @@ export function Game({ room, me, pid, onLeave }: Props) {
       ? recorder.current.endShot(context.shotId, { outcome: r ? 'hit' : track ? 'unclear' : 'miss', resolvedTo: r?.id ?? null, via: r?.via ?? null, resolveMs, zoom: zoomed, track, settledBy: settledBy.current })
       : null;
     if (!round || !sample || !context.expectedId) return;
-    const base = { answeredAt: Date.now(), reviewMs: 0, ...context.conditions };
+    // ?practice targets were quick-enrolled with the rear camera; a real room's range test aims at
+    // players who did the normal scan. The session report keeps the two apart.
+    const source: ShotConditions['source'] = practice ? 'practice' : 'range';
+    const base = { answeredAt: Date.now(), reviewMs: 0, ...context.conditions, source };
     const label: ShotLabel = context.expectedId === UNKNOWN_ID ? { kind: 'none', ...base } : { kind: 'player', target: round.idMap.pid(context.expectedId), ...base };
     const labelled = trimSample({ ...sample, label });
     const practiceNote = { verdict: verdict.text, kind: verdict.kind, aimed: context.expectedId === UNKNOWN_ID ? 'Not a player' : (labels[context.expectedId] ?? '?'), resolved: r ? (labels[r.id] ?? '?') : null, resolveMs };
@@ -383,7 +386,8 @@ export function Game({ room, me, pid, onLeave }: Props) {
   /** A shot has a verdict: either register it, or in range-test mode just record how the lock behaved. */
   const settleShot = ({ track, resolution: r, elapsedMs: resolveMs, zoomed, context }: ShotSettlement<ShotContext>) => {
     if (context.practice) {
-      const v = practiceVerdict(context.expectedId === UNKNOWN_ID ? 'nobody' : (labels[context.expectedId] ?? '?'), r ? (labels[r.id] ?? '?') : null);
+      // Right or wrong by player id: two players in a real room may share a name.
+      const v = practiceVerdict({ id: context.expectedId, name: context.expectedId === UNKNOWN_ID ? 'nobody' : (labels[context.expectedId] ?? '?') }, r ? { id: r.id, name: labels[r.id] ?? '?' } : null);
       uploadPracticeShot(context, r, track, resolveMs, zoomed, v);
       rangeTest.add({
         t: Date.now(),

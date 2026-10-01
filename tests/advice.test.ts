@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { connectState, crashNotice, HIT_CONFIDENCE_NOTE, hitVerdict, NOT_COUNTED, RANGE_TARGET_NOTE, UNCONFIRMED, UNCONFIRMED_ADVICE, updateAllowed, verdictAdvice, isStalled, loadProgress, lobbyHint, rejoinFailure, saveError, shareFallback, STALL_TEXT } from '../src/ui/advice';
 import { LOAD_CALIB } from '../src/vision/calibration';
+import { UNKNOWN_ID } from '../src/types';
 
 const REQUIRED = ['blazeface', 'facemesh', 'insightface-ghostnet-strides1', 'movenet-multipose'];
 
@@ -122,10 +123,17 @@ test('practice messages: capture notes name what is missing, verdicts compare wi
   assert.match(practiceCaptureNote('Target 1', 3, 12, true), /only 3 of 12 frames/);
   assert.match(practiceCaptureNote('Target 2', 12, 12, false), /Face only/);
   assert.match(practiceCaptureNote('Target 2', 12, 12, false), /hips in view/);
-  assert.deepEqual(practiceVerdict('Target 1', 'Target 1'), { text: 'HIT Target 1 (right)', kind: 'good' });
-  assert.equal(practiceVerdict('Target 1', 'Target 2').kind, 'bad');
-  assert.equal(practiceVerdict('nobody', null).kind, 'good');
-  assert.equal(practiceVerdict('Target 1', null).kind, 'warn');
+  const t1 = { id: 't1', name: 'Target 1' };
+  assert.deepEqual(practiceVerdict(t1, { id: 't1', name: 'Target 1' }), { text: 'HIT Target 1 (right)', kind: 'good' });
+  assert.equal(practiceVerdict(t1, { id: 't2', name: 'Target 2' }).kind, 'bad');
+  assert.equal(practiceVerdict({ id: UNKNOWN_ID, name: 'nobody' }, null).kind, 'good');
+  assert.equal(practiceVerdict({ id: UNKNOWN_ID, name: 'nobody' }, { id: 't1', name: 'Target 1' }).kind, 'bad');
+  assert.equal(practiceVerdict(t1, null).kind, 'warn');
+  // A real room's range test: two players may share a name, and a lock on the other one is wrong.
+  const wrongSam = practiceVerdict({ id: 'pA', name: 'Sam' }, { id: 'pB', name: 'Sam' });
+  assert.equal(wrongSam.kind, 'bad', 'the other Sam is a wrong lock');
+  assert.match(wrongSam.text, /WRONG: locked the other Sam/);
+  assert.equal(practiceVerdict({ id: 'pA', name: 'Sam' }, { id: 'pA', name: 'Sam' }).kind, 'good');
   assert.ok(PRACTICE_CHECKLIST.length >= 5);
 });
 

@@ -465,3 +465,41 @@ test('a track whose body\'s outfit flips from ruling a player out to clearly mat
   const shot = h.pipeline.fire({ tap: h.clock.now }, CROSSHAIR);
   assert.equal(shot.kind === 'instant' ? shot.settlement.resolution?.id : shot.kind, 'bob');
 });
+
+test('a crowded frame on a slow phone hits on the face read in that very frame, however long the frame took to decide', async () => {
+  // Six bodies (BODY_CAP) make every frame crowded. Frames come 450 ms apart and each is decided
+  // 420 ms after its capture, more than OVERLAP_FACE_FRESH_MS: the read's age is capture time
+  // against capture time, so Bob's face read in the deciding frame still counts (review of
+  // 2026-10-01: measured against the decision clock, a slow phone refused every shot in a crowd).
+  const h = harness();
+  const bystanders = [0.0, 0.08, 0.16, 0.78, 0.88].map((x) => body([x, 0.3, 0.07, 0.4], [x + 0.01, 0.32, 0.05, 0.15]));
+  const scene = () => [body(BOB_BOX, BOB_HIT), ...bystanders];
+  const slow = 450;
+  const latency = 420;
+  let t = 0;
+  let locked = 0;
+  for (let i = 0; i < 8; i++) {
+    h.clock.now = t + latency;
+    const out = await h.pipeline.processFrame(scene(), t, 1280, 720, CROSSHAIR, h.ops);
+    assert.ok(out?.crowded, 'six bodies: the crowd rule applies');
+    if (out.lock?.kind === 'lock' && out.lock.id === 'bob') locked++;
+    t += slow;
+  }
+  assert.ok(locked >= 5, `Bob, his face read every frame, is locked in a crowd on a slow phone (${locked}/8)`);
+  // A tap one period after the last capture is too old to decide alone: the burst needs a post-tap frame.
+  h.clock.now = t;
+  const r = h.pipeline.fire({ tap: t }, CROSSHAIR);
+  assert.equal(r.kind, 'pending');
+  h.clock.now = t + 20 + latency;
+  const settledOn = await h.pipeline.processFrame(scene(), t + 20, 1280, 720, CROSSHAIR, h.ops);
+  assert.equal(settledOn?.settled?.resolution?.id, 'bob', 'the burst settles on the crowded frame\'s own read');
+  // Without a read in that frame, nor within OVERLAP_FACE_FRESH_MS of it, the crowd rule still refuses.
+  h.ops.cropFaces = async () => [];
+  let lockedBlind = 0;
+  for (let i = 0, u = t + 20 + slow; i < 3; i++, u += slow) {
+    h.clock.now = u + latency;
+    const blind = await h.pipeline.processFrame(scene(), u, 1280, 720, CROSSHAIR, h.ops);
+    if (blind?.lock?.kind === 'lock') lockedBlind++;
+  }
+  assert.equal(lockedBlind, 0, 'a carried belief does not lock in a crowded frame');
+});
