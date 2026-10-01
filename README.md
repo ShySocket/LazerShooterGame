@@ -5,7 +5,7 @@ Real-life laser tag played with phones. Everyone opens the same link, enrolls th
 - **Mobile web app (PWA)**: no app store. iPhone and Android both work in the browser.
 - **Free multiplayer**: Firebase Realtime Database free tier syncs rooms, lives, and hits. Optional Google sign-in stores a one-time scan per account.
 - **On-device vision**: face recognition, body pose, and clothing colour all run on the shooter's phone. Only numeric signatures are shared, never photos, including in the shot review after a round.
-- **Rules**: 3 lives, no respawn, last player standing wins. Cooldown and shield times are tunable in the lobby.
+- **Rules**: 3 lives, no respawn, last player standing wins. Cooldown and shield times are tunable in the lobby (the shield after a hit never below 0.5 s).
 
 ## How a hit is decided
 
@@ -19,6 +19,8 @@ Each body the camera sees gets a running belief of who it is, built from four si
 Two decoys compete with the real players: the shooter's own profile, so a mirror or a look-alike resolves to YOU, and a stranger baseline that wins whenever nobody matches well. A shot only counts when a live opponent is above the hit confidence and clearly ahead of everyone else, decoys included. Otherwise the app says UNCLEAR TARGET, THAT IS YOU, or NOT A PLAYER instead of guessing.
 
 Where a shot may land is the part of the person the pose model actually observed: the head and the torso between the shoulders and hips, never arms, legs, or the empty corners of the outer box, and a face seen without a body offers only the head. A shot decides instantly only from geometry under 250 ms old; an older frame can nominate who was under the dot, or whose motion since that frame carries them there, after which the same person must be seen there again in a frame captured after the tap. The aim is refused when another body's edge is within a few percent of the dot, or when somebody seen a moment ago still covers it.
+
+Once the phone has decided, the hit goes to the room in one atomic write (`registerHit`, `evaluateRoomHit` in `src/net/backend.ts`) that checks the round is still the one the shot was fired in and still playing, takes the life, and records the shot under its id (`rooms/{CODE}/hits/{shotId}`, cleared when the next round starts). A shot is therefore applied at most once, and never in a round it was not fired in. The server's answer is shown as it is: HIT or ELIMINATED, the target's shield, IS ALREADY OUT, or NOT COUNTED when the round was over by the time the shot arrived. A hit the server has not answered within 4 s shows UNCONFIRMED: the write is still on its way and counts only if it reaches the server while that round is playing.
 
 After a round, **Show my shot log** on the results screen lists every FIRE press with the top beliefs at that moment. Use it to see why a shot landed or did not.
 

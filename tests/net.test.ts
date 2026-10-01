@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { Database } from 'firebase/database';
 import { FirebaseBackend } from '../src/net/firebase';
-import { applyHit, claimHostPatch, decideRoundEnd, endRoundPatch, evaluateHit, isPresent, newPlayer, pickColor, pickNextHost, randomCode } from '../src/net/backend';
+import { applyHit, claimHostPatch, decideRoundEnd, endRoundPatch, evaluateHit, evaluateRoomHit, isPresent, isShotId, newPlayer, pickColor, pickNextHost, randomCode, roundOpenFor, shieldMs, type HitRecord, type HitRequest } from '../src/net/backend';
+import { LocalBackend } from '../src/net/local';
 import { NET_CALIB } from '../src/vision/calibration';
-import { DEFAULT_SETTINGS, PLAYER_COLORS, type Player, type Room } from '../src/types';
+import { DEFAULT_SETTINGS, MIN_INVULN_MS, PLAYER_COLORS, type Player, type Room } from '../src/types';
 import { FakeDb } from './net/fakeDb';
 
 const seed = (id: string, over: Partial<Player> = {}): Player => ({ ...newPlayer({ id, name: id }, '#fff', 3, 1000), enrolled: true, ...over });
@@ -103,12 +104,12 @@ test('pickNextHost prefers the earliest-joined present enrolled player; claimHos
 });
 
 test('the round end is written once: several phones ending the same round agree on one winner', async () => {
-  const { backend, code, current } = await makeRoom(1, 'lobby');
+  const { backend, code, current, hit } = await makeRoom(1, 'lobby');
   await backend.startRound(code, { ...DEFAULT_SETTINGS, lives: 1, invulnMs: 0 }, backend.now());
   await backend.updateMeta(code, { status: 'playing' });
   assert.equal(await backend.endRound(code), 'not-decided');
   assert.equal(current().status, 'playing');
-  assert.equal(await backend.registerHit(code, 'p0', 'p1', 0.9, 'face'), 'eliminated');
+  assert.equal(await hit('p0', 'p1'), 'eliminated');
   const results = await Promise.all([backend.endRound(code), backend.endRound(code), backend.endRound(code)]);
   assert.deepEqual(results.sort(), ['already', 'already', 'ended']);
   assert.equal(current().status, 'ended');
@@ -152,8 +153,14 @@ async function makeRoom(n: number, status: 'lobby' | 'playing' = 'playing') {
     assert.ok(room, 'room subscribed');
     return room;
   };
-  return { db, backend, code, current, unsubscribe };
+  /** A hit as FIRE sends it: a fresh shot id (unless given) in the round this phone sees playing now. */
+  const hit = (shooter: string, target: string, shotId = nextShotId(), roundStartAt: number | null = current().startAt ?? null) =>
+    backend.registerHit(code, shooter, target, 0.9, 'face', shotId, roundStartAt);
+  return { db, backend, code, current, unsubscribe, hit };
 }
+
+let shotCount = 0;
+const nextShotId = () => `shot-${++shotCount}`;
 
 test('joinRoom: a newcomer is admitted in the lobby, refused mid-round, and a returning player rejoins any time', async () => {
   const { db, backend, code, current } = await makeRoom(1, 'lobby');
@@ -175,8 +182,8 @@ test('joinRoom: a newcomer is admitted in the lobby, refused mid-round, and a re
 });
 
 test('one life per hit inside the shield: two concurrent hits on one target cost one life and the second is refused', async () => {
-  const { db, backend, code, current } = await makeRoom(2);
-  const outcomes = await Promise.all([backend.registerHit(code, 'p1', 'p0', 0.9, 'face'), backend.registerHit(code, 'p2', 'p0', 0.9, 'face')]);
+  const { db, current, hit } = await makeRoom(2);
+  const outcomes = await Promise.all([hit('p1', 'p0'), hit('p2', 'p0')]);
   assert.deepEqual(outcomes.sort(), ['hit', 'invulnerable']);
   assert.equal(current().players.p0.lives, 2);
   assert.equal(db.retries >= 1, true, 'the second transaction was retried on the fresh map');
@@ -185,32 +192,38 @@ test('one life per hit inside the shield: two concurrent hits on one target cost
 });
 
 test('concurrent hits on four different targets in the same tick all land once', async () => {
-  const { backend, code, current } = await makeRoom(7);
+  const { db, code, current, hit } = await makeRoom(7);
   const pairs: [string, string][] = [['p0', 'p4'], ['p1', 'p5'], ['p2', 'p6'], ['p3', 'p7']];
-  const outcomes = await Promise.all(pairs.map(([s, t]) => backend.registerHit(code, s, t, 0.8, 'cloth')));
+  const outcomes = await Promise.all(pairs.map(([s, t], i) => hit(s, t, `four-${i}`)));
   assert.deepEqual(outcomes, ['hit', 'hit', 'hit', 'hit']);
   for (const [s, t] of pairs) {
     assert.equal(current().players[t].lives, 2, `${t} lost one life`);
     assert.equal(current().players[s].tags, 1, `${s} got the tag`);
   }
-  assert.equal(Object.keys((current() as unknown as { events?: Record<string, unknown> }).events ?? {}).length, 0, 'events are not part of the room view');
+  const hits = db.readAt(['rooms', code, 'hits']) as Record<string, HitRecord>;
+  assert.deepEqual(Object.keys(hits).sort(), ['four-0', 'four-1', 'four-2', 'four-3'], 'each shot recorded once, in the same write');
+  assert.deepEqual(pairs.map((_, i) => [hits[`four-${i}`].shooter, hits[`four-${i}`].target, hits[`four-${i}`].round]), pairs.map(([s, t]) => [s, t, current().startAt]));
+  assert.equal((current() as unknown as { hits?: unknown }).hits, undefined, 'hit records are not part of the room view');
 });
 
 test('registerHit refuses outside a playing round and eliminates on the last life', async () => {
-  const { backend, code, current } = await makeRoom(1, 'lobby');
-  assert.equal(await backend.registerHit(code, 'p1', 'p0', 0.9, 'face'), 'invalid');
+  const { backend, code, current, hit } = await makeRoom(1, 'lobby');
+  assert.equal(await hit('p1', 'p0', nextShotId(), 0), 'invalid');
   await backend.startRound(code, { ...DEFAULT_SETTINGS, lives: 1, invulnMs: 0 }, backend.now());
+  assert.equal(await hit('p1', 'p0'), 'invalid', 'the countdown is not play');
   await backend.updateMeta(code, { status: 'playing' });
-  assert.equal(await backend.registerHit(code, 'p1', 'p0', 0.9, 'face'), 'eliminated');
+  assert.equal(await hit('p1', 'p0'), 'eliminated');
   assert.equal(current().players.p0.status, 'out');
-  assert.equal(await backend.registerHit(code, 'p0', 'p1', 0.9, 'face'), 'invalid', 'the round is decided');
+  assert.equal(await hit('p0', 'p1'), 'invalid', 'the round is decided');
 });
 
 test('startRound and resetForNewRound give every player fresh lives, status and tags', async () => {
-  const { backend, code, current } = await makeRoom(2);
-  assert.equal(await backend.registerHit(code, 'p1', 'p2', 0.9, 'face'), 'hit');
+  const { db, backend, code, current, hit } = await makeRoom(2);
+  assert.equal(await hit('p1', 'p2'), 'hit');
   assert.equal(current().players.p2.lives, 2);
+  assert.equal(Object.keys(db.readAt(['rooms', code, 'hits']) as object).length, 1);
   await backend.resetForNewRound(code);
+  assert.equal(db.readAt(['rooms', code, 'hits']), null, 'the round\'s hit records go with it');
   assert.equal(current().status, 'lobby');
   assert.equal(current().winnerId ?? null, null);
   for (const p of Object.values(current().players)) {
@@ -231,4 +244,161 @@ test('now() follows the server time offset', async () => {
   db.info.serverTimeOffset = 5000;
   const backend = new FirebaseBackend(db.sdk(), {} as Database);
   assert.ok(backend.now() - Date.now() >= 4990);
+});
+
+// ---- Hit integrity: one shot, one round, one atomic write --------------------------------------
+
+const PLAYING = { status: 'playing' as const, startAt: 7000, settings: DEFAULT_SETTINGS };
+const req = (over: Partial<HitRequest> = {}): HitRequest => ({ shooter: 'a', target: 'b', score: 0.9, via: 'face', shotId: 'tap-1', roundStartAt: 7000, ...over });
+
+test('evaluateRoomHit applies a hit only in its own playing round, records it under its shot id, and never applies a recorded shot again', () => {
+  const players = map(seed('a'), seed('b'), seed('c'));
+  const first = evaluateRoomHit(PLAYING, players, null, req(), 9000);
+  assert.equal(first.outcome, 'hit');
+  assert.equal(first.players?.b.lives, 2);
+  assert.deepEqual(first.record, { shooter: 'a', target: 'b', t: 9000, score: 0.9, via: 'face', outcome: 'hit', round: 7000 });
+  // The same shot again, long after the shield: answered as it landed, nothing applied.
+  const hits = { 'tap-1': first.record! };
+  const again = evaluateRoomHit(PLAYING, first.players, hits, req(), 60000);
+  assert.deepEqual(again, { outcome: 'hit' }, 'a recorded shot is never applied twice');
+  // Another shooter's or another round's record under the same id is an id collision, not this shot.
+  assert.deepEqual(evaluateRoomHit(PLAYING, players, hits, req({ shooter: 'c' }), 60000), { outcome: 'invalid' });
+  assert.deepEqual(evaluateRoomHit(PLAYING, players, hits, req({ target: 'c' }), 60000), { outcome: 'invalid' });
+  assert.deepEqual(evaluateRoomHit(PLAYING, players, hits, req({ roundStartAt: 8000 }), 60000), { outcome: 'invalid' });
+  // A new shot id in the same round lands.
+  assert.equal(evaluateRoomHit(PLAYING, first.players, hits, req({ shotId: 'tap-2' }), 60000).outcome, 'hit');
+});
+
+test('evaluateRoomHit refuses a hit outside its round: not playing, another startAt, or no round at all', () => {
+  const players = map(seed('a'), seed('b'));
+  for (const status of ['lobby', 'countdown', 'ended'] as const) {
+    assert.deepEqual(evaluateRoomHit({ ...PLAYING, status }, players, null, req(), 9000), { outcome: 'invalid' }, status);
+  }
+  assert.deepEqual(evaluateRoomHit({ ...PLAYING, startAt: 8000 }, players, null, req(), 9000), { outcome: 'invalid' }, 'a shot from the previous round');
+  assert.deepEqual(evaluateRoomHit(PLAYING, players, null, req({ roundStartAt: null }), 9000), { outcome: 'invalid' }, 'a shot that knows no round');
+  assert.deepEqual(evaluateRoomHit({ ...PLAYING, startAt: null }, players, null, req({ roundStartAt: null }), 9000), { outcome: 'invalid' });
+  assert.deepEqual(evaluateRoomHit(null, players, null, req(), 9000), { outcome: 'invalid' });
+  assert.equal(roundOpenFor(PLAYING, 7000), true);
+  assert.equal(roundOpenFor(PLAYING, Number.NaN), false);
+  // Refusals inside the round keep their own outcome and write nothing.
+  assert.deepEqual(evaluateRoomHit(PLAYING, map(seed('a'), seed('b', { status: 'out', lives: 0 }), seed('c')), null, req(), 9000), { outcome: 'dead' });
+  // A shot id must be a plain key; '/' would address another path.
+  for (const shotId of ['', 'a/b', 'a.b', '$x', 'x'.repeat(65)]) assert.equal(isShotId(shotId), false, shotId);
+  assert.deepEqual(evaluateRoomHit(PLAYING, players, null, req({ shotId: 'hits/../x' }), 9000), { outcome: 'invalid' });
+  assert.equal(isShotId('mg2x1k-a9f3'), true, "the game's own ids");
+  // The database refuses NaN; a malformed score must not cost the hit.
+  assert.equal(evaluateRoomHit(PLAYING, players, null, req({ score: Number.NaN }), 9000).record?.score, 0);
+});
+
+test('invulnMs below 500 is clamped: a shield of 0 still costs one life per instant, not two', () => {
+  assert.equal(MIN_INVULN_MS, 500);
+  assert.equal(shieldMs(0), MIN_INVULN_MS);
+  assert.equal(shieldMs(-100), MIN_INVULN_MS);
+  assert.equal(shieldMs(Number.NaN), MIN_INVULN_MS);
+  assert.equal(shieldMs(undefined), MIN_INVULN_MS, 'a room saved without the field');
+  assert.equal(shieldMs(3000), 3000);
+  const first = evaluateHit(map(seed('a'), seed('b'), seed('c')), 'a', 'b', 10000, 0);
+  assert.equal(first.outcome, 'hit');
+  assert.equal(evaluateHit(first.players!, 'c', 'b', 10000 + MIN_INVULN_MS - 1, 0).outcome, 'invulnerable');
+  assert.equal(evaluateHit(first.players!, 'c', 'b', 10000 + MIN_INVULN_MS, 0).outcome, 'hit');
+});
+
+test('a shield set to 0 in a live room: two shooters hitting one target in the same instant cost one life', async () => {
+  const { backend, code, current, hit } = await makeRoom(2, 'lobby');
+  await backend.startRound(code, { ...DEFAULT_SETTINGS, invulnMs: 0 }, backend.now());
+  await backend.updateMeta(code, { status: 'playing' });
+  const outcomes = await Promise.all([hit('p1', 'p0'), hit('p2', 'p0')]);
+  assert.deepEqual(outcomes.sort(), ['hit', 'invulnerable']);
+  assert.equal(current().players.p0.lives, 2);
+});
+
+test('duplicate shot id applies once: a resent or doubled shot costs one life and one tag', async () => {
+  const { db, backend, code, current, hit } = await makeRoom(2);
+  assert.equal(await hit('p1', 'p0', 'tap-A'), 'hit');
+  assert.equal(current().players.p0.lives, 2);
+  // Take the shield away so only the shot record can refuse the resend.
+  await backend.updatePlayer(code, 'p0', { lastHitAt: 0 });
+  assert.equal(await hit('p1', 'p0', 'tap-A'), 'hit', 'answered as it landed');
+  assert.equal(current().players.p0.lives, 2, 'not applied again');
+  assert.equal(current().players.p1.tags, 1);
+  // The same shot sent twice at once (a retry racing the original): one commits, the other finds its record.
+  const twice = await Promise.all([hit('p2', 'p1', 'tap-B'), hit('p2', 'p1', 'tap-B')]);
+  assert.deepEqual(twice, ['hit', 'hit']);
+  assert.equal(current().players.p1.lives, 2);
+  assert.equal(current().players.p2.tags, 1);
+  assert.deepEqual(Object.keys(db.readAt(['rooms', code, 'hits']) as object).sort(), ['tap-A', 'tap-B']);
+  // A new shot is a new hit.
+  await backend.updatePlayer(code, 'p0', { lastHitAt: 0 });
+  assert.equal(await hit('p1', 'p0', 'tap-C'), 'hit');
+  assert.equal(current().players.p0.lives, 1);
+});
+
+test("a hit carrying an old round's startAt is refused after a new round starts, even one still queued when it began", async () => {
+  const { db, backend, code, current, hit } = await makeRoom(2);
+  const oldRound = current().startAt!;
+  assert.equal(await backend.endRound(code, true), 'ended');
+  await backend.resetForNewRound(code);
+  await backend.startRound(code, DEFAULT_SETTINGS, oldRound + 60000);
+  await backend.updateMeta(code, { status: 'playing' });
+  assert.equal(await hit('p1', 'p0', 'late-1', oldRound), 'invalid');
+  assert.equal(current().players.p0.lives, 3);
+  assert.equal(current().players.p1.tags, 0);
+  assert.equal(db.readAt(['rooms', code, 'hits']), null, 'nothing recorded');
+  // Queued: the write is on its way when the next round starts; it reaches the server after, and is refused there.
+  const newRound = current().startAt!;
+  const queued = hit('p1', 'p0', 'late-2', newRound);
+  db.writeAt(['rooms', code, 'meta', 'startAt'], newRound + 60000);
+  assert.equal(await queued, 'invalid');
+  assert.equal(current().players.p0.lives, 3);
+  // Unheard: this phone still believes the old round is on (its cache passes the shot); the server does not.
+  db.writeUnheard(['rooms', code, 'meta', 'startAt'], newRound + 120000);
+  assert.equal(current().startAt, newRound + 60000, 'the phone has not heard');
+  assert.equal(await hit('p1', 'p0', 'late-3'), 'invalid');
+  assert.equal(db.readAt(['rooms', code, 'players', 'p0', 'lives']), 3);
+});
+
+test('a hit after the round ended is refused inside the transaction, whatever the phone last heard', async () => {
+  const { db, code, current, hit } = await makeRoom(2);
+  // The server has ended the round; this phone's subscription has not heard yet, so only the transaction can tell.
+  db.writeUnheard(['rooms', code, 'meta', 'status'], 'ended');
+  assert.equal(current().status, 'playing', 'the phone still sees the round playing');
+  assert.equal(await hit('p1', 'p0'), 'invalid');
+  assert.equal(db.readAt(['rooms', code, 'players', 'p0', 'lives']), 3);
+  assert.equal(db.readAt(['rooms', code, 'players', 'p1', 'tags']), 0);
+  assert.equal(db.readAt(['rooms', code, 'hits']), null);
+  // And a phone that has heard the round is over refuses at once, without a transaction.
+  db.writeAt(['rooms', code, 'meta', 'status'], 'ended');
+  const version = db.version;
+  assert.equal(await hit('p1', 'p0'), 'invalid');
+  assert.equal(db.version, version);
+});
+
+test('the local backend keeps the same hit rules: its own round only, once per shot, never below the minimum shield', async () => {
+  const local = new LocalBackend();
+  const code = await local.createRoom({ id: 'a', name: 'A' });
+  await local.joinRoom(code, { id: 'b', name: 'B' });
+  await local.joinRoom(code, { id: 'c', name: 'C' });
+  for (const id of ['a', 'b', 'c']) await local.updatePlayer(code, id, { enrolled: true });
+  let room: Room | null = null;
+  local.subscribe(code, (r) => (room = r));
+  const startAt = local.now();
+  await local.startRound(code, { ...DEFAULT_SETTINGS, invulnMs: 0 }, startAt);
+  assert.equal(await local.registerHit(code, 'a', 'b', 0.9, 'face', 's1', startAt), 'invalid', 'countdown');
+  await local.updateMeta(code, { status: 'playing' });
+  assert.equal(await local.registerHit(code, 'a', 'b', 0.9, 'face', 's1', startAt - 1), 'invalid', 'another round');
+  assert.equal(await local.registerHit(code, 'a', 'b', 0.9, 'face', 's1', startAt), 'hit');
+  assert.equal(await local.registerHit(code, 'c', 'b', 0.9, 'face', 's2', startAt), 'invulnerable', 'a shield of 0 is 500 ms');
+  await local.updatePlayer(code, 'b', { lastHitAt: 0 });
+  assert.equal(await local.registerHit(code, 'a', 'b', 0.9, 'face', 's1', startAt), 'hit', 'a resent shot is answered as it landed');
+  await new Promise((r) => setTimeout(r, 0));
+  assert.ok(room, 'room subscribed');
+  assert.equal((room as Room).players.b.lives, 2);
+  assert.equal((room as Room).players.a.tags, 1);
+  // A new round forgets the old shots; its startAt refuses them anyway.
+  await local.endRound(code, true);
+  await local.resetForNewRound(code);
+  await local.startRound(code, DEFAULT_SETTINGS, startAt + 1000);
+  await local.updateMeta(code, { status: 'playing' });
+  assert.equal(await local.registerHit(code, 'a', 'b', 0.9, 'face', 's1', startAt), 'invalid');
+  assert.equal(await local.registerHit(code, 'a', 'b', 0.9, 'face', 's1', startAt + 1000), 'hit', 'a fresh round, a fresh record');
 });

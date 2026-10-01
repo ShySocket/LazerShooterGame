@@ -8,12 +8,14 @@ import { MODELS_CACHE, STALE_MODEL_CACHES } from '../src/vision/modelCache';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-test('a hit that cannot reach the server within the deadline is reported as lost, never left hanging', async () => {
+test('a hit that cannot reach the server within the deadline is reported as UNCONFIRMED, never left hanging', async () => {
   const never = new Promise<string>(() => undefined);
   await assert.rejects(withTimeout(never, 20, 'the hit'), (e: unknown) => isTimeout(e) && e instanceof TimeoutError && /the hit timed out after 20 ms/.test(e.message));
   assert.equal(await withTimeout(sleep(5).then(() => 'hit'), 50), 'hit');
   await assert.rejects(withTimeout(Promise.reject(new Error('PERMISSION_DENIED')), 50), /PERMISSION_DENIED/);
-  assert.equal(hitFailureText(new TimeoutError('the hit', 4000)), 'NO CONNECTION, SHOT LOST');
+  // A timed-out write is still queued and may land (in its own round, once): it is not called lost.
+  assert.equal(hitFailureText(new TimeoutError('the hit', 4000)), 'UNCONFIRMED');
+  // An error means the write was dropped: those shots are lost, and say why.
   assert.equal(hitFailureText(new Error('network error')), 'NO CONNECTION, SHOT LOST');
   assert.equal(hitFailureText(new Error('PERMISSION_DENIED')), 'SHOT LOST');
   assert.ok(NET_CALIB.hitTimeoutMs >= 3000 && NET_CALIB.hitTimeoutMs <= 6000, 'a deadline a player will wait out');

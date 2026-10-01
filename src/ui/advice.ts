@@ -1,5 +1,6 @@
 import { CAM_CALIB, LOAD_CALIB } from '../vision/calibration';
 import { isTimeout } from '../net/withTimeout';
+import type { HitOutcome } from '../net/backend';
 
 /**
  * Player-facing words for the moments an app can leave a phone stuck: what a wait is doing, when it
@@ -120,8 +121,38 @@ export function verdictAdvice(text: string): string {
       return 'The app was interrupted mid-shot. Fire again.';
     case 'NO CONNECTION, SHOT LOST':
       return 'Check the Wi-Fi; hits need the network.';
+    case UNCONFIRMED:
+      return UNCONFIRMED_ADVICE;
+    case NOT_COUNTED:
+      return 'The round was already over when it reached the server.';
     default:
-      return '';
+      return text.endsWith(ALREADY_OUT) ? 'They are out of this round. Aim at someone still playing.' : '';
+  }
+}
+
+/** A hit the server did not answer in time. It may still land (in its own round, once), so it is neither a hit nor lost. */
+export const UNCONFIRMED = 'UNCONFIRMED';
+export const UNCONFIRMED_ADVICE = 'It counts only if it reached the server. Check the Wi-Fi.';
+/** The server refused the hit because its round is over (or was replaced); never shown as a MISS, the shot found its target. */
+export const NOT_COUNTED = 'NOT COUNTED';
+const ALREADY_OUT = ' IS ALREADY OUT';
+
+/**
+ * The banner for the server's answer to a hit the vision accepted. Every refusal says what it was:
+ * a shot that found its target is never reported as a MISS.
+ */
+export function hitVerdict(outcome: HitOutcome, name: string): { text: string; kind: 'good' | 'info' | 'warn' } {
+  switch (outcome) {
+    case 'hit':
+      return { text: `HIT ${name}`, kind: 'good' };
+    case 'eliminated':
+      return { text: `${name} ELIMINATED`, kind: 'good' };
+    case 'invulnerable':
+      return { text: `${name} is shielded`, kind: 'info' };
+    case 'dead':
+      return { text: `${name}${ALREADY_OUT}`, kind: 'info' };
+    default:
+      return { text: NOT_COUNTED, kind: 'warn' };
   }
 }
 
@@ -153,10 +184,15 @@ export const REVIEW_SKIP_ONE = 'Skip this shot';
 export const REVIEW_DONE = 'Done reviewing';
 export const RESET_FAILED = 'Could not reset the room. Check the connection and tap again.';
 
-/** The banner for a hit the server never confirmed: offline or timed out is a lost shot, anything else is refused. */
+/**
+ * The banner for a hit the server never answered. A timeout is UNCONFIRMED: the write is still queued
+ * and counts if it reaches the server while its round is playing. An error means the write was
+ * dropped: offline is a lost shot for want of a connection, anything else a lost shot.
+ */
 export function hitFailureText(e: unknown): string {
+  if (isTimeout(e)) return UNCONFIRMED;
   const text = (e instanceof Error ? `${e.name} ${e.message}` : String(e ?? '')).toLowerCase();
-  if (isTimeout(e) || /network|offline|disconnected|unavailable/.test(text)) return 'NO CONNECTION, SHOT LOST';
+  if (/network|offline|disconnected|unavailable/.test(text)) return 'NO CONNECTION, SHOT LOST';
   return 'SHOT LOST';
 }
 

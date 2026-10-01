@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { isPresent } from '../net/backend';
+import { isPresent, shieldMs } from '../net/backend';
 import { backend, MIN_PLAYERS, practiceBackend } from '../net';
 import { HIT_CONFIDENCE_NOTE, lobbyHint, MUTE_SWITCH_NOTE, OFFLINE_TEXT, PRACTICE_INTRO, shareFallback } from '../ui/advice';
 import { useConnection } from '../hooks/useConnection';
-import { CLOTHING_CONFLICT, type Player, type Room, type RoomSettings } from '../types';
+import { CLOTHING_CONFLICT, MIN_INVULN_MS, type Player, type Room, type RoomSettings } from '../types';
 import { outfitConflict } from '../vision/clothing';
 import { centredSimilarity, FACE_CONFLICT, isCurrentFaceScan } from '../vision/human';
 import { haptic, sfx, unlockAudio } from '../audio/sfx';
@@ -105,7 +105,8 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
   // Starting applies the final settings to everyone, so a Lives change made after people joined counts.
   const start = () => {
     soundCheck();
-    void backend.startRound(room.code, settings, backend.now() + 5000);
+    // A room saved by an older build may hold a shield below the minimum; the round records the one the hit rule uses.
+    void backend.startRound(room.code, { ...settings, invulnMs: shieldMs(settings.invulnMs) }, backend.now() + 5000);
   };
 
   return (
@@ -189,7 +190,7 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
             Cooldown (ms) <NumberField value={settings.cooldownMs} min={200} max={10000} step={100} onCommit={(v) => saveSettings({ cooldownMs: v })} />
           </label>
           <label>
-            Shield after hit (ms) <NumberField value={settings.invulnMs} min={0} max={30000} step={500} onCommit={(v) => saveSettings({ invulnMs: v })} />
+            Shield after hit (ms) <NumberField value={shieldMs(settings.invulnMs)} min={MIN_INVULN_MS} max={30000} step={500} onCommit={(v) => saveSettings({ invulnMs: v })} />
           </label>
           <label>
             Hit confidence <NumberField value={settings.hitThreshold} min={0.2} max={0.7} step={0.05} onCommit={(v) => saveSettings({ hitThreshold: v })} />
@@ -198,7 +199,7 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
         </div>
       ) : (
         <p className="sub">
-          {settings.lives} lives, {settings.cooldownMs / 1000}s cooldown, {settings.invulnMs / 1000}s shield after a hit.
+          {settings.lives} lives, {settings.cooldownMs / 1000}s cooldown, {shieldMs(settings.invulnMs) / 1000}s shield after a hit.
         </p>
       )}
 
