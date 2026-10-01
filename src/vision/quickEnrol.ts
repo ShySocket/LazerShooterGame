@@ -1,6 +1,6 @@
 import { BODY_MODEL, type BodyProps, type OutfitSig, type Profile } from '../types';
 import { averageProps, bodyProportions, FrameSampler, outfitSignature } from './clothing';
-import { compactEmbedding, configurePass, FACE_MODEL, FACE_SAMPLES, faceYawDeg, isValidEmbedding, loadHuman, withHumanSession } from './human';
+import { compactEmbedding, configurePass, FACE_MIN_SAMPLES, FACE_MODEL, FACE_SAMPLES, faceYawDeg, isValidEmbedding, loadHuman, withHumanSession } from './human';
 import { SCAN_CALIB } from './calibration';
 import { pickOwnCrop } from './cropPick';
 import { buildDetections } from './tracker';
@@ -54,9 +54,10 @@ export async function enrolFromCanvases(canvases: HTMLCanvasElement[], fallbackO
       }
     });
   }
-  if (faces.length === 0) throw new Error('No face found. Get closer, make sure the face is lit and turned towards you.');
-  // Eight samples spread over the frames, as the scan keeps eight angles (repeats when fewer).
-  const face = Array.from({ length: FACE_SAMPLES }, (_, i) => faces[Math.floor((i * faces.length) / FACE_SAMPLES)]);
+  if (faces.length < FACE_MIN_SAMPLES) throw new Error(faces.length ? `Only ${faces.length} clear face frames. Get closer, make sure the face is lit and turned towards you, and Capture again.` : 'No face found. Get closer, make sure the face is lit and turned towards you.');
+  // Up to eight real samples spread over the frames; never a copy standing in for a missing one.
+  const step = faces.length / Math.min(FACE_SAMPLES, faces.length);
+  const face = Array.from({ length: Math.min(FACE_SAMPLES, faces.length) }, (_, i) => faces[Math.floor(i * step)]);
   // Without the hips in frame no outfit can be sampled: the caller's stand-in, else an empty one.
   const sampled = outfits[Math.floor(outfits.length / 2)];
   const outfit = sampled ? { front: sampled, back: sampled } : (fallbackOutfit ?? { front: { top: [] }, back: { top: [] } });

@@ -224,9 +224,14 @@ export interface FaceFrame {
   t: number;
 }
 
+/** How a face sample was taken: the pose held, the best try after the patience, or an extra look to reach the minimum. */
+export type SampleHow = 'held' | 'patience' | 'extra';
+
 export interface FaceStage {
   scan: ScanState;
-  samples: { embedding: number[]; yaw: number }[];
+  samples: { embedding: number[]; yaw: number; pitch: number; how: SampleHow }[];
+  /** Prompts skipped by the player: those angles stay missing, no template stands in for them. */
+  skipped: number;
   /** When the current prompt began, and no sample before `settleUntil` (a pause after each one). */
   promptStart: number;
   settleUntil: number;
@@ -234,7 +239,19 @@ export interface FaceStage {
   last: FaceFrame | null;
 }
 
-export const initialFaceStage = (t: number): FaceStage => ({ scan: initialScanState(), samples: [], promptStart: t, settleUntil: t + SCAN_CALIB.settleMs, best: null, last: null });
+export const initialFaceStage = (t: number): FaceStage => ({ scan: initialScanState(), samples: [], skipped: 0, promptStart: t, settleUntil: t + SCAN_CALIB.settleMs, best: null, last: null });
+
+/** Which prompt the stage is on: one per sample or skip; past the eight, extra looks. */
+export const promptIndex = (st: FaceStage): number => st.samples.length + st.skipped;
+export const hasFrontal = (st: FaceStage): boolean => st.samples.some((s) => Math.abs(s.yaw) <= SCAN_CALIB.straightYaw[1]);
+/** Extra looks are needed once all eight prompts are done but the scan holds too few real samples or none straight on. */
+export const needsExtra = (st: FaceStage, total = 8, min = 5): boolean => promptIndex(st) >= total && (st.samples.length < min || !hasFrontal(st));
+export function faceStageDone(st: FaceStage, total = 8, min = 5): boolean {
+  return promptIndex(st) >= total && st.samples.length >= min && hasFrontal(st);
+}
+/** The extra look: straight on until there is a frontal sample, then any small turn that differs from the last sample. */
+export const EXTRA_STRAIGHT: FacePrompt = { text: 'One more: look straight at the camera', yaw: SCAN_CALIB.straightYaw };
+export const EXTRA_ANY: FacePrompt = { text: 'One more: turn your head a little, either way' };
 
 export interface FaceStep {
   stage: FaceStage;
@@ -244,9 +261,9 @@ export interface FaceStep {
   skippable: boolean;
 }
 
-function accept(st: FaceStage, fr: FaceFrame, scan: ScanState, latch: Partial<Pick<ScanState, 'yawSign' | 'pitchSign'>>, t: number): FaceStep {
+function accept(st: FaceStage, fr: FaceFrame, scan: ScanState, latch: Partial<Pick<ScanState, 'yawSign' | 'pitchSign'>>, t: number, how: SampleHow): FaceStep {
   return {
-    stage: { ...st, scan: { ...scan, ...latch, hold: 0 }, samples: [...st.samples, { embedding: fr.embedding, yaw: fr.yaw }], promptStart: t, settleUntil: t + SCAN_CALIB.settleMs, best: null },
+    stage: { ...st, scan: { ...scan, ...latch, hold: 0 }, samples: [...st.samples, { embedding: fr.embedding, yaw: fr.yaw, pitch: fr.pitch, how }], promptStart: t, settleUntil: t + SCAN_CALIB.settleMs, best: null },
     hint: '',
     accepted: true,
     skippable: false,
@@ -265,24 +282,29 @@ export function faceStageStep(st: FaceStage, obs: FaceObs): FaceStep {
   const skippable = canSkipAngle(obs.t - st.promptStart);
   if (obs.t < st.settleUntil) return { stage: st, hint: '', accepted: false, skippable: false };
   if (obs.blocked || !obs.embedding.length) return { stage: st, hint: obs.blocked || 'Hold still and face the camera a little more.', accepted: false, skippable: skippable && Boolean(st.last) };
-  const prompt = promptFor(st.samples.length);
+  const extra = needsExtra(st);
+  const prompt = extra ? (hasFrontal(st) ? EXTRA_ANY : EXTRA_STRAIGHT) : promptFor(promptIndex(st));
   let judgement = judgePose(prompt, obs.yaw, obs.pitch, st.scan);
+  // An extra look must add something: a different angle than the last sample.
+  if (extra && judgement.ok && prompt === EXTRA_ANY && st.samples.length && Math.abs(obs.yaw - st.samples[st.samples.length - 1].yaw) < 5) judgement = { ok: false, reason: 'turn-more', latch: {} };
   if (judgement.ok && Math.abs(obs.yaw) > SCAN_CALIB.enrolYawMax) judgement = { ok: false, reason: 'turn-less', latch: {} };
   const fr: FaceFrame = { embedding: obs.embedding, yaw: obs.yaw, pitch: obs.pitch, progress: promptProgress(prompt, obs.yaw, obs.pitch, st.scan), t: obs.t };
   const best = Math.abs(obs.yaw) <= SCAN_CALIB.enrolYawMax && (!st.best || fr.progress > st.best.progress) ? fr : st.best;
   let stage: FaceStage = { ...st, last: fr, best };
   const held = holdStep(stage.scan, judgement);
-  if (held.ready) return accept(stage, fr, held.state, {}, obs.t);
+  if (held.ready) return accept(stage, fr, held.state, {}, obs.t, extra ? 'extra' : 'held');
   stage = { ...stage, scan: held.state };
-  if (best && patienceAccepts(prompt, best.progress, obs.t - stage.promptStart)) return accept(stage, best, stage.scan, patienceLatch(prompt, best.yaw, best.pitch, stage.scan), obs.t);
-  return { stage, hint: [hintFor(prompt, judgement.reason), angleNote(prompt, judgement.reason, obs.yaw, obs.pitch)].filter(Boolean).join(' '), accepted: false, skippable };
+  if (!extra && best && patienceAccepts(prompt, best.progress, obs.t - stage.promptStart)) return accept(stage, best, stage.scan, patienceLatch(prompt, best.yaw, best.pitch, stage.scan), obs.t, 'patience');
+  return { stage, hint: [hintFor(prompt, judgement.reason), angleNote(prompt, judgement.reason, obs.yaw, obs.pitch)].filter(Boolean).join(' '), accepted: false, skippable: skippable && !extra };
 }
 
-/** Skip this angle: the face's last frame stands in, if it was seen within the last 1.5 s (null otherwise). */
+/**
+ * Skip this angle: it stays missing (no template stands in for it) and the next prompt starts. Null
+ * during extra looks, which exist to reach the minimum of real samples.
+ */
 export function skipFaceAngle(st: FaceStage, t: number): FaceStep | null {
-  const fr = st.last;
-  if (!fr || t - fr.t > 1500) return null;
-  return accept(st, fr, st.scan, patienceLatch(promptFor(st.samples.length), fr.yaw, fr.pitch, st.scan), t);
+  if (needsExtra(st)) return null;
+  return { stage: { ...st, skipped: st.skipped + 1, scan: { ...st.scan, hold: 0 }, promptStart: t, settleUntil: t + SCAN_CALIB.settleMs, best: null }, hint: '', accepted: true, skippable: false };
 }
 
 // ---- Body stages ---------------------------------------------------------------------------------

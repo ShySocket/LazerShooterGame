@@ -47,6 +47,8 @@ export interface Profile {
   /** Which face descriptor produced the embeddings, so mismatched profiles are ignored rather than misread. */
   faceModel: string;
   face: number[][];
+  /** Head angle and how each scan sample was taken (the selfie samples, in order); absent on older scans. */
+  faceMeta?: { yaw: number; pitch: number; how: string }[];
   outfit: OutfitSides;
   body?: BodyProps | null;
   bodyModel?: string;

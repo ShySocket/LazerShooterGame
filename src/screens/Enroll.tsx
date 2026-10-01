@@ -34,6 +34,7 @@ export function Enroll({ code, pid, me, deep, onLeave }: Props) {
           bodyModel: BODY_MODEL,
           // Close selfie angles plus the samples taken from metres away during the body scan.
           face: [...(useDeep ? deep!.face : r.face), ...r.farFace],
+          ...(useDeep ? {} : { faceMeta: r.faceMeta }),
           outfit: r.outfit,
           // Use current-frame ratios; older saved scans may use a different geometry convention.
           body: r.body ?? null,

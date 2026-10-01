@@ -4,8 +4,8 @@ import type { BodyProps, OutfitSig } from '../types';
 import { useCamera, type Facing } from '../hooks/useCamera';
 import { useVisionLoop, type VisionFrame } from '../hooks/useVisionLoop';
 import { useHumanStatus } from '../hooks/useHumanStatus';
-import { compactEmbedding, FACE_SAMPLES, faceYawDeg, MAX_YAW_DEG, MIN_FACE_PX, isValidEmbedding } from '../vision/human';
-import { bodySampleDecision, bystanderDecision, faceBigEnough, faceGate, faceStageStep, farFacesDone, gateHint, initialFaceStage, promptFor, SCAN_CALIB, settleDone, SKIP_ANGLE_TEXT, skipFaceAngle, smallRoomHint, type FaceStage, type FaceStep } from '../vision/scan';
+import { compactEmbedding, FACE_MIN_SAMPLES, FACE_SAMPLES, faceYawDeg, MAX_YAW_DEG, MIN_FACE_PX, isValidEmbedding } from '../vision/human';
+import { bodySampleDecision, bystanderDecision, EXTRA_ANY, EXTRA_STRAIGHT, faceBigEnough, faceGate, faceStageDone, faceStageStep, farFacesDone, gateHint, hasFrontal, initialFaceStage, needsExtra, promptFor, promptIndex, SCAN_CALIB, settleDone, SKIP_ANGLE_TEXT, skipFaceAngle, smallRoomHint, type FaceStage, type FaceStep } from '../vision/scan';
 import { useWakeLock } from '../hooks/useWakeLock';
 import { saveError } from '../ui/advice';
 import { averageOutfits, averageProps, bodyProportions, FrameSampler, outfitRegions, outfitSignature } from '../vision/clothing';
@@ -34,6 +34,8 @@ const BODY_SAMPLE_INTERVAL_MS = 150;
 
 export interface ScanResult {
   face: number[][];
+  /** For each face sample: its head angle and how it was taken (skipped angles have no sample). */
+  faceMeta: { yaw: number; pitch: number; how: string }[];
   /** Face samples taken during the body scan, i.e. from 2 to 3 m: what the game sees in a round. */
   farFace: number[][];
   body: BodyProps | null;
@@ -144,6 +146,7 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
   const finish = (back: OutfitSig | null) =>
     submit({
       face: faces.current,
+      faceMeta: faceStage.current.samples.map((x) => ({ yaw: Math.round(x.yaw), pitch: Math.round(x.pitch), how: x.how })),
       farFace: farFaces.current,
       body: averageProps(props.current),
       outfit: outfit && front.current && back ? { front: front.current, back } : null,
@@ -226,10 +229,10 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
     faces.current = r.stage.samples.map((x) => x.embedding);
     sfx.tick();
     setHint('');
-    if (faces.current.length >= FACE_SAMPLES) {
+    if (faceStageDone(r.stage, FACE_SAMPLES, FACE_MIN_SAMPLES)) {
       if (body) go('bodyMode');
       else void finish(null);
-    } else setFaceIdx(faces.current.length);
+    } else setFaceIdx(promptIndex(r.stage));
   };
 
   /** Skip this angle: the face's last frame stands in for it. */
@@ -267,7 +270,9 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
       }
       // The embedding, and the head angle, come from a square crop, the same way the game reads faces (see
       // ZoomPass): the full-frame pass only finds boxes, so it cannot judge the angle.
-      const crops = await zoom.current.run(human, context.frame, faceRegion(toNBox(detected.boxRaw), res.width / res.height));
+      // Detection runs on a downscaled copy, but the embedding comes from the full-resolution camera
+      // image, as in a round (frameOps.ts crops the full frame): the same pixels for scan and shot.
+      const crops = await zoom.current.run(human, v, faceRegion(toNBox(detected.boxRaw), res.width / res.height));
       if (!isCurrent()) return;
       // A magnified crop can include a neighbour. Never take an arbitrary first face.
       const cropGate = faceGate({ faces: 1, cropCount: crops.length, cropOverlap: crops.length === 1 ? iou(crops[0].box, toNBox(detected.boxRaw)) : 0, score: crops[0]?.face.score });
@@ -402,7 +407,8 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
   const copy = ((): { heading: string; prompt: string } => {
     switch (stage) {
       case 'face':
-        return { heading: `Face ${faceIdx + 1} of ${FACE_SAMPLES}`, prompt: promptFor(faceIdx).text };
+        if (needsExtra(faceStage.current, FACE_SAMPLES, FACE_MIN_SAMPLES)) return { heading: 'One more look', prompt: (hasFrontal(faceStage.current) ? EXTRA_ANY : EXTRA_STRAIGHT).text };
+        return { heading: `Face ${Math.min(faceIdx, FACE_SAMPLES - 1) + 1} of ${FACE_SAMPLES}`, prompt: promptFor(faceIdx).text };
       case 'bodyMode':
         return { heading: 'Body scan', prompt: 'The scan needs your shoulders and hips in frame; head to feet is best. Who is holding the phone?' };
       case 'bodyFront':

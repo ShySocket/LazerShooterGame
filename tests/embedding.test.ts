@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { compactEmbedding, FACE_MODEL, FACE_SAMPLES, faceSimilarity, faceYawDeg, isCurrentFaceScan, isValidEmbedding, unitEmbedding, unitSimilarity } from '../src/vision/embedding';
+import { FACE_MIN_SAMPLES, compactEmbedding, FACE_MODEL, FACE_SAMPLES, faceSimilarity, faceYawDeg, isCurrentFaceScan, isValidEmbedding, unitEmbedding, unitSimilarity } from '../src/vision/embedding';
 
 test('face matching rejects missing, corrupt, and incompatible descriptors', () => {
   assert.equal(faceSimilarity([1, 0], [1, 0, 0]), 0);
@@ -34,7 +34,9 @@ test('a stored scan stands in for a face scan only when complete, current, and i
   assert.equal(isCurrentFaceScan(null), false);
   assert.equal(isCurrentFaceScan(undefined), false);
   assert.equal(isCurrentFaceScan({ faceModel: 'facer-es', face: full }), false);
-  assert.equal(isCurrentFaceScan({ faceModel: FACE_MODEL, face: full.slice(1) }), false);
+  // A scan may hold fewer than FACE_SAMPLES (a skipped angle stays missing), but never fewer than the minimum.
+  assert.equal(isCurrentFaceScan({ faceModel: FACE_MODEL, face: full.slice(0, FACE_MIN_SAMPLES) }), true);
+  assert.equal(isCurrentFaceScan({ faceModel: FACE_MODEL, face: full.slice(0, FACE_MIN_SAMPLES - 1) }), false);
   assert.equal(isCurrentFaceScan({ faceModel: FACE_MODEL, face: [...full.slice(1), new Array(512).fill(0)] }), false);
   assert.equal(isCurrentFaceScan({ faceModel: FACE_MODEL, face: 'corrupt' }), false);
 });

@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-10-01.3';
+export const CALIBRATION_VERSION = '2026-10-01.4';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /**
@@ -54,7 +54,7 @@ export const MAX_YAW_DEG = 45;
  * on the first turned sample; the same for chin up and down. The person scanned is the one face in
  * frame (several faces give no sample); face similarity is not used during the scan, because with
  * GhostNet the same person can score below other people at other angles (realcheck scan, 2026-10-01).
- * Enrolment keeps samples up to `enrolYawMax`; matching in a round still uses MAX_YAW_DEG.
+ * Enrolment keeps samples only up to `enrolYawMax`, the same MAX_YAW_DEG a round matches with.
  */
 export const SCAN_CALIB = {
   straightYaw: [0, 15] as [number, number],
@@ -67,7 +67,8 @@ export const SCAN_CALIB = {
   minFaceScore: 0.7,
   /** A magnified crop must overlap the detected face box this much (IoU) to be the same face. */
   minCropOverlap: 0.25,
-  enrolYawMax: 60,
+  /** Templates beyond what a round ever matches (MAX_YAW_DEG) would only add chances for a look-alike to match. */
+  enrolYawMax: MAX_YAW_DEG,
   /**
    * No prompt may dead-end. After `promptPatienceMs` on one prompt the best frame seen counts if it
    * went at least `patienceFraction` of the way to the band in the right direction (phones read a
