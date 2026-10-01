@@ -22,6 +22,11 @@ export interface ProbeFace {
   pitch: number;
   /** Unit embedding from the zoom crop (the only embedding source in the game), empty when none. */
   embedding: number[];
+  /**
+   * Wall time of this face's zoom crop pass (square crop drawn, then face detector + mesh + the
+   * embedding model on it, results read back), in ms: what one crop costs the game per frame.
+   */
+  cropMs: number;
 }
 
 export interface ProbeImage {
@@ -40,7 +45,8 @@ function probeHuman(): Promise<Human> {
   if (!new URL(location.href).searchParams.get('face')) return loadHuman();
   candidateLoad ??= (async () => {
     const h = getHuman();
-    // No warmup: Human's warmup pass crashes with some candidate models, and timing is not measured here.
+    // No warmup: Human's warmup pass crashes with some candidate models. The first crops of a page
+    // therefore include shader compilation; scripts/realcheck.ts reports the median crop time.
     await h.load(humanConfig);
     return h;
   })();
@@ -78,7 +84,9 @@ async function probeCanvas(canvas: HTMLCanvasElement): Promise<ProbeImage> {
     const faces: ProbeFace[] = [];
     for (const f of res.face) {
       const fb = toNBox(f.boxRaw);
+      const tc = performance.now();
       const crops = await zoom.run(human, canvas, faceRegion(fb, canvas.width / canvas.height, 6));
+      const cropMs = performance.now() - tc;
       const own = crops
         .map((c) => ({ c, dist: Math.hypot(c.box[0] + c.box[2] / 2 - fb[0] - fb[2] / 2, c.box[1] + c.box[3] / 2 - fb[1] - fb[3] / 2) }))
         .filter((x) => x.dist < fb[3])
@@ -93,6 +101,7 @@ async function probeCanvas(canvas: HTMLCanvasElement): Promise<ProbeImage> {
         yawSigned: typeof yawRad === 'number' ? (yawRad * 180) / Math.PI : NaN,
         pitch: typeof pitch === 'number' ? (pitch * 180) / Math.PI : NaN,
         embedding: own && isValidEmbedding(own.face.embedding) ? compactEmbedding(own.face.embedding) : [],
+        cropMs,
       });
     }
     return { width: canvas.width, height: canvas.height, faces, bodies: res.body.length, ms: performance.now() - t0 };
@@ -167,7 +176,11 @@ export function installProbe(): void {
     ready: async () => {
       await probeHuman();
       const face = getHuman().models.stats().modelStats.filter((m) => m.name.startsWith('insightface') && m.loaded).map((m) => m.name);
-      return `${getHuman().version} ${face.join(',')}`;
+      // Where the crop timings come from: the TF.js backend and the GPU (or software renderer) behind it.
+      const gl = document.createElement('canvas').getContext('webgl');
+      const info = gl?.getExtension('WEBGL_debug_renderer_info');
+      const gpu = gl && info ? String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL)) : 'no webgl';
+      return `${getHuman().version} ${face.join(',')} on ${getHuman().tf.getBackend()} (${gpu})`;
     },
     probeImage,
     probeVideo,

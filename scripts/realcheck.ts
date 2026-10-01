@@ -8,6 +8,14 @@
  * Stage `faces`: several photos per person. Each photo can show bystanders, so the person's own face
  * is the one that recurs across their photos; every other face is a stranger. Reports same-person
  * and different-person centred similarity against FACE_CALIB. Results: .rubric/realcheck/.
+ * The faces and clips summaries also record msPerCrop, the median time of one face's zoom crop pass
+ * (crop + face detector + mesh + embedding model) in this headless Chrome, for comparing models.
+ *
+ * Environment (all optional): LZ_FIXTURES, the fixtures directory holding real/ and models/ (default
+ * fixtures/, e.g. the main checkout's from a worktree); LZ_REALCHECK_OUT, the results directory
+ * (default .rubric/realcheck; --face=<model> writes to its <model>/ subdirectory); LZ_REALCHECK_PORT,
+ * the dev server port (default 5198; a server already listening there is reused, so give a worktree
+ * its own port).
  */
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -21,11 +29,13 @@ import { FACE_SAMPLES } from '../src/vision/embedding.ts';
 import { formatBound, wrongHitBounds } from '../src/feedback/stats.ts';
 
 const ROOT = resolve(import.meta.dirname, '..');
-const FIX = join(ROOT, 'fixtures', 'real');
-const OUT = join(ROOT, '.rubric', 'realcheck', ...(process.argv.find((a) => a.startsWith('--face=')) ? [process.argv.find((a) => a.startsWith('--face='))!.slice(7)] : []));
-const PORT = 5198;
+/** The fixtures directory: real/ (photos, clips, extracted frames) and models/ (candidate face models). */
+const FIXTURES = process.env.LZ_FIXTURES ? resolve(process.env.LZ_FIXTURES) : join(ROOT, 'fixtures');
+const FIX = join(FIXTURES, 'real');
 /** --face=<model>: a candidate face model from fixtures/models instead of the shipped one; results go to .rubric/realcheck/<model>/. */
 const MODEL = process.argv.find((a) => a.startsWith('--face='))?.slice(7) ?? '';
+const OUT = join(process.env.LZ_REALCHECK_OUT ? resolve(process.env.LZ_REALCHECK_OUT) : join(ROOT, '.rubric', 'realcheck'), MODEL);
+const PORT = Number(process.env.LZ_REALCHECK_PORT || 5198);
 const stages = process.argv.slice(2).filter((a) => !a.startsWith('-'));
 const want = (s: string) => stages.length === 0 || stages.includes(s);
 
@@ -38,13 +48,13 @@ async function startServer(): Promise<ChildProcess | null> {
   return child;
 }
 
-async function openProbe(): Promise<Page> {
+async function openProbe(): Promise<{ page: Page; version: string }> {
   const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
   const page = await browser.newPage();
   // Fixtures stay out of public/: serve them to the page from disk.
   await page.route('**/__fixtures/**', (route) => {
     const rel = decodeURIComponent(new URL(route.request().url()).pathname.replace(/^\/__fixtures\//, ''));
-    const base = rel.startsWith('models/') ? join(ROOT, 'fixtures') : FIX;
+    const base = rel.startsWith('models/') ? FIXTURES : FIX;
     const file = join(base, rel);
     if (!file.startsWith(base) || !existsSync(file)) return route.fulfill({ status: 404 });
     return route.fulfill({ body: readFileSync(file), contentType: file.endsWith('.png') ? 'image/png' : file.endsWith('.mp4') ? 'video/mp4' : file.endsWith('.json') ? 'application/json' : file.endsWith('.bin') ? 'application/octet-stream' : 'image/jpeg' });
@@ -54,7 +64,7 @@ async function openProbe(): Promise<Page> {
   await page.waitForFunction(() => '__lzReal' in window, null, { timeout: 60_000 });
   const version = await page.evaluate(() => (window as unknown as { __lzReal: { ready(): Promise<string> } }).__lzReal.ready());
   console.log('models ready, Human', version);
-  return page;
+  return { page, version };
 }
 
 /**
@@ -107,6 +117,11 @@ const pct = (xs: number[], p: number) => {
 };
 const f2 = (x: number) => (Number.isFinite(x) ? x.toFixed(2) : '  - ');
 const share = (xs: number[], pred: (x: number) => boolean) => (xs.length ? Math.round((100 * xs.filter(pred).length) / xs.length) : 0);
+/**
+ * Zoom crop cost over every face probed: the median (a candidate model loads without warmup, so a
+ * page's first crops include shader compilation) and the 90th percentile, in ms.
+ */
+const cropCost = (ms: number[]) => ({ msPerCrop: Math.round(10 * pct(ms, 50)) / 10, msPerCropP90: Math.round(10 * pct(ms, 90)) / 10, crops: ms.length });
 
 /**
  * Which face in each photo is the person: the one most similar to faces in their other photos.
@@ -154,6 +169,7 @@ async function faces(page: Page) {
   const people = readdirSync(dir).filter((d) => !d.startsWith('.')).sort();
   const byPerson = new Map<string, Face[][]>();
   const raw: Record<string, ProbeImage> = {};
+  const cropMs: number[] = [];
   let ms = 0;
   let n = 0;
   for (const person of people) {
@@ -161,6 +177,7 @@ async function faces(page: Page) {
     for (const file of readdirSync(join(dir, person)).filter((f) => f.endsWith('.jpg')).sort()) {
       const r = await probe(page, `/__fixtures/stills/${person}/${file}`);
       raw[`${person}/${file}`] = r;
+      cropMs.push(...r.faces.map((f) => f.cropMs));
       ms += r.ms;
       n++;
       photos.push(
@@ -218,6 +235,7 @@ async function faces(page: Page) {
   const summary = {
     photos: n,
     msPerPhoto: Math.round(ms / Math.max(1, n)),
+    ...cropCost(cropMs),
     people: people.length,
     ownFaces: own.length,
     strangerFaces: strangers.length,
@@ -229,7 +247,7 @@ async function faces(page: Page) {
   };
   writeFileSync(join(OUT, 'faces.json'), JSON.stringify({ summary, own: own.map(({ embedding: _e, ...f }) => f), raw: Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, { ...v, faces: v.faces.map(({ embedding: _e, ...f }) => f) }])) }, null, 1));
   writeFileSync(join(OUT, 'embeddings.json'), JSON.stringify({ own, strangers }));
-  console.log(`\nfaces: ${n} photos of ${people.length} people, ${Math.round(ms / Math.max(1, n))} ms each; ${own.length} own faces, ${strangers.length} strangers`);
+  console.log(`\nfaces: ${n} photos of ${people.length} people, ${Math.round(ms / Math.max(1, n))} ms each, zoom crop ${summary.msPerCrop} ms (p90 ${summary.msPerCropP90}, ${summary.crops} crops); ${own.length} own faces, ${strangers.length} strangers`);
   console.log(`same person   n=${genuine.length}  p10 ${f2(summary.genuine.p10)}  p50 ${f2(summary.genuine.p50)}  p90 ${f2(summary.genuine.p90)}  ≥accept ${summary.genuine.aboveAccept}%  <reject ${summary.genuine.belowReject}%`);
   console.log(`different     n=${impostor.length}  p50 ${f2(summary.impostor.p50)}  p90 ${f2(summary.impostor.p90)}  p99 ${f2(summary.impostor.p99)}  max ${f2(summary.impostor.max)}  ≥reject ${summary.impostor.aboveReject}%  ≥accept ${summary.impostor.aboveAccept}`);
   console.log(`identify      top-1 ${summary.identify.top1Pct}%  accepted ${summary.identify.acceptedPct}%  wrong accepted ${wrongAccepted}  strangers accepted ${strangerAccepted}`);
@@ -257,8 +275,10 @@ async function clips(page: Page) {
     return null;
   }
   const people: { name: string; profile: number[][]; live: { t: number; px: number; yaw: number; e: number[] }[] }[] = [];
+  const cropMs: number[] = [];
   for (const file of names) {
     const frames = await probeVideo(page, `/__fixtures/clips/${file}`, 5);
+    for (const f of frames) cropMs.push(...f.faces.map((x) => x.cropMs));
     // Follow each face by position (people in an interview stay put): one identity per seat.
     type Seat = { cx: number; cy: number; faces: { t: number; face: ProbeImage['faces'][number] }[] };
     const seats: Seat[] = [];
@@ -326,6 +346,7 @@ async function clips(page: Page) {
     }
   }
   const summary = {
+    ...cropCost(cropMs),
     people: people.map((p) => ({ name: p.name, profile: p.profile.length, live: p.live.length })),
     genuine: { n: genuine.length, p5: pct(genuine, 5), p10: pct(genuine, 10), p50: pct(genuine, 50), aboveAccept: share(genuine, (x) => x >= FACE_CALIB.accept) },
     impostor: { n: impostor.length, p50: pct(impostor, 50), p99: pct(impostor, 99), max: pct(impostor, 100), aboveAccept: impostor.filter((x) => x >= FACE_CALIB.accept).length },
@@ -340,6 +361,7 @@ async function clips(page: Page) {
   console.log(`other player  n=${impostor.length}  p50 ${f2(summary.impostor.p50)}  p99 ${f2(summary.impostor.p99)}  max ${f2(summary.impostor.max)}  ≥accept ${summary.impostor.aboveAccept}`);
   console.log(`strangers     n=${strangerFaces}  p99 ${f2(summary.strangers.p99)}  max ${f2(summary.strangers.max)}  ≥accept ${strangerAccepted}`);
   console.log(`identify      top-1 ${summary.top1Pct}%  margin p5 ${f2(summary.margin.p5)} p50 ${f2(summary.margin.p50)}`);
+  console.log(`zoom crop     ${summary.msPerCrop} ms median, p90 ${summary.msPerCropP90} ms (${summary.crops} crops)`);
   writeFileSync(join(OUT, 'clips.json'), JSON.stringify({ summary, people }, null, 0));
   return summary;
 }
@@ -499,8 +521,8 @@ async function main() {
   if (!existsSync(FIX)) throw new Error('no fixtures: run python3 scripts/fetch-fixtures.py first');
   mkdirSync(OUT, { recursive: true });
   const server = await startServer();
-  const page = await openProbe();
-  const result: Record<string, unknown> = { at: new Date().toISOString() };
+  const { page, version } = await openProbe();
+  const result: Record<string, unknown> = { at: new Date().toISOString(), models: version };
   try {
     if (want('faces')) result.faces = await faces(page);
     if (want('clips')) result.clips = await clips(page);
