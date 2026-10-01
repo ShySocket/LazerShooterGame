@@ -43,6 +43,10 @@ Real-phone evidence: `node scripts/validate.mjs recordings/<date>` exits 0, with
 - [ ] **Should**: The eliminated-player race is closed: a shot fired just before the last elimination cannot land after the round is decided (`evaluateHit` refuses hits once at most one enrolled player is alive; verify by having two players fire at each other within the same second at 1 life each; exactly one is eliminated). <!-- R1.12 auto:test:last elimination -->
 - [ ] **Must**: On real photos of real people (standing groups, `npm run realcheck -- shoot`, 18 runs of 12 shots), the real models and pipeline never hit or lock the wrong person. <!-- R1.13 auto:realcheck -->
 - [ ] **Must**: A non-player whose face reads as much like a player as real different faces do (0.66) but who wears other clothes is never hit and never wears the player's name (sim `lookalike-stranger`, outfit veto). <!-- R1.14 auto:test:whose face reads like a player -->
+- [ ] **Must**: An identity is re-earned after every uncertain transition (crossing, reclaim after a gap, a height or centre jump, an ambiguous face, a face read that names somebody else): two fresh face samples or two clothing samples on that body before it may lock or hit again, and a burst never lands on a track that went through one after the tap (sim `crossing-lookalike-faces`, `vetoed-player`, `lookalike-stranger-slow`: 0 wrong, 0 wrong-lock frames over 100 seeds). <!-- R1.15 auto:test:identity does not ride across a crossing -->
+- [ ] **Must**: A face names a player at the normal bar only while that player's own outfit backs it on this body (a matching clothing sample within 3 s, not during an overlap); otherwise, and for a candidate with no outfit on file, the face must clear `FACE_ONLY_CALIB`. A look-alike stranger whose torso cannot be read is never named. <!-- R1.16 auto:test:a look-alike stranger whose torso cannot be read -->
+- [ ] **Must**: A frame at the pose model's body cap (`BODY_CAP` = 6) may be missing somebody, so a hit then needs this body's own face read this frame, and the HUD says "Too many people in view" (sim `crowd-seven`: 0 wrong, 0 wrong-lock frames). <!-- R1.17 auto:test:a crowd past the detector body cap -->
+- [ ] **Must**: The real-phone session (`docs/phone-session.md`, the matrix) shows zero wrong hits, wrong-player and unknown-person counted apart, with the Clopper-Pearson bound printed by `npm run session:report`; at least 90 % legitimate-shot success (rejections in the denominator) in the conditions declared supported; p95 lock acquisition under 500 ms. Any wrong hit blocks a bigger round until its cause is understood. <!-- R1.18 phone -->
 
 ## 2. Following a person (track continuity)
 
@@ -93,6 +97,7 @@ Face carries the identity up close and face-on; outfit carries it at range and f
 - [ ] **Should**: Range mode says why FIRE is disabled until a target is chosen. <!-- R4.11 manual -->
 - [ ] **Must**: A hit the server has not confirmed within 4 s is reported as "UNCONFIRMED" (it counts only if it reaches the server, in its own round, once) and its record and photo are closed, never left hanging behind a LOCKING banner; a write the SDK dropped is "NO CONNECTION, SHOT LOST". <!-- R4.12 auto:test:a hit that cannot reach -->
 - [ ] **Must**: A slow or throttled phone (frame period over 250 ms) sheds the extra face crop and samples clothing every other frame, keeping the crosshair target's crop, so the period stops growing; the shot rules are untouched and the slow-phone sim keeps its bound. <!-- R4.13 auto:test:work shedding -->
+- [ ] **Should**: Every shot is reconstructable from its sample: calibration version, per-body vetoes, clothing age, unconfirmed/reacquiring, overlap and crowd flags, whether this frame's face was a fresh read, the observed hit region and bodies per frame; the offline replay applies the same refusals. <!-- R4.14 auto:test:a recorded instant hit names nobody -->
 
 ## 5. Distance and pose table (what to hand players as expectations)
 
@@ -136,6 +141,8 @@ The demo is everyone against everyone: 3 lives, no respawn, last standing wins. 
 - [ ] **Should**: When neither the share sheet nor the clipboard works, the lobby shows the code to read out instead of doing nothing. <!-- R6.20 auto:test:share fallback -->
 - [ ] **Should**: The Hit confidence field stops at 0.7 with a note, so a host cannot make every shot UNCLEAR for a round; the sound pill says the iPhone mute switch keeps sounds off. <!-- R6.21 manual -->
 - [ ] **Must**: A phone that silently lost its network is noticed within a minute through a 20 s heartbeat, not only when Firebase's own socket timeout fires; host migration and the forfeit use the same rule, and the HUD counts the forfeit down by name. <!-- R6.22 auto:test:heartbeat presence -->
+- [ ] **Must**: A hit lands at most once and only in the round it was fired in: one transaction over the room checks status playing and the same `startAt`, records `hits/{shotId}`, and a resent, doubled or late-queued write is never applied again or in the next round. <!-- R6.23 auto:test:duplicate shot id applies once -->
+- [ ] **Must**: A hit write still queued after the 4 s deadline (shown as UNCONFIRMED) is refused inside the transaction if the round has ended by the time it reaches the server. <!-- R6.24 auto:test:a hit after the round ended is refused inside the transaction -->
 
 ## 7. Using the app without bugs (robustness)
 
@@ -167,6 +174,8 @@ The demo is everyone against everyone: 3 lives, no respawn, last standing wins. 
 - [ ] **Should**: With several bodies in view, the spare face crop goes to whoever has no face sample yet, then to the oldest face, instead of a blind round-robin; the live-enrolment log and the range-test log are capped. <!-- R7.26 auto:test:crop priority -->
 - [ ] **Should**: A whole round with the real models on a real clip as the camera: the person in frame is hit, a real distractor never is, everyone reaches Results. <!-- R7.27 e2e:real-vision-round -->
 - [ ] **Should**: Practice mode works on one phone with the real models: a target captured with the rear camera, the verdict is right, the shot is logged with its label. <!-- R7.28 e2e:practice-solo -->
+- [ ] **Should**: Range-test shots (practice, or debug > range in a real room) carry their set-up (distance, view, light, scenario) in the label, keep their crosshair photo on the phone only, and are reviewed on Results (photo, verdict, aim, set-up, filters, delete); the review card never asks about them. <!-- R7.29 auto:test:practice shots keep their photos -->
+- [ ] **Should**: `npm run session:report` breaks labelled shots down by condition, target, phone and build with legit-shot success (rejections in the denominator), resolve and lock p50/p95, and exact one-sided 95 % Clopper-Pearson bounds per shot and per accepted hit, practice and review answers never pooled, with a held-out split. <!-- R7.30 auto:test:the practice totals count every outcome -->
 
 ## 8. Enrolment scan (face angles, body scans)
 

@@ -2,18 +2,77 @@
 
 Everything in `docs/tracking-rubric.md` that a machine can check is green (`npm run rubric`: every Must that needs no phone passes). What is left needs real phones in the real venue. One afternoon with two or three friends covers it. This page lists exactly what to do, which rubric ids each recording settles, and how to turn the results into a score.
 
-## The short version (2026-09-26): one phone, 15 minutes, nothing to write down
+## The short version (2026-10-01): one phone, 15 minutes, nothing to write down
 
-Already checked without a phone (`npm run realcheck`, `tests/e2e/realvision.spec.ts`, `tests/e2e/practice.spec.ts`): the real models on photos of 28 real people and clips of 7, a real group-photo shooting check (0 wrong hits), a whole round and a practice session with a real clip as the camera, and the new GhostNet face model and outfit veto. What only a phone can tell is how it behaves in your hands, in your light, at your distances. The easiest way to find out:
+Already checked without a phone (`npm run realcheck`, the e2e suite, 100 simulated seeds per scenario): the real models on photos of 28 real people and clips of 7, a real group-photo shooting check (0 wrong hits in 216 shots, which bounds the rate below 1.38 % and no lower), whole rounds and practice sessions with a real clip as the camera. What only a phone can tell is how it behaves in your hands, in your light, at your distances.
 
-1. On your phone open https://lazer-shooter-game.vercel.app/?practice (or tap **Practice alone** on the home screen).
-2. Do your scan, then **Add a target**: point the back camera at a friend (or a TV playing a video of a person, or a printed photo) and tap **Capture**. Add a second target if someone else is around.
-3. **Start game**, choose **Aim at**, and work through **What to try** (face-on at 2, 4 and 6 m, their back, walking across, two targets crossing, *Not a player* on someone else, a mirror, dim light). A couple of shots each.
-4. That's it. Every shot is logged with who you said you aimed at. Run `npx firebase-tools login` once on the Mac, and from then on `npm run feedback:pull` (or Claude) reads the log and lists every wrong hit and every miss by cause.
+1. On your phone open https://lazer-shooter-game.vercel.app/?practice (or tap **Practice alone**).
+2. Do your scan, then **Add a target**: point the back camera at a friend, hips in view, and tap **Capture** (a TV or a photo works too, but only a person shows the outfit). Add a second target if someone else is around.
+3. **Start game**. FIRE unlocks after the countdown. Choose **Aim at**, then tap the chips that describe the shot: **Target at** 1.5 / 3 / 5 / 8 m, **Seen from** front / side / back, **Light** normal / dim / backlit, **Doing** still / walking / crossing / occlusion / pan / look-alike / edge. A few shots per setting.
+4. Tap **end round**. **Practice review** on the results screen shows every shot's frame with the crosshair, the verdict and what you set; tap **Wrong** first. The photos stay on the phone; only the numbers were uploaded.
+5. On the Mac, once: `npx firebase-tools login`. Then `npm run session:report` prints the tables (or ask Claude to run it).
 
 Note anything that felt wrong in words too (a hint that did not help, a verdict that surprised you): the log has the numbers, not the feel.
 
-The full protocol below is for the venue day with several phones and the rubric.
+## The session matrix (GPT-6 Astra review, 2026-10-01)
+
+The question this session answers: when good face evidence disappears, does the game still know who it is looking at, or does it carry a guess forward? The rule it is held to: when the evidence cannot tell the target apart, no hit.
+
+**People and phones.** 4 to 6 people, at least one iPhone and one Android, and one person who is not playing (in clothes like a player's). Everyone joins one room on their own phone and does the **normal scan** (not practice capture). Start a round. The shooter taps **debug**, then **range**: shots now deal no damage, and each is logged with its answer and set-up exactly as in practice. Rotate who shoots and whose phone it is, so a phone and a target are never confused with each other.
+
+**What to shoot.** About 10 taps per cell, choosing **Aim at** and the chips before each block. The labelled answer is who was under the dot at the tap; when you cannot tell, pick the other person rather than guessing, and say so in the notes.
+
+| block | cells | chips |
+| --- | --- | --- |
+| Range | each player at 1.5, 3, 5 and 8 m, front, side and back | distance, view, light normal, still |
+| Ambiguity | two players in similar tops side by side; the non-player in a matching top | look-alike (Aim at: the player, or *Not a player*) |
+| Motion | two players crossing; one walking in front of the other; the target leaving the frame and coming back; a fast pan across two people | crossing, occlusion, walking, pan |
+| Lighting | 3 m front: normal room light, half the lights off, against a bright window | light normal / dim / backlit |
+| Association | two players overlapping; the dot on the edge of a body next to another | crossing, edge |
+| Crowd | seven or more people in view (spectators count): the HUD should say "Too many people in view" | still |
+
+The sample records each body's box, so face and torso size in pixels can be read back per shot alongside the distance.
+
+**Reading it back.**
+
+```bash
+npm run session:report
+```
+
+It prints, per condition, target, phone and build: right hits, hits on another player, hits on a non-player (counted apart), rejected legitimate shots, legit-shot success with the rejections in the denominator, resolve and lock-acquisition p50/p95, and the one-sided 95 % Clopper-Pearson upper bound on the wrong-hit rate per shot and per accepted hit. It exits 1 when any wrong hit is in the log. Look at every wrong hit's photo in **Practice review** on the shooter's phone before it is gone (the next round clears it).
+
+**Development and evaluation.** Tune nothing on the session you judge with. The first session is the development set; after any threshold change, run a second session with at least one new person who enrols normally and the non-player, and report it held out:
+
+```bash
+npm run session:report -- --eval 2026-10-08
+```
+
+(the date of the held-out session; a round key or key prefix works too).
+
+**Acceptance targets** (proposed by the review, not claims about today's build):
+
+- zero observed wrong hits, wrong-player and unknown-person both; any wrong hit blocks a bigger round until its cause is found and fixed, and the one unexplained wrong hit from the 2026-09-26 real-photo runs stays open until a traced run explains it;
+- at least 90 % legitimate-shot success in the conditions declared supported below;
+- p95 lock acquisition under 500 ms.
+
+**Supported conditions** (fill from the held-out report; until then nothing is declared supported):
+
+| condition | legit success | wrong hits / shots (95 % bound) | p95 lock | supported? |
+| --- | --- | --- | --- | --- |
+| 1.5 m front | | | | |
+| 3 m front | | | | |
+| 3 m back | | | | |
+| 5 m front | | | | |
+| 8 m any | | | | |
+| dim | | | | |
+| backlit | | | | |
+| crossing / overlap | | | | |
+
+**The week-one decision.** If ordinary nearby play rejects most legitimate shots, the phone is missing information, and lowering thresholds cannot create it. The fixes are a distinct wearable identifier per player (a coloured bib or armband the outfit scan reads) or narrower supported conditions (for example, face-on within 5 m), not a looser hit rule.
+
+**Sustained play.** A 20-minute round on the slowest iPhone and the slowest Android. Compare the first and last five minutes: frame period (the debug fps), lock acquisition and rejection rate (every shot sample carries its time into the round, `shot.roundMs`, and its frame period), battery lost, and whether the phone got hot enough to throttle.
+
+**Multiplayer integrity.** During a round: toggle airplane mode for 10 s right after a hit (the HUD may say UNCONFIRMED; the target must lose at most one life, and never in the next round); two shooters fire at the same target within a second (one life lost); background and resume the app (the first FIRE afterwards must not land on an old frame).
 
 ## Scan check first (settles R8.01, R8.06, R8.13)
 
