@@ -11,7 +11,8 @@ import type { NBox } from '../vision/geometry';
  */
 export const SAMPLE_VERSION = 2;
 // v2 (2026-10-01, Astra review): app.calibration; per-track vetoes, clothing age, uncertainty, overlap,
-// crowd and fresh-face flags; per-frame body count; practice labels carry the shot's conditions.
+// crowd and fresh-face flags, and whose outfit backed each face read; per-frame body count; practice
+// labels carry the shot's conditions and whether they came from ?practice or a real room's range test.
 
 /** Anonymised player id: `p<n>` for the n-th enrolled id in sorted order, or `unknown` for the stranger baseline. */
 export type Pid = string;
@@ -27,8 +28,13 @@ export interface OutfitMatchSummary {
 
 /** Raw evidence a track received in one frame, per candidate, before calibration turned it into belief. */
 export interface EvidenceSummary {
-  /** Centred cosine of the frame's face embedding and of the track's running mean against each gallery. */
-  face?: { sims: Record<Pid, number>; meanSims: Record<Pid, number>; quality: number };
+  /**
+   * Centred cosine of the frame's face embedding and of the track's running mean against each gallery.
+   * v2 `corroborated`: the players whose own recent outfit backed the face on this body (scoring.ts
+   * outfitSupports), judged at FACE_CALIB; everyone else at FACE_ONLY_CALIB. Missing means nobody (the
+   * database drops empty arrays).
+   */
+  face?: { sims: Record<Pid, number>; meanSims: Record<Pid, number>; quality: number; corroborated?: Pid[] };
   outfit?: { match: Record<Pid, OutfitMatchSummary>; body?: Record<Pid, number> };
 }
 
@@ -56,7 +62,7 @@ export interface TrackSummary extends EvidenceSummary {
   overlapping?: boolean;
   /** v2: the frame held the detector's full BODY_CAP bodies (the crowd rule applies). */
   crowded?: boolean;
-  /** v2: a face crop was read on this body in this frame, not carried from an earlier one. */
+  /** v2: a face crop was read on this body in this frame, not carried from an earlier one (information only: the replay's overlap/crowd gate follows the reads themselves). */
   freshFace?: boolean;
 }
 
@@ -82,6 +88,12 @@ export interface ShotConditions {
   view?: PracticeView;
   lighting?: PracticeLighting;
   scenario?: PracticeScenario;
+  /**
+   * Where a range-test shot came from: 'practice' (?practice, targets quick-enrolled with the rear
+   * camera) or 'range' (debug > range in a real room, against players who did the normal scan).
+   * Absent on review-card labels and on labels recorded before it existed.
+   */
+  source?: 'practice' | 'range';
 }
 
 export type ShotLabel = ({ kind: 'player'; target: Pid; answeredAt: number; reviewMs: number } | { kind: 'none'; answeredAt: number; reviewMs: number }) & ShotConditions;

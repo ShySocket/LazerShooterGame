@@ -316,6 +316,17 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
 /** Shooter profile that is never in frame, so a mirror or twin can be tested against it. */
 const ME: PersonSpec = { id: 'me', player: true, x: -5, distance: 3, facing: 'front', topHue: 9 };
 const front = (id: string, x: number, distance: number, topHue: number, extra: Partial<PersonSpec> = {}): PersonSpec => ({ id, player: true, x, distance, facing: 'front', topHue, ...extra });
+/** Seven people in view (two players, five strangers milling about), one more than the pose model returns. */
+const CROWD_SEVEN: PersonSpec[] = [
+  ME,
+  front('alice', 0.42, 4, 0, { vx: 0.015 }),
+  front('bob', 0.62, 4.5, 4, { vx: -0.015 }),
+  { id: 's1', player: false, x: 0.5, distance: 4.2, facing: 'front', topHue: 0, bottomHue: 3, vx: 0.02 },
+  { id: 's2', player: false, x: 0.12, distance: 5, facing: 'side', topHue: 4, vx: 0.01 },
+  { id: 's3', player: false, x: 0.82, distance: 3.6, facing: 'front', topHue: 8, vx: -0.02 },
+  { id: 's4', player: false, x: 0.3, distance: 6, facing: 'back', topHue: 2 },
+  { id: 's5', player: false, x: 0.92, distance: 5.5, facing: 'front', topHue: 6, vx: -0.01 },
+];
 
 export const SCENARIOS: Scenario[] = [
   {
@@ -483,17 +494,16 @@ export const SCENARIOS: Scenario[] = [
     // missing and who it is changes frame to frame; a stranger in the target's colours stands beside her.
     name: 'crowd-seven',
     expect: 'seven people in view (two players, five strangers milling about): never a wrong hit or lock',
-    people: [
-      ME,
-      front('alice', 0.42, 4, 0, { vx: 0.015 }),
-      front('bob', 0.62, 4.5, 4, { vx: -0.015 }),
-      { id: 's1', player: false, x: 0.5, distance: 4.2, facing: 'front', topHue: 0, bottomHue: 3, vx: 0.02 },
-      { id: 's2', player: false, x: 0.12, distance: 5, facing: 'side', topHue: 4, vx: 0.01 },
-      { id: 's3', player: false, x: 0.82, distance: 3.6, facing: 'front', topHue: 8, vx: -0.02 },
-      { id: 's4', player: false, x: 0.3, distance: 6, facing: 'back', topHue: 2 },
-      { id: 's5', player: false, x: 0.92, distance: 5.5, facing: 'front', topHue: 6, vx: -0.01 },
-    ],
+    people: CROWD_SEVEN,
     options: { target: 'alice' },
+  },
+  {
+    // Review of 2026-10-01: the crowd rule measured the read's age against the decision clock, so a
+    // phone that decides more than 400 ms after the capture refused every crowded shot.
+    name: 'crowd-seven-slow',
+    expect: 'crowd-seven on a phone that takes 400 ms per frame: crowded frames still hit on their own face read, never wrong',
+    people: CROWD_SEVEN,
+    options: { target: 'alice', inferenceMs: 400, cropMs: 45 },
   },
   {
     name: 'mirror',

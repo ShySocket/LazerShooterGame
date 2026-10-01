@@ -60,13 +60,23 @@ test('at the detector body cap a hit needs this body\'s own fresh face read nami
   assert.equal(resolveHit(t, eligible, 0.5, 0.2, 150)?.id, 'alice', 'an uncrowded frame resolves on the belief');
   t.crowded = true;
   assert.equal(resolveHit(t, eligible, 0.5, 0.2, 150), null, 'a crowded frame refuses a carried belief');
+  // Reads come from the frame the body was last seen in (pipeline.ts applyFace stamps the capture time).
+  t.lastSeen = 140;
   t.lastRead = { at: 140, id: 'bob', margin: 0.5 };
   assert.equal(resolveHit(t, eligible, 0.5, 0.2, 150), null, 'a fresh read naming somebody else refuses');
   t.lastRead = { at: 140, id: 'alice', margin: 0.1 };
   assert.equal(resolveHit(t, eligible, 0.5, 0.2, 150), null, 'a fresh read without the margin refuses');
   t.lastRead = { at: 140, id: 'alice', margin: 0.5 };
   assert.equal(resolveHit(t, eligible, 0.5, 0.2, 150)?.id, 'alice', 'a fresh clear read on this body resolves');
-  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 140 + 401), null, 'a read older than OVERLAP_FACE_FRESH_MS refuses');
+  // Freshness is capture time against capture time: a slow phone decides 450 ms after the frame the
+  // read came from, and that read is still this frame's own.
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 140 + 450)?.id, 'alice', 'a slow decision on the read\'s own frame resolves');
+  t.lastSeen = 140 + 401;
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 140 + 450), null, 'a read from a frame more than OVERLAP_FACE_FRESH_MS before the body\'s latest frame refuses');
+  t.lastSeen = 140 + 400;
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 140 + 450)?.id, 'alice', 'a read from a frame within OVERLAP_FACE_FRESH_MS of it resolves');
+  t.lastSeen = 130;
+  assert.equal(resolveHit(t, eligible, 0.5, 0.2, 150), null, 'a read stamped after the body\'s latest frame is not this body\'s');
 });
 
 test('a discontinuous face resets the old person instead of lending them confidence', () => {

@@ -3,9 +3,9 @@ import { faceOwner, type Detection, type Track } from '../vision/tracker';
 import type { FaceObservation, FrameOps, FrameOutcome, OutfitObservation } from '../vision/pipeline';
 import type { Candidate } from '../vision/scoring';
 import { centredSimilarity, FACE_MODEL } from '../vision/embedding';
-import { outfitVetoed } from '../vision/scoring';
+import { outfitSupports, outfitVetoed } from '../vision/scoring';
 import { CALIBRATION_VERSION } from '../vision/calibration';
-import { profileOutfitMatch, propsSimilarity } from '../vision/clothing';
+import { hasOutfit, profileOutfitMatch, propsSimilarity } from '../vision/clothing';
 import type { NBox } from '../vision/geometry';
 import { IdMap, round, roundBox, roundKey, SAMPLE_VERSION, type EvidenceSummary, type FrameSummary, type Pid, type ShotSample, type TrackSummary } from './sample';
 
@@ -196,10 +196,14 @@ export class ShotRecorder {
       const ev: EvidenceSummary = {};
       const face = owned.get(i);
       if (face) {
+        // Which bar each player's face was judged at (pipeline.ts applyFace): the replay needs it to
+        // re-derive this frame's read for the overlap/crowd rule.
+        const corroborated = candidates.filter((c) => hasOutfit(c.profile.outfit) && outfitSupports(t, c.id, capturedAt)).map((c) => r.ids.pid(c.id));
         ev.face = {
           sims: this.gallerySims(face.embedding, candidates),
           meanSims: t.faceMean ? this.gallerySims(t.faceMean, candidates) : {},
           quality: round(face.quality, 2),
+          ...(corroborated.length ? { corroborated } : {}),
         };
       }
       const outfit = this.outfitObs.get(i);

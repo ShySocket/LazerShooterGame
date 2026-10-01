@@ -16,9 +16,12 @@
  *   - zero FA: the strictest cutoff that still accepts no impostor, i.e. just above the highest of
  *     (a) every still face (nobody in the photo set enrolled) against each talker's profile and
  *     (b) every other talker's profile (full roster): for genuine frames, the other talkers' frames;
- *     for genuine track means, the other talkers' track means. A single frame is what the first
- *     frames of a track and the overlap rule's own face read rely on; the track mean is what the
- *     belief is built from.
+ *     for genuine track means, the other talkers' track means. The track mean is what the belief is
+ *     built from. The single-frame zero-FA cutoff is a reference for the tail, not a rule of the game:
+ *     every face read is judged at FACE_CALIB while the player's own outfit backs it on that body and
+ *     at FACE_ONLY_CALIB otherwise, the overlap/crowd rule's own read included (scoring.ts
+ *     outfitSupports). The clip profiles are single-session and mostly frontal; the game's scan
+ *     always enrols turned templates as well.
  *   - FACE_CALIB and FACE_ONLY: each calibration is a ramp (reject..accept), so it is expressed as the
  *     similarity at which a face alone, at full quality, gives a hit (scoring.ts faceEvidence then
  *     resolveHit: evidence at least hitThreshold and ahead of the stranger baseline by hitMargin).

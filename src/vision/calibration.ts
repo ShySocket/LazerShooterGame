@@ -282,9 +282,12 @@ export const REACQUIRE = { faceSamples: 2, clothingSamples: 2 };
 export const OUTFIT_RECENT_MS = 3000;
 /**
  * While a body overlaps someone (or its face association is ambiguous) the track may hop between
- * them without any transition, carrying the belief across; a hit then needs a face read on this
- * body this recently that, on its own, names the same player clearly (crossing-lookalike-faces seed
- * 4, 2026-10-01: a belief carried from the crossing partner hit him while she was under the dot).
+ * them without any transition, carrying the belief across; a hit then needs this body's latest face
+ * read to come from a frame captured at most this long before the body's latest frame and, on its
+ * own, to name the same player clearly (crossing-lookalike-faces seed 4, 2026-10-01: a belief
+ * carried from the crossing partner hit him while she was under the dot). Capture time against
+ * capture time: on a slow phone the decision comes more than this long after the capture, so the
+ * decision clock would refuse even a read from the deciding frame itself.
  */
 export const OVERLAP_FACE_FRESH_MS = 400;
 /** A single-frame face naming another player than the track believes, by this lead over the rest, is a hop onto another body. */
@@ -292,8 +295,9 @@ export const HOP_READ_MARGIN = 0.2;
 /**
  * MoveNet MultiPose returns at most this many bodies (human.ts body.maxDetected). A frame at the cap
  * may be missing a seventh person, who can stand inside a detected body's box or take its track
- * when the six returned change from frame to frame; a hit then needs this body's own face read this
- * frame, as during an overlap, and the HUD says why ("Too many people in view").
+ * when the six returned change from frame to frame; a hit then needs this body's own face read, from
+ * a frame within OVERLAP_FACE_FRESH_MS of its latest one, as during an overlap, and the HUD says why
+ * ("Too many people in view").
  */
 export const BODY_CAP = 6;
 /** Belief step per clothing frame (one reference period). */

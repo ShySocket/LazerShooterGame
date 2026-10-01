@@ -214,10 +214,15 @@ test('identity does not ride across a crossing, and a wrongly vetoed player cost
 test('a crowd past the detector body cap never produces a wrong hit or lock', async () => {
   // MoveNet returns six bodies at most; with seven people in view who is left out changes frame to
   // frame (world.ts detect). 100 seeds on 2026-10-01: 0 wrong, 0 wrong-lock frames, 40% of shots land.
-  const a = await run('crowd-seven');
-  assert.equal(a.wrong, 0, describe(a));
-  assert.equal(a.wrongLockFrames, 0, describe(a));
-  assert.ok(a.possible > 0, 'the target is under the dot sometimes');
+  // crowd-seven-slow (400 ms per frame, decided more than 400 ms after capture), 100 seeds: 0 wrong,
+  // 0 wrong-lock frames, 39% land; bursts settled in crowded frames hit 15 of 45 with the crowd rule's
+  // read aged in capture time, 1 of 31 when it was aged against the decision clock.
+  for (const name of ['crowd-seven', 'crowd-seven-slow']) {
+    const a = await run(name);
+    assert.equal(a.wrong, 0, describe(a));
+    assert.equal(a.wrongLockFrames, 0, describe(a));
+    assert.ok(a.possible > 0, 'the target is under the dot sometimes');
+  }
 });
 
 test('a stranger wearing the same top as a player is never hit, and never wears their name even hedged', async () => {

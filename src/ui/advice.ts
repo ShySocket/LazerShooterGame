@@ -1,6 +1,7 @@
 import { CAM_CALIB, LOAD_CALIB } from '../vision/calibration';
 import { isTimeout } from '../net/withTimeout';
 import type { HitOutcome } from '../net/backend';
+import { UNKNOWN_ID } from '../types';
 
 /**
  * Player-facing words for the moments an app can leave a phone stuck: what a wait is doing, when it
@@ -257,9 +258,21 @@ export function practiceConditionsText(aimed: string, c: { distance?: number; vi
   return parts.join(' · ');
 }
 
-/** The banner after a practice shot: what the game decided against what you said you aimed at. */
-export function practiceVerdict(expected: string, resolved: string | null): { text: string; kind: 'good' | 'warn' | 'bad' } {
-  if (resolved === null) return { text: expected === 'nobody' ? 'NO LOCK (right: not a player)' : `NO LOCK on ${expected}`, kind: expected === 'nobody' ? 'good' : 'warn' };
-  if (resolved === expected) return { text: `HIT ${resolved} (right)`, kind: 'good' };
-  return { text: `WRONG: locked ${resolved}, you aimed at ${expected}`, kind: 'bad' };
+/** Somebody in a range-test verdict: the id decides right or wrong, the name is only what the banner says. */
+export interface RangeParty {
+  id: string;
+  name: string;
+}
+
+/**
+ * The banner after a range-test shot: what the game decided against who you said you aimed at
+ * (`expected.id` UNKNOWN_ID: nobody). Players are compared by id, never by name: nothing stops two
+ * players in a real room from sharing one (review of 2026-10-01).
+ */
+export function practiceVerdict(expected: RangeParty, resolved: RangeParty | null): { text: string; kind: 'good' | 'warn' | 'bad' } {
+  const nobody = expected.id === UNKNOWN_ID;
+  if (resolved === null) return { text: nobody ? 'NO LOCK (right: not a player)' : `NO LOCK on ${expected.name}`, kind: nobody ? 'good' : 'warn' };
+  if (resolved.id === expected.id) return { text: `HIT ${resolved.name} (right)`, kind: 'good' };
+  if (resolved.name === expected.name) return { text: `WRONG: locked the other ${resolved.name}, not the one you aimed at`, kind: 'bad' };
+  return { text: `WRONG: locked ${resolved.name}, you aimed at ${expected.name}`, kind: 'bad' };
 }

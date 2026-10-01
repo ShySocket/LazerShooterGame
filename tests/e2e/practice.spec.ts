@@ -59,10 +59,10 @@ test('[practice-solo] one phone: capture a target, aim at her, the verdict is ri
     await me.page.screenshot({ path: join(ROOT, '.rubric', 'realcheck', 'practice-range-panel.png') });
     expect(verdicts.filter((v) => v.startsWith('WRONG')), verdicts.join(' | ')).toEqual([]);
     expect(verdicts.some((v) => v.startsWith('HIT Target 1 (right)')), verdicts.join(' | ')).toBe(true);
-    const logged = await me.page.evaluate(() => (window as unknown as { __lz: { backend: { feedback: { sample: { v: number; app: { calibration?: string }; label?: { kind: string; distance?: number; view?: string; lighting?: string; scenario?: string } } }[] } } }).__lz.backend.feedback.map((f) => ({ ...f.sample.label, v: f.sample.v, calibration: f.sample.app.calibration })));
+    const logged = await me.page.evaluate(() => (window as unknown as { __lz: { backend: { feedback: { sample: { v: number; app: { calibration?: string }; label?: { kind: string; distance?: number; view?: string; lighting?: string; scenario?: string; source?: string } } }[] } } }).__lz.backend.feedback.map((f) => ({ ...f.sample.label, v: f.sample.v, calibration: f.sample.app.calibration })));
     expect(logged.length).toBeGreaterThan(0);
     expect(logged.every((l) => l.kind === 'player')).toBe(true);
-    expect(logged[0]).toMatchObject({ distance: 1.5, view: 'front', lighting: 'dim', scenario: 'walking', v: 2 });
+    expect(logged[0]).toMatchObject({ distance: 1.5, view: 'front', lighting: 'dim', scenario: 'walking', source: 'practice', v: 2 });
     expect(logged[0].calibration).toBeTruthy();
     // Two shots deliberately labelled "Not a player" while she is in frame: seed data for
     // npm run feedback:pull, whose wrong-shot listing must name them.
