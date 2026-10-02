@@ -129,6 +129,12 @@ npm run sim:full
 
 Runs every scenario over 100 seeds and exits non-zero on any wrong hit or wrong-lock frame, printing the frames leading up to each one. Use it as the gate for tracking or decision changes.
 
+```bash
+npm run sim:wide
+```
+
+The wide sweep (`tests/sim/wide.ts`): the crossing and crowd scenarios over 1000 seeds (`-- --from 1001 --seeds 2000` for more), where failures too rare for the 100-seed gate hide. It lists every seed with a wrong hit or wrong-lock frame, writes `.rubric/sim-wide.json` for the rubric, and exits non-zero on anything beyond the documented residuals (`KNOWN_WIDE`). About 4 minutes, so it is not in CI; run it after any tracker, pipeline or scoring change.
+
 Real footage (`npm run realcheck`) runs the game's own models and crops, in Chrome, on public-domain and Creative Commons photos and interview clips of real people (`npm run fixtures` downloads them from Wikimedia Commons into the git-ignored `fixtures/real/`, with attribution in `fixtures/real/SOURCES.md`): `faces` scores same-person and different-person similarity over 28 people's photos, `clips` enrols each person in an interview from its first 6 s and scores the rest against every profile, `shoot` fires at real group photos through the tracking bench and exits non-zero on any wrong hit or wrong lock. Its shots are not independent (12 per run at one static photo, with one enrolment, deterministic models and the same camera path, and two runs per photo), so it bounds the wrong-hit rate per photo first, then per run, and prints the per-shot figure only as what independent shots would give: the last run, 0 wrong in 216 shots on 9 photos, bounds the share of photos that draw a wrong hit below 28.3% (per run 15.3%), not the shot rate below 1.38%. `node --import ./tests/register.mjs scripts/compare-face-models.ts` compares candidate face models (`--face=<model>` runs, models in `fixtures/models/`). `tests/e2e/realvision.spec.ts` and `tests/e2e/practice.spec.ts` play a round and a practice session with the real models on a real clip as the camera.
 
 ### 2d. Tracking bench on a real phone

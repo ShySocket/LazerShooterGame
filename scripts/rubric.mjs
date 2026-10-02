@@ -14,6 +14,7 @@
  *   auto:validate      scripts/validate.mjs on recordings/ exits 0 with at least 200 labelled taps
  *   e2e:<name>         .rubric/e2e.json (written by `npm run e2e`) reports that test as passed
  *   auto:realcheck     .rubric/realcheck/shoot.json (npm run realcheck -- shoot) has 0 wrong hits and 0 wrong-lock frames
+ *   auto:simwide       .rubric/sim-wide.json (npm run sim:wide) covers at least 1000 seeds with no wrong outcome beyond the documented residuals
  *   phone | manual     docs/rubric-status.json records {status, date, note} for the id
  *
  * Score: Must items share 70 points, Should 25, Nice 5; an UNTESTED item scores 0 like a FAIL.
@@ -183,6 +184,15 @@ function judge(item) {
     if (v.exit === 1) return ['FAIL', 'validate.mjs found a wrong hit'];
     if (v.labelled < 200) return ['UNTESTED', `${v.labelled} labelled taps, need 200`];
     return [v.exit === 0 ? 'PASS' : 'FAIL', `exit ${v.exit}, ${v.correct}/${v.labelled} correct, 0 wrong`];
+  }
+  if (kind === 'auto' && arg === 'simwide') {
+    // Written by `npm run sim:wide` (tests/sim/wide.ts); too slow for CI.
+    const f = at('.rubric/sim-wide.json');
+    if (!existsSync(f)) return ['UNTESTED', 'no .rubric/sim-wide.json (npm run sim:wide)'];
+    const w = JSON.parse(readFileSync(f, 'utf8'));
+    const ok = w.seeds >= 1000 && w.unexpected === 0;
+    const known = w.rows.flatMap((r) => r.wrongSeeds.map((s) => `${r.scenario} ${s}`));
+    return [ok ? 'PASS' : 'FAIL', `${w.seeds} seeds from ${w.firstSeed} at ${w.sha}: ${w.unexpected} unexpected wrong outcome(s); documented residuals ${known.join(', ') || 'none'}`];
   }
   if (kind === 'auto' && arg === 'realcheck') {
     // Written by `npm run realcheck -- shoot` (needs the fixtures from `npm run fixtures`).

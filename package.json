@@ -12,6 +12,7 @@
     "test": "tsc -p tsconfig.test.json && node --import ./tests/register.mjs --test tests/*.test.ts",
     "sim": "node --import ./tests/register.mjs tests/sim/report.ts",
     "sim:full": "node --import ./tests/register.mjs tests/sim/report.ts --seeds 100 --strict",
+    "sim:wide": "node --import ./tests/register.mjs tests/sim/wide.ts",
     "replay:rec": "node --import ./tests/register.mjs tests/replay/run.ts",
     "preview": "vite preview --host",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
