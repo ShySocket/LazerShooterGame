@@ -208,8 +208,12 @@ export class VisionPipeline<C = unknown> {
     return Object.fromEntries([...this.liveFaces].map(([id, list]) => [id, list.length]));
   }
 
-  /** The configured candidates with this round's live face samples appended. */
-  private galleries(): Candidate[] {
+  /**
+   * The galleries faces are scored against: the configured candidates with this round's live face
+   * samples appended. Read-only. The shot recorder takes it before each frame, so the similarities a
+   * shot sample carries are the ones the game decided on (a live-learned face included).
+   */
+  galleries(): readonly Candidate[] {
     const source = this.config.candidates;
     if (this.augmented && this.augmented.source === source) return this.augmented.candidates;
     const candidates = source.map((c) => {
@@ -325,13 +329,16 @@ export class VisionPipeline<C = unknown> {
       const faceFresh = t.lastFaceAt > 0 && now - t.lastFaceAt < FACE_FRESH_MS && (topBelief(t)?.margin ?? 0) >= FACE_FRESH_MIN_MARGIN;
       // While a partner may be hidden behind this body (tracker.ts Track.hiding) the detector may hand
       // the track their body in any frame, so the outfit, the cue that tells two bodies apart when
-      // their faces are alike, is checked on every frame the clothing schedule allows rather than
-      // once a second (crossing-lookalike-faces seed 716: the frame that gave Alice's track Bob's
-      // body went unread; read, his outfit is one her own reads had ruled out, a reversal below).
+      // their faces are alike, is checked on every frame rather than once a second
+      // (crossing-lookalike-faces seed 716: the frame that gave Alice's track Bob's body went unread;
+      // read, his outfit is one her own reads had ruled out, a reversal below).
       const audit = faceFresh && (now - t.lastClothingAt >= CLOTHING_AUDIT_MS || Boolean(t.hiding));
-      // Work shedding (schedule.ts) never sheds that read: it is what such a frame's identity stands
-      // on (scoring.ts outfitSupports), as the target's crop is what a shot stands on.
-      const readOutfit = sampleClothing || (ops.sampleOutfit && t.hiding && now - t.lastClothingAt >= CLOTHING_INTERVAL_MS);
+      // Neither work shedding (schedule.ts) nor the clothing interval spaces that read out: it is what
+      // such a frame's identity stands on (scoring.ts outfitSupports needs this frame's own read), as
+      // the target's crop is what a shot stands on. Spaced 150 ms apart, a phone faster than that left
+      // every other hiding frame unread, judged its own face at the face-only bar, and lost the lock
+      // on a genuine face (review of 2026-10-01: LOCK on 19 of 60 hiding frames at 66 ms per frame).
+      const readOutfit = sampleClothing || (ops.sampleOutfit && t.hiding);
       if (readOutfit && d.body && (!faceFresh || audit)) {
         // Another person's box over this torso means the pixels may be theirs: abstain.
         const torso = t.hit;
@@ -378,7 +385,14 @@ export class VisionPipeline<C = unknown> {
         // own clothes, which then agree with their name. Such a read moves the belief and may still
         // rule a player out (above), but it cannot confirm the identity on this frame.
         updateBelief(t, ev, CLOTHING_BELIEF_ALPHA, now, t.hiding ? {} : ev);
-        t.clothingSince = (t.clothingSince ?? 0) + 1;
+        // Reads closer together than the clothing interval are one moment seen twice: they move the
+        // belief (at its wall-clock rate) but count once toward re-earning an identity
+        // (REACQUIRE.clothingSamples), so reading a hiding body on every frame of a fast phone does not
+        // re-earn it any sooner than the clothing schedule would.
+        if (t.clothingCountedAt === undefined || now - t.clothingCountedAt >= CLOTHING_INTERVAL_MS) {
+          t.clothingSince = (t.clothingSince ?? 0) + 1;
+          t.clothingCountedAt = now;
+        }
         if (t.via !== 'face' || now - t.lastFaceAt > FACE_VIA_TIMEOUT_MS) t.via = 'clothing';
       }
     });

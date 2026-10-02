@@ -1,5 +1,5 @@
 import { BODY_MODEL, UNKNOWN_ID, type BodyProps, type OutfitSig, type RoomSettings } from '../types';
-import { faceOwner, type Detection, type Track } from '../vision/tracker';
+import { faceOnOwnHead, faceOwner, type Detection, type Track } from '../vision/tracker';
 import type { FaceObservation, FrameOps, FrameOutcome, OutfitObservation } from '../vision/pipeline';
 import type { Candidate } from '../vision/scoring';
 import { centredSimilarity, FACE_MODEL } from '../vision/embedding';
@@ -170,9 +170,10 @@ export class ShotRecorder {
   /**
    * A frame finished. Summarises every track with the evidence it received, appends the summary to
    * the pre-tap ring and to every shot whose burst is still open. `candidates` must be the galleries
-   * the pipeline scored against.
+   * the pipeline scored this frame against: VisionPipeline.galleries() taken before processFrame, so
+   * live-learned faces are included and a face learned during this very frame is not.
    */
-  frameDone(outcome: FrameOutcome<unknown>, dets: Detection[], capturedAt: number, candidates: Candidate[]): void {
+  frameDone(outcome: FrameOutcome<unknown>, dets: Detection[], capturedAt: number, candidates: readonly Candidate[]): void {
     const r = this.round;
     if (!r) return;
     // Faces are attributed the way the pipeline does it (processFrame): crops in order, each crop's
@@ -183,6 +184,8 @@ export class ShotRecorder {
       const groups = new Map<number, FaceObservation[]>();
       for (const f of faces) {
         const owner = faceOwner(f.box, dets);
+        // As processFrame: on a body somebody may be hidden behind, only a face on its own head is its read.
+        if (owner >= 0 && outcome.tracks[owner]?.hiding && !faceOnOwnHead(f.box, dets[owner])) continue;
         if (owner >= 0 && !owned.has(owner)) groups.set(owner, [...(groups.get(owner) ?? []), f]);
       }
       for (const [owner, matched] of groups) if (matched.length === 1) owned.set(owner, matched[0]);
@@ -208,8 +211,10 @@ export class ShotRecorder {
           ...(corroborated.length ? { corroborated } : {}),
         };
       }
+      // An unreadable torso is not a sample (pipeline.ts): the game fused nothing from it, so nothing is
+      // recorded for the replay to fuse (an empty match used to replay as a vote for a stranger).
       const outfit = this.outfitObs.get(i);
-      if (outfit) {
+      if (outfit?.sig) {
         const match: Record<Pid, { sim: number; cov: number; thighs: boolean }> = {};
         const body: Record<Pid, number> = {};
         for (const c of candidates) {
@@ -238,6 +243,7 @@ export class ShotRecorder {
         unconfirmed: Boolean(t.unconfirmed),
         reacquiring: Boolean(t.reacquireAt),
         overlapping: Boolean(t.overlapping),
+        hiding: Boolean(t.hiding),
         crowded: Boolean(t.crowded),
         freshFace: Boolean(face),
         ...ev,
@@ -254,7 +260,7 @@ export class ShotRecorder {
     this.outfitObs.clear();
   }
 
-  private gallerySims(emb: number[], candidates: Candidate[]): Record<Pid, number> {
+  private gallerySims(emb: number[], candidates: readonly Candidate[]): Record<Pid, number> {
     const out: Record<Pid, number> = {};
     for (const c of candidates) {
       let best = -1;

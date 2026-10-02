@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-10-01.8';
+export const CALIBRATION_VERSION = '2026-10-01.9';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /**
@@ -208,13 +208,15 @@ export const CROSSING_IOU = 0.25;
  * overlapping, the track needs evidence read on each frame's own body to lock or hit (tracker.ts
  * Track.partners, Track.hiding). Measured on the sim (2026-10-01): a partner stayed hidden 2.4 s before
  * the detector handed the track their body (pan-crossing-far seed 85); the hit-rate cost on the
- * crossing scenarios is the same from 2.5 s to 6 s. Since 2026-10-01.7 the clock also runs from a
- * track's box overlapping the last box of a neighbour lost a moment ago (crossing-lookalike-faces
- * seed 716: Bob vanished beside Alice before their boxes reached CROSSING_IOU). Since 2026-10-01.8
- * (no value changed) a face read counts on such a frame only on the body's own head (tracker.ts
- * faceOnOwnHead), an outfit read alone confirms nothing there (its pixels may be the partner's), and a
- * burst on such a body ends when a frame after the tap shows the dot off its torso (the sliver
- * scenarios, tests/sim/engine.ts).
+ * crossing scenarios is the same from 2.5 s to 6 s. Since 2026-10-01.9 the clock also runs from a
+ * track's box overlapping the last box of a confirmed neighbour lost a moment ago (crossing-lookalike-
+ * faces seed 716: Bob vanished beside Alice before their boxes reached CROSSING_IOU; that rule first
+ * shipped as 2026-10-01.7, a number main's capture-time read age (8cf05bb) already carried, so a
+ * recording marked .7 may come from either build). Since 2026-10-01.9 (no value changed) a face read
+ * counts on such a frame only on the body's own head (tracker.ts faceOnOwnHead), an outfit read alone
+ * confirms nothing there (its pixels may be the partner's), and a burst on such a body ends when a frame
+ * after the tap shows the dot off its torso (the sliver scenarios, tests/sim/engine.ts). Two unshipped
+ * branches both used .8.
  */
 export const HIDDEN_PARTNER_MS = 4000;
 /** Below this height ratio a detection cannot continue a track at all. */

@@ -133,9 +133,11 @@ test('a player walking in front of the target does not become the target', async
   const a = await run('occlusion');
   assert.equal(a.wrong, 0, describe(a));
   assert.equal(a.wrongLockFrames, 0, describe(a));
-  // 1000 seeds: 96.3% before 2026-10-01.8, 96.0% after. These three seeds sat at 26 of 32 and lost
-  // one burst to frames whose pose had no nose while a partner entry from 3 s earlier still held, so
-  // the face could not be shown to be the body's own (tracker.ts faceOnOwnHead).
+  // Seeds 1-3 are hard ones: 26 hits of 32 possible shots (81%) at 2026-10-01.7, 26 of 33 (79%) once
+  // a neighbour seen in one frame no longer counts as hidden behind the target: the same hits, with
+  // fewer crops shifting the timing so one more refused shot had the target under the dot. A face is
+  // also shown to be the body's own only with a head landmark under it (tracker.ts faceOnOwnHead), which
+  // cost one burst on frames whose pose had no nose. 1000 seeds: 96.3% before, 96.0-96.5% after.
   assert.ok(hitRate(a) >= 0.75, describe(a));
 });
 
@@ -188,6 +190,10 @@ const REGRESSION_SEEDS: [string, number][] = [
   // her (tracker.ts, a face goes with a headless body only above and between its shoulders).
   // 2146: the detector skipped Alice during a pan; her last box ended short of the dot but she had
   // moved over it, in front of Bob (pipeline.ts coveredByOther, where the motion carried her).
+  // The two "this frame's own reads" rules (scoring.ts outfitSupports' same-frame agreement, and
+  // applyFace confirming by the frame's own read rather than the running mean) are guarded by their
+  // unit tests in tests/pipeline.test.ts (seeds 716 and 748 named there), not by these pins: with
+  // either rule reverted alone every seed here stays clean, because the other fixes cover them too.
   ['crossing-lookalike-faces', 716],
   ['crossing-lookalike-stranger', 643],
   ['pan-crossing', 748],

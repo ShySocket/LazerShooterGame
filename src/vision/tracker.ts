@@ -60,8 +60,14 @@ export interface Track {
    * (`reacquireAt` is cleared then): a burst opened before it never lands on this track (pipeline.ts).
    */
   transitionAt?: number;
-  /** Clothing evidence samples taken since `reacquireAt` (back views re-earn the identity this way). */
+  /**
+   * Clothing evidence samples taken since `reacquireAt` (back views re-earn the identity this way),
+   * counting only samples at least CLOTHING_INTERVAL_MS apart: a hiding body's outfit is read on every
+   * frame, and on a fast phone two reads 66 ms apart are one moment seen twice (pipeline.ts).
+   */
   clothingSince?: number;
+  /** When the last sample counted in `clothingSince` was taken; reset with it. */
+  clothingCountedAt?: number;
   /** The last single-frame face read on this track: whom it named, by how much, and when (overlap rule). */
   lastRead?: { at: number; id: string; margin: number };
   /** Whether the previous frame had this track overlapping another or ambiguously associated (onset detection). */
@@ -69,7 +75,7 @@ export interface Track {
   ambiguous?: boolean;
   /**
    * Tracks this body was last seen overlapping, with when (HIDDEN_PARTNER_MS): both seen, or this body
-   * over the last box of a neighbour lost a moment ago. While such a partner is not detected they may
+   * over the last box of a confirmed neighbour lost a moment ago. While such a partner is not detected they may
    * be hidden behind or in front of this body, and the detector may hand this track their body in any
    * frame; the entry ends once the partner is seen apart from it again.
    */
@@ -307,6 +313,7 @@ export function markUncertain(track: Track, now: number): void {
   track.reacquireAt = now;
   track.transitionAt = now;
   track.clothingSince = 0;
+  track.clothingCountedAt = undefined;
 }
 
 export function resetIdentity(track: Track): void {
@@ -469,10 +476,16 @@ export class Tracker {
       // can vanish behind another before their two boxes ever reach CROSSING_IOU, and stay there after
       // the lost track retires (crossing-lookalike-faces seed 716: Bob, last seen at IoU 0.23 beside
       // Alice, was forgotten 1.5 s later while still behind her; a frame then gave her track his body).
+      // Only a confirmed neighbour becomes a partner this way: a track seen once is too often a
+      // duplicate or a ghost (the contested rule's reason below), and on real group photos the
+      // one-frame tracks of a flickering bystander kept restarting the clock (review of 2026-10-01:
+      // 232 of 261 track-frames of one still photo presumed somebody hidden behind the body). The
+      // lost track's box still flags the overlap above while it lives.
       for (const c of this.tracks) {
         if (c.lastSeen === now || now - c.lastSeen > ttlMs) continue;
         if (iou(out[i].box, c.box) >= CROSSING_IOU) {
           overlap.add(out[i]);
+          if (!isConfirmed(c)) continue;
           out[i].partners = { ...out[i].partners, [c.id]: now };
           c.partners = { ...c.partners, [out[i].id]: now };
         }

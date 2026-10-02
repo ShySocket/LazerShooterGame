@@ -16,15 +16,22 @@ import { SCENARIOS, simulate } from './engine';
  * writes .rubric/sim-wide.json for `npm run rubric`. Exits 1 when a wrong outcome appears that is
  * not one of the documented residuals below, so a new one cannot hide behind a known one.
  */
-export const WIDE_FAMILY = ['crossing', 'pan-crossing', 'pan-crossing-far', 'crossing-backs', 'occlusion', 'crossing-lookalike-faces', 'crossing-lookalike-stranger', 'crowd-seven'];
+export const WIDE_FAMILY = ['crossing', 'pan-crossing', 'pan-crossing-far', 'crossing-backs', 'occlusion', 'crossing-lookalike-faces', 'crossing-lookalike-stranger', 'crowd-seven', 'crossing-sliver', 'pan-crossing-far-sliver', 'crossing-backs-sliver'];
 
 /**
  * Wrong outcomes known and documented, by scenario and seed. crossing-lookalike-faces 282, 2032 and
  * 2528: an instant hit at a neighbour's edge (her detected box 12% narrower than she is, the dot just
  * outside it and outside AIM_EDGE_BAND); widening the band is a threshold change and was left alone.
+ * pan-crossing 3410 (3 wrong-lock frames at the default period, present on main before the silent-hop
+ * fix): at the turn of the pan Alice's track loses her and she comes back as a tentative track, Bob
+ * is then hidden and her body lands where his track predicts him; no partner, no confirmed rival, and
+ * nothing read on that body for about 650 ms while LOCK bob shows. The reversing-pan case of
+ * TRACKING_IMPROVEMENT_PLAN.md "What remains": it needs camera-motion compensation or a read on a
+ * body that moved off its last read, not a tracker threshold.
  */
 export const KNOWN_WIDE: Record<string, { wrong: number[]; wrongLock: number[] }> = {
   'crossing-lookalike-faces': { wrong: [282, 2032, 2528], wrongLock: [] },
+  'pan-crossing': { wrong: [], wrongLock: [3410] },
 };
 
 const args = process.argv.slice(2);

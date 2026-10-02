@@ -24,7 +24,7 @@ const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
  */
 export function faceEvidence(
   embedding: number[],
-  cands: Candidate[],
+  cands: readonly Candidate[],
   sim: (a: number[], b: number[]) => number,
   calib: FaceCalib,
   quality = 1,

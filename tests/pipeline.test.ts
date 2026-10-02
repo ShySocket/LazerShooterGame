@@ -4,6 +4,7 @@ import { VisionPipeline, type FrameOps } from '../src/vision/pipeline';
 import { Tracker, type Detection } from '../src/vision/tracker';
 import type { Candidate } from '../src/vision/scoring';
 import type { NBox } from '../src/vision/geometry';
+import { CLOTHING_INTERVAL_MS } from '../src/vision/calibration';
 
 /**
  * Deterministic, RNG-free reproductions of the two mechanisms behind the 2026-09-13 sweep failures
@@ -645,6 +646,62 @@ test('while a partner may be hidden, the outfit is read on every frame, so a hop
   const hop = await h.frame([[HOP_BOB, HOP_BOB_HIT, { face: null, outfit: WARDROBE.alice }]]);
   assert.equal(hop.tracks[0].transitionAt, hop.capturedAt, 'the hop is an uncertain transition: a burst opened before it cannot land after it');
   assert.notDeepEqual(hop.lock, { kind: 'lock', id: 'bob' });
+});
+
+/** On a phone faster than CLOTHING_INTERVAL_MS: Bob alone, a partner overlaps him for two frames and is then hidden behind him. */
+async function fastHidingBob(h: ReturnType<typeof hopHarness>, bob: Person, partner: Person) {
+  for (let i = 0; i < 12; i++) await h.frame([[HOP_BOB, HOP_BOB_HIT, bob]]);
+  let met;
+  for (let i = 0; i < 2; i++) met = await h.frame([[HOP_BOB, HOP_BOB_HIT, bob], [HOP_PARTNER, HOP_PARTNER_HIT, partner]]);
+  assert.ok(met!.tracks[0].overlapping && (met!.tracks[0].reacquireAt ?? 0) > 0, 'the crossing is an uncertain transition');
+}
+
+test('while a partner may be hidden, a phone faster than the clothing interval still reads the outfit on every frame and keeps a genuine face locked', async () => {
+  // Review of 2026-10-01: the hiding read was spaced CLOTHING_INTERVAL_MS (150 ms) apart, so at 66 ms
+  // per frame two hiding frames in three had no outfit read of their own; outfitSupports then judged
+  // Bob's genuine face (0.75 like his scan: above FACE_CALIB.accept, below FACE_ONLY_CALIB.accept) at
+  // the face-only bar, it named nobody, and his lock dropped on those frames (19 of 60 locked).
+  const fast = 66;
+  assert.ok(fast < CLOTHING_INTERVAL_MS);
+  const h = hopHarness(fast);
+  const bob: Person = { face: withCosine(BOB_FACE, 0.75, 13), outfit: WARDROBE.bob };
+  await fastHidingBob(h, bob, { face: ALICE_FACE, outfit: WARDROBE.alice });
+  let hidingFrames = 0;
+  let reads = 0;
+  let locked = 0;
+  for (let i = 0; i < 60; i++) {
+    const before = h.outfitReads.length;
+    const out = await h.frame([[HOP_BOB, HOP_BOB_HIT, bob]]);
+    const tr = out.tracks[0];
+    if (!tr.hiding || tr.overlapping) continue;
+    hidingFrames++;
+    reads += h.outfitReads.length - before;
+    if (out.lock?.kind === 'lock' && out.lock.id === 'bob') locked++;
+  }
+  assert.ok(hidingFrames >= 20, `the partner is presumed hidden behind Bob for a while (${hidingFrames} frames)`);
+  assert.ok(locked >= hidingFrames - 1, `his genuine face keeps the lock on hiding frames (${locked}/${hidingFrames}, outfit read on ${reads})`);
+  assert.equal(reads, hidingFrames, 'his outfit is read on every hiding frame, however fast the phone');
+});
+
+test('reads of a hiding body closer together than the clothing interval count once toward re-earning an identity', async () => {
+  // Reading the outfit on every frame must not re-earn an identity faster: REACQUIRE.clothingSamples
+  // means two samples of the body, and two reads 66 ms apart are one moment seen twice.
+  const fast = 66;
+  const h = hopHarness(fast);
+  const back: Person = { face: null, outfit: WARDROBE.bob };
+  await fastHidingBob(h, back, { face: null, outfit: WARDROBE.alice });
+  let firstRead = -1;
+  let reEarned = -1;
+  for (let i = 0; i < 10 && reEarned < 0; i++) {
+    const before = h.outfitReads.length;
+    const out = await h.frame([[HOP_BOB, HOP_BOB_HIT, back]]);
+    assert.ok(out.tracks[0].hiding, 'the partner may be hidden behind him');
+    assert.equal(h.outfitReads.length, before + 1, 'his outfit is read on every frame');
+    if (firstRead < 0) firstRead = out.capturedAt;
+    if (!out.tracks[0].reacquireAt) reEarned = out.capturedAt;
+  }
+  assert.ok(reEarned > 0, 'his back view re-earns the identity');
+  assert.ok(reEarned - firstRead >= CLOTHING_INTERVAL_MS, `the second counted read is at least ${CLOTHING_INTERVAL_MS} ms after the first (${reEarned - firstRead} ms)`);
 });
 
 test('a person the detector skipped still covers the dot where the pan carried them, not only where they were last seen (pan-crossing-far seed 2146)', async () => {

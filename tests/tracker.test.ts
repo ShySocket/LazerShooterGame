@@ -612,6 +612,41 @@ test('a neighbour lost behind a track before their boxes reached the crossing ov
   assert.equal(later.hiding, false);
 });
 
+test('a neighbour seen in one frame only is not presumed hidden behind a track once lost: a ghost or a flicker is nobody hiding', async () => {
+  // Review of 2026-10-01: on real group photos where nobody moves, a bystander the detector finds in
+  // one frame and misses in the next leaves a tentative track that a neighbour's box overlaps; every
+  // such flicker made it a partner and restarted HIDDEN_PARTNER_MS, so the neighbour stayed "hiding"
+  // (identity standing on each frame's own reads) for most of the photo. Only confirmed tracks count,
+  // as in the contested rule; a confirmed neighbour lost there still does (the test above).
+  const { CROSSING_IOU, LOST_TRACK_MS } = await import('../src/vision/calibration.ts');
+  const { iou } = await import('../src/vision/geometry.ts');
+  const tracker = new Tracker();
+  const [a] = tracker.update([detection(0.29, 0.24)], 100);
+  tracker.update([detection(0.30, 0.24)], 320);
+  // The flicker beside her, under CROSSING_IOU (as Bob in the test above, but seen in one frame only).
+  const [, ghost] = tracker.update([detection(0.30, 0.24), detection(0.46, 0.24)], 540);
+  assert.equal(ghost.observations, 1, 'seen once: tentative');
+  assert.ok(iou(a.box, ghost.box) < CROSSING_IOU);
+  // Alice moves over where it was, and its lost track's box overlaps hers until it retires.
+  let x = 0.30;
+  let t = 540;
+  let overlapped = false;
+  while (t < 540 + LOST_TRACK_MS + 440) {
+    t += 220;
+    x = Math.min(x + 0.02, 0.38);
+    const [onlyA] = tracker.update([detection(x, 0.24)], t);
+    assert.equal(onlyA.id, a.id);
+    overlapped ||= Boolean(onlyA.overlapping);
+    assert.equal(onlyA.partners, undefined, `t=${t}: a track seen once is not a partner`);
+    assert.equal(onlyA.hiding, false);
+    updateBelief(a, { alice: 1 }, 1, t);
+  }
+  assert.ok(overlapped, 'her box did overlap the lost flicker\'s last box (the overlap rule still applies while it lives)');
+  assert.equal(tracker.get(ghost.id), undefined, 'the flicker\'s track has retired');
+  const [later] = tracker.update([detection(x, 0.24)], t + 220);
+  assert.equal(later.unconfirmed, false, 'nothing presumes anybody hidden behind Alice');
+});
+
 test('a body that an unmatched neighbour\'s track explains about as well as the track that took it comes out unconfirmed', () => {
   // pan-crossing seed 909 geometry (2026-10-01, found while testing another change): Alice was skipped
   // for a frame during a pan; the next frame her body landed where Bob's live track's stationary
