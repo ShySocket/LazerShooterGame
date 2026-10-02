@@ -43,18 +43,20 @@ export interface Track {
   lastOutfitReadAt?: number;
   /**
    * Players whose own outfit corroborated a face on this body, with when: a readable sample over top
-   * and trousers matched them while the body overlapped nobody (scoring.ts outfitSupports). Reset by
-   * every uncertain transition, so it never carries over to whoever the track lands on next.
+   * and trousers matched them at OUTFIT_BACK_MIN while the body overlapped nobody (scoring.ts
+   * outfitSupports). Reset by every uncertain transition, so it never carries over to whoever the track
+   * lands on next.
    */
   outfitSupport?: Record<string, number>;
   /**
    * Each player's outfit similarity summed over the readable samples (top and trousers) taken on this
    * body outside any overlap since its last uncertain transition: whose outfit the body wears, read
-   * over time rather than from one sample (scoring.ts updateOutfitVeto, OUTFIT_RIVAL_LEAD). Reset with
-   * `outfitSupport`.
+   * over time rather than from one sample (scoring.ts updateOutfitVeto, OUTFIT_RIVAL_LEAD); `fitSum`
+   * and `fit` the same over the samples that did not contradict the player (OUTFIT_VETO.maxSim), how
+   * much like their scan the outfit reads (OUTFIT_BACK_MIN). Reset with `outfitSupport`.
    */
-  outfitReads?: Record<string, { sum: number; n: number }>;
-  /** Players the last readable outfit sample on this track agreed with (OUTFIT_VETO.clearSim over what it compared, top at least), and when. */
+  outfitReads?: Record<string, { sum: number; n: number; fitSum: number; fit: number }>;
+  /** Players the last readable outfit sample on this track agreed with (OUTFIT_BACK_MIN over what it compared, top at least, and no rival ahead by OUTFIT_RIVAL_LEAD), and when. */
   outfitAgrees?: { at: number; ids: string[] };
   /**
    * When this track last went through an uncertain transition (crossing, reclaim after a gap, a jump,

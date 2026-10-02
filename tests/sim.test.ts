@@ -219,10 +219,11 @@ const REGRESSION_SEEDS: [string, number][] = [
   ['crossing-sliver', 180],
   // 2026-10-02 (realcheck shoot, antony-blinken/08): Bob in a suit like Alice's; poor crops of his face
   // read like her at the normal bar because her suit, which his only resembles, backed her face on his
-  // body (scoring.ts updateOutfitVeto, OUTFIT_RIVAL_LEAD). Seed 1: 2 wrong hits and 14 wrong-lock frames.
-  // Seed 167: his trousers and hair nearly hers (his own suit led hers by only 0.14 on most reads); with
-  // the rule judged on each sample alone, one sample within 0.1 backed her for 3 s while every other
-  // read said otherwise: 2 wrong hits, 7 wrong-lock frames (Track.outfitReads, the read over time).
+  // body (scoring.ts updateOutfitVeto, OUTFIT_RIVAL_LEAD, OUTFIT_BACK_MIN). Pinned while cropFaces drew
+  // its random numbers in another order (seed 1: 2 wrong hits and 14 wrong-lock frames; seed 167, his
+  // trousers and hair nearly hers, one sample within 0.1 backing her for 3 s: 2 and 7). Re-measured in
+  // the restored order with both rules off: seed 1 6 wrong-lock frames, seed 167 4; with the backing bar
+  // alone, seed 167 still 3 (his suit is close enough to hers that only the rival rule refuses it).
   ['dark-suits', 1],
   ['dark-suits', 167],
 ];
@@ -289,13 +290,26 @@ test('identity does not ride across a crossing, and a wrongly vetoed player cost
 
 test('a player in a suit like another player\'s is never taken for him, even when crops of his face read like him', async () => {
   // Realcheck shoot, 2026-10-02 (antony-blinken/08): LOCK P1 and a hit on P1 with P2 under the dot.
-  // 100 seeds: before a suit had to be the player's own to back his face, 59 wrong hits, 570 wrong-lock
-  // frames, 60% of shots landing; after, none, and 67%. 1000 seeds: none, 65% (with the rule judged on
-  // each sample alone, 2 wrong hits and 21 wrong-lock frames in seeds 101-1000).
+  // 100 seeds: before a suit had to be the player's own to back his face, 75 wrong hits, 677 wrong-lock
+  // frames, 59% of shots landing; after, none, and 64%. 1000 seeds: none, 65% (with the rival rule
+  // judged on each sample alone, wrong hits beyond seed 100). Counted in the restored random order
+  // (world.ts cropFaces); the first count, in the order the rule's commit had changed, was 59 and 570.
   const a = await run('dark-suits');
   assert.equal(a.wrong, 0, describe(a));
   assert.equal(a.wrongLockFrames, 0, describe(a));
   assert.ok(hitRate(a) >= 0.5, describe(a));
+});
+
+test('a suit that only resembles a player\'s backs nobody, whoever wears it: a bystander or a face-only target', async () => {
+  // Review of the rival-suit rule, 2026-10-02: with nobody enrolled in the suit there is no rival, and
+  // a resemblance above OUTFIT_VETO.clearSim backed her face on his body. 100 seeds before
+  // OUTFIT_BACK_MIN: bystander-suit 221 wrong hits and 1415 wrong-lock frames, faceonly-suit 419 and 2582.
+  const a = await run('bystander-suit');
+  assert.equal(a.correct + a.wrong, 0, describe(a));
+  assert.equal(a.wrongLockFrames, 0, describe(a));
+  const b = await run('faceonly-suit');
+  assert.equal(b.wrong, 0, describe(b));
+  assert.equal(b.wrongLockFrames, 0, describe(b));
 });
 
 test('a crowd past the detector body cap never produces a wrong hit or lock', async () => {

@@ -923,3 +923,38 @@ test('a poor read of a player in a suit like another player\'s never names that 
   for (let i = 0; i < 10; i++) if ((await h.frame([[HOP_BOB, HOP_BOB_HIT, bob(0.35, 0.72)]])).lock?.kind === 'lock') locked++;
   assert.ok(locked >= 5, `Bob re-earns his lock (${locked}/10)`);
 });
+
+test('a bystander in a suit like a player\'s never wears her name, even when crops of his face read like hers (2026-10-02)', async () => {
+  // Bench &stranger=1 on antony-blinken/08: P2 left out of the candidates, a bystander in a dark suit
+  // matching P1's, P4's and P6's scans at 0.65 to 0.69. With nobody enrolled in his suit no rival scan
+  // explains it better, so until a sample had to reach OUTFIT_BACK_MIN it backed every suit it
+  // resembled, and poor crops of his face were judged at the normal bar: LOCK and hits on P1.
+  const shoot = async (who: () => Person, frames: number) => {
+    const h = hopHarness(110);
+    const cands = SUITED.filter((c) => c.id !== 'bob');
+    h.pipeline.configure({ candidates: cands, exclusiveIds: new Set(cands.map((c) => c.id)), eligible: new Set(['alice']), hitThreshold: 0.5, hitMargin: 0.2 });
+    const named: string[] = [];
+    let locked = 0;
+    for (let i = 0; i < frames; i++) {
+      const out = await h.frame([[HOP_BOB, HOP_BOB_HIT, who()]]);
+      if (out.lock?.kind === 'lock' && out.lock.id === 'alice') {
+        locked++;
+        named.push(`LOCK alice at ${out.capturedAt}`);
+      }
+      h.clock.now = out.capturedAt + 120;
+      const shot = h.pipeline.fire({ tap: h.clock.now }, CROSSHAIR);
+      if (shot.kind === 'instant' && shot.settlement.resolution?.id === 'alice') named.push(`hit alice at ${out.capturedAt}`);
+      if (shot.kind === 'pending') h.pipeline.expirePending(shot.token);
+    }
+    return { named, locked };
+  };
+  // His crops read 0.50 to 0.58 like her scan, as the bench's poor crops of P2 read like P1's.
+  const likeHer = [0.57, 0.52, 0.55, 0.58, 0.5, 0.56, 0.53, 0.57];
+  let i = 0;
+  const bystander = await shoot(() => ({ face: faceRead(likeHer[i % likeHer.length], 0.3, 300 + i++), outfit: SUIT_BOB }), 20);
+  assert.deepEqual(bystander.named, [], 'his body under the dot must never lock or hit her');
+  // She herself, in her own suit and read no better, is locked: her outfit backs her face as before.
+  let j = 0;
+  const her = await shoot(() => ({ face: faceRead(likeHer[j % likeHer.length], 0.3, 400 + j++), outfit: SUIT_ALICE }), 20);
+  assert.ok(her.locked >= 10, `her own suit backs those reads (${her.locked}/20 locked)`);
+});

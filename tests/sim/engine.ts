@@ -394,6 +394,8 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
 /** Shooter profile that is never in frame, so a mirror or twin can be tested against it. */
 const ME: PersonSpec = { id: 'me', player: true, x: -5, distance: 3, facing: 'front', topHue: 9 };
 const front = (id: string, x: number, distance: number, topHue: number, extra: Partial<PersonSpec> = {}): PersonSpec => ({ id, player: true, x, distance, facing: 'front', topHue, ...extra });
+/** Shades, trousers and hair of a player and of someone in a suit like hers that differ wherever the suit lets them (bystander-suit). */
+const SUIT_COLOURS = { alice: { topShade: 1, bottomHue: 3, hairBin: 0 }, other: { topShade: 2, bottomHue: 9, hairBin: 2 } };
 /** Seven people in view (two players, five strangers milling about), one more than the pose model returns. */
 const CROWD_SEVEN: PersonSpec[] = [
   ME,
@@ -587,6 +589,28 @@ export const SCENARIOS: Scenario[] = [
     name: 'dark-suits',
     expect: 'the target in a dark suit like another player\'s, some crops of his face reading like that player: never the other player',
     people: [ME, front('alice', -0.4, 3.5, 0), front('bob', 0.5, 3.5, 6, { suitOf: { id: 'alice', share: 0.65 }, misreadAs: { id: 'alice', share: 0.3 } })],
+    options: { target: 'bob' },
+  },
+  {
+    // The same kind of suit on somebody nobody enrolled (review of the rival-suit rule, 2026-10-02): no
+    // other player's scan explains it better, so it backed the player it only resembles (0.60 to 0.70
+    // like her scan, above OUTFIT_VETO.clearSim) until a sample had to reach OUTFIT_BACK_MIN, and crops
+    // of the bystander's face that read a little like her were judged at the normal bar. On the real
+    // photo (bench &stranger=1: antony-blinken/08 with P2 left out of the candidates) LOCK and hits on
+    // P1. The colours of both outfits are fixed so that every seed is a resemblance: left to chance,
+    // some seeds draw his trousers and hair in hers and the suits come out near-identical (0.73 to 0.77
+    // against his own 0.89), the two-players-in-one-outfit case of TRACKING_IMPROVEMENT_PLAN.md.
+    name: 'bystander-suit',
+    expect: 'a non-player in a suit like a player\'s, some crops of his face reading like hers: never her',
+    people: [ME, front('alice', -0.4, 3.5, 0, SUIT_COLOURS.alice), { id: 'stranger', player: false, x: 0.5, distance: 3.5, facing: 'front', topHue: 6, ...SUIT_COLOURS.other, suitOf: { id: 'alice', share: 0.65 }, misreadAs: { id: 'alice', share: 0.3 } }],
+    options: { target: 'stranger' },
+  },
+  {
+    // The same suit on a practice target enrolled without the hips (no outfit on file): his own face is
+    // judged at FACE_ONLY_CALIB, and the suit must not back the player it resembles.
+    name: 'faceonly-suit',
+    expect: 'a face-only target in a suit like another player\'s, some crops of his face reading like hers: never her',
+    people: [ME, front('alice', -0.4, 3.5, 0, SUIT_COLOURS.alice), front('bob', 0.5, 3.5, 6, { ...SUIT_COLOURS.other, faceOnlyProfile: true, suitOf: { id: 'alice', share: 0.65 }, misreadAs: { id: 'alice', share: 0.3 } })],
     options: { target: 'bob' },
   },
   {

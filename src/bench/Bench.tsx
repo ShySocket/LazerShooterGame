@@ -149,7 +149,10 @@ export function Bench() {
   const scanRef = useRef<() => Promise<void>>(async () => undefined);
   const loadRef = useRef<(src: string, name: string) => Promise<void>>(async () => undefined);
 
-  const candidates = useMemo(() => people.map((p) => ({ id: p.id, profile: p.profile })), [people]);
+  // &stranger=1 leaves the target out of the candidates: a bystander nobody enrolled, in whatever the
+  // photo dresses them in (a suit like a player's, 2026-10-02). Any hit on them is wrong.
+  const strangerMode = useMemo(() => new URL(location.href).searchParams.get('stranger') === '1', []);
+  const candidates = useMemo(() => people.filter((p) => !(strangerMode && p.id === targetId)).map((p) => ({ id: p.id, profile: p.profile })), [people, targetId, strangerMode]);
   useEffect(() => {
     pipeline.current.configure({
       candidates,

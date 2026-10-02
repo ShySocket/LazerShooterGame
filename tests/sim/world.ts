@@ -442,11 +442,14 @@ export function cropFaces(rng: Rng, scene: Scene, region: NBox, model: DetectorM
     const target = (simOwn(p.distance) + model.faceSimShift) / 0.78;
     const cos = Math.max(0.1, Math.min(0.98, target + rng.gauss(0, 0.07)));
     const jitter = () => rng.gauss(0, 0.01) * fb[3];
+    // The box is drawn before the embedding, as it always was: every seed of every scenario without a
+    // misread replays the same round it did before misreadAs existed (REGRESSION_SEEDS rely on it).
+    const box: NBox = [fb[0] + jitter(), fb[1] + jitter(), fb[2], fb[3]];
     const like = p.misreadAs && rng.chance(p.misreadAs.share) ? scene.people.find((q) => q.id === p.misreadAs!.id) : undefined;
     // A poor crop read more like somebody else: about 0.5 like their scan, 0.25 like this person's own
     // (enrolled samples sit at 0.78 to the true face, world.ts buildScene).
     const embedding = like ? twoCosines(rng, like.face, Math.min(0.9, 0.66 + rng.gauss(0, 0.06)), p.face, Math.max(0, 0.32 + rng.gauss(0, 0.08))) : withCosine(rng, p.face, cos);
-    out.push({ box: [fb[0] + jitter(), fb[1] + jitter(), fb[2], fb[3]], embedding, quality: faceQuality(facePx(p)) });
+    out.push({ box, embedding, quality: faceQuality(facePx(p)) });
   }
   return out;
 }

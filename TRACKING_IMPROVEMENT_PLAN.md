@@ -718,3 +718,82 @@ Judged on each sample alone (the first version), the 1000-seed sweep still found
 `realcheck -- shoot`, 5 runs of the full set (1080 shots): 0 wrong hits, 0 wrong-lock frames; correct 66, 66, 64, 60, 65 per run (mean 64.2) and unclear 23, 26, 25, 31, 24 (25.8), against the 5-run soak at `5e55941` that found the failure: correct 63, 66, 58, 65, 63 (63.0), unclear 26, 23, 31, 27, 30 (27.4), 1 wrong hit and 2 wrong-lock frames. On antony-blinken/08 alone, aiming at P2 (the realcheck configuration, uninstrumented, 12 shots per run of which 3 have P2 under the dot): with the rule switched off on the final tree, 20 runs gave the failure again once (LOCK P1 on P2's track for three frames, then an instant hit on P1: 1 wrong hit, 3 wrong-lock frames), 43 correct and 16 unclear; with it, 40 runs gave 0 and 0, 90 correct and 30 unclear (43 and 17, then 47 and 13).
 
 **What remains: two players in one outfit** (twins, a team shirt), a gap this branch measured but did not open or close. The outfit cannot tell them apart, so both faces stay at the normal bar and the face alone decides, as before. A face model that reads one of them like the other on some crops can then string together the reads that re-establish the other name. Scenario copies of `dark-suits` with `outfitOf` instead of `suitOf`, the other player out of view, 100 seeds: misreads on 5% of crops give 2 wrong hits and 14 wrong-lock frames, 12% 6 and 71, 20% 15 and 239, 30% 72 and 677 (with her in view at 30%, where her own track's claim is a conflict: 2 and 18). The same counts before this branch, since twins' outfits back both either way. Traced (12%, seed 2): Bob at belief 1.0; one misread names Alice by more than 0.8 and the strong-other reset in `applyFace` wipes the belief (`resetIdentity`, which unlike `markUncertain` keeps no belief and asks no `REACQUIRE`); a good read puts Bob back; two more misreads, and Alice holds 0.66 with LOCK, and an instant hit 600 ms later. Bob's long run of agreeing reads on the same continuous body counts for nothing once one read has wiped it. The direction is a rule on the identity's own history, not a threshold: on a body with no geometric transition since it last resolved a player (no jump, gap, overlap, contest or presumed hidden partner), a different name contradicts that live evidence (`IDENTITY_TTL_MS`) and cannot resolve a hit, so a run of misreads must outlast the evidence it contradicts. That changes how every silent hop is re-earned, so it needs the crossing family's 1000-seed sweeps and its own review. It belongs in a sim scenario next to `dark-suits` once it is closed. Not observed on the real photos, where the suits differ.
+
+## 2026-10-02: a suit that only resembles a player's, on somebody with no scan (branch `astra-fix-backing`)
+
+The adversarial review of the rival-suit rule found the same failure one step over. The rule refuses a suit when another player's scan explains it better, so it does nothing when nobody enrolled the suit: a bystander, or a practice target enrolled face-only. On the bench (`?bench&stranger=1`, which leaves the target out of the candidates) with antony-blinken/08 and P2 as the bystander, 15 runs gave 2 wrong hits (on P1) and 11 wrong-lock frames, the same as with the rule off. Here, with the old backing and the rival rule, 15 runs gave 1 wrong hit and 12 wrong-lock frames (all LOCK P1 on P2's body) in 4 runs.
+
+**Root cause.** Backing a face (`Track.outfitSupport`, which lets the face be judged at `FACE_CALIB` instead of `FACE_ONLY_CALIB`) started at `OUTFIT_VETO.clearSim` 0.6. That level only means "does not contradict", which is what lifting a veto needs. P2's suit reads 0.65 to 0.69 like P1's, P4's and P6's scans, so it backed all three on his body, and poor crops of his face that read a little like P1 were judged at the normal bar.
+
+**Fix** (`scoring.ts: updateOutfitVeto`, `Track.outfitReads.fitSum/fit`, `OUTFIT_BACK_MIN` 0.75, `CALIBRATION_VERSION` 2026-10-01.11). The two meanings are now separate:
+- `clearSim` still lifts a veto.
+- To back a face, or to agree with a player on a hiding body's frame, a sample must match the player's scan at 0.75 or better. So must this body's samples on average since its last uncertain transition. A read below the bar takes back the backing earlier reads gave. This is on top of the rival lead.
+
+The average leaves out samples that contradict the player (at most `OUTFIT_VETO.maxSim`), because those already veto the player. When they were counted, a glitching sampler (sim `vetoed-player`: a quarter of samples read another colour) kept a player's own outfit from backing their face for several reads after each glitch. That cost 5 points of hits and 3 of lock. Without them, `vetoed-player` is back to its numbers before the bar, and every safety result below is unchanged.
+
+**Choosing the value.** The bar has to sit above what a resemblance averages and below what a player's own outfit reads. Real photos are the reference here, because the scan and the round happen in different light.
+
+A scratch probe ran the game's own pose model, keypoint regions and `FrameSampler` on the 178 realcheck stills with a detected body. Each of 135 people was scanned once from a crop that fills the frame, like the lobby's near view in normal light. Each was then read in the whole photo, drawn at full, 0.6 and 0.35 size into a frame of the same size with a grey wall around it. The reads were taken under eight lighting changes: none, dim, dark with less contrast, bright, a warm cast, a cool cast, flat (less contrast and saturation), and dim plus warm. Each change was applied once as is, and once with a gray-world exposure and white-balance correction, which is roughly what a phone camera does. The probe counted only reads over top and trousers, the ones that can back a face.
+
+| Reads | Own outfit | Other people in the same photo |
+| --- | --- | --- |
+| Light of the scan | n 155: p5 0.78, p10 0.81, median 0.91; 96% at 0.75 or more (98% at 0.70, 90% at 0.80) | n 381: median 0.39, p90 0.72, p95 0.80, p99 0.86; 7% at 0.75 or more (12% at 0.70) |
+| Colour or exposure change the camera corrects (full and 0.6 size) | n 863: p10 0.74, median 0.90; 90% at 0.75 (92% at 0.70, 95% at 0.60, 84% at 0.80) | 7% at 0.75 or more |
+| Same changes, uncorrected | median 0.50, 25% at 0.75 | |
+| Contrast loss (dark, flat), corrected | median 0.56, 24% at 0.75, 47% at 0.60 | |
+
+- The top of the "other people" tail is clothing that is the same, not merely similar: matching outfits on isabel-guzman/03 read 0.95 to 1.0.
+- On antony-blinken/08, P2's read against P1's, P4's and P6's scans is 0.72, 0.75 and 0.70 at full size and 0.72, 0.74 and 0.66 at 0.6 size. His own is 0.95 and 0.90.
+- Two of the dark suits on that photo, with white shirts, read 0.81 to 0.82 alike. That is the near-identical case below.
+- The sim is kinder to own outfits: p1 0.81 to 0.86 from 2 to 8 m.
+
+Sim sweeps over bystander scenarios: the bystander's crops read like her 30% of the time, plus variants at 15% and 5%, a milder look-alike face, a slow phone, 6 m, her in view, and a face-only target.
+
+- Each sample on its own needed about 0.8 to refuse a suit of share 0.65, colours left to chance. At 0.75 it left 2 wrong hits in 100 seeds; with fixed colours it left 2 at share 0.70 and 93 at 0.75 (300 seeds).
+- With the average, a suit averaging 0.63 / 0.67 / 0.72 like her scan (share 0.65 / 0.70 / 0.75 with fixed colours, 300 seeds) is refused from 0.68 / 0.72 / about 0.80. At 0.75 the third leaves 5 wrong-lock frames in 2 seeds and no wrong hit.
+- 0.74 still left wrong hits at share 0.65 when the colours were left to chance.
+
+On the bench, 0.70 with the average also passed 15 runs. 0.75 was chosen as the lowest bar that keeps the real photo's suits out of reach: they reach 0.75 in a single read and average up to about 0.72. It gives up 2 points of a player's own reads in the light of the scan and 5 points after a corrected change of light, relative to `clearSim`. A read that misses the bar does not stop that face from hitting. It is judged at the strict bar until another read backs it (each backing lasts 3 s).
+
+**A correction to the rival-suit record.** The rival-suit commit (`4ca4199`) computed the misread embedding in `world.ts` `cropFaces` before the box jitter that the push literal had always drawn first. That changed the order of random draws for every scenario, so every seed became a different round, and `REGRESSION_SEEDS` no longer replayed what they were pinned for. Its claims that "every existing seed is unchanged" and that "`sim:full` is identical to `6389ae8` except dark-suits" were wrong. The comparison it made was against the rule switched off on the changed world. The verifier caught this: duel-close over 100 seeds went from 2236 possible shots and 25 misses to 2233 and 27, and the 100-seed rows of 26 other scenarios moved too.
+
+The box is now drawn first again. `sim:full` matches the verifier's `6389ae8` table in every scenario that existed then. The dark-suits pins were re-measured in the restored order with both rules off:
+- Seed 1: 6 wrong-lock frames.
+- Seed 167: 4 wrong-lock frames. With the bar alone it still has 3, so it still guards the rival rule.
+- dark-suits over 100 seeds: 75 wrong hits and 677 wrong-lock frames at 59% with neither rule (the record said 59 and 570); none at 64% with either.
+
+**Tests.**
+- `tests/scoring.test.ts`, "an outfit that only resembles a player's backs nobody": a bystander in a suit 0.65 like hers with no rival; her own suit; veto lifting; one lucky 0.81 read on a known body and on a fresh one; a glitched read of her own suit.
+- `tests/scoring.test.ts`, the rival-suit test: now on suits 0.8 alike, which clear the bar, so the rival rule alone is under test.
+- `tests/pipeline.test.ts`: a bystander in a suit like hers whose crops read 0.50 to 0.58 like her never locks or hits her, while she, read no better in her own suit, is locked.
+- Sim `bystander-suit` and `faceonly-suit`: fixed colours, so every seed is a resemblance. Left to chance, some seeds draw his trousers and hair in hers. Both are in the acceptance tests and in `sim:wide`'s family.
+- Before the bar: 228 wrong hits and 1451 wrong-lock frames, and 434 and 2714, in 100 seeds.
+
+**Mutations** (each applied alone, then restored):
+- **No bar** (backing from `clearSim` again, no average): three tests fail. The pipeline test shows LOCK and an instant hit on her from the first frame; the scoring test and the sim acceptance test fail too. bystander-suit gives 228 wrong hits and 1451 wrong-lock frames, faceonly-suit 434 and 2714.
+- **The bar on each sample only:** the scoring test fails ("his reads so far average 0.69 like hers"). The 100-seed sims stay clean, because a fixed-colour suit 0.65 like hers rarely reads 0.75. The average is what refuses the closer suits (share 0.70 and 0.75, above).
+- **The average counting contradicting samples:** the scoring test fails on the glitched read. vetoed-player drops from 76.7% to 72.1% of shots and from 69.0% to 65.7% lock.
+- **`OUTFIT_RIVAL_LEAD` = Infinity:** the rival-suit scoring test fails, and so does the dark-suits seed 167 pin (3 wrong-lock frames). Over 100 seeds dark-suits stays clean, because the bar covers it.
+- **The rival rule without its average:** the rival-suit scoring test fails.
+
+**Measured.**
+- `sim:full` (100 seeds): every scenario that existed at `6389ae8` is identical to its numbers there, `vetoed-player` included, and dark-suits to the rival-only build. bystander-suit and faceonly-suit: no wrong hit, no wrong-lock frame.
+- `sim:wide` (seeds 1-1000, 14 scenarios): nothing beyond `KNOWN_WIDE`. bystander-suit and faceonly-suit: no wrong outcome. dark-suits 65.2% hit.
+- **Bench**, `?bench&stranger=1` on antony-blinken/08 with P2 as the bystander (the verifier's variant), about 100 ms per frame:
+
+  | Build | Runs | Wrong hits | Wrong-lock frames |
+  | --- | --- | --- | --- |
+  | Final | 20 | 0 | 0 (60 unclear, 180 off target) |
+  | Old backing with the rival rule | 15 | 1 | 12 (all LOCK P1, in 4 runs) |
+  | Plain average at 0.70 | 15 | 0 | 0 |
+  | Plain average at 0.75 | 15 | 0 | 0 |
+
+- **`realcheck -- shoot`**, 3 full runs (648 shots): 0 wrong hits, 0 wrong-lock frames.
+  - Correct 63, 61 and 62, against 59 to 66 recorded. The mean is 62.0, against 61.7 in the verifier's three runs of the rival-only build.
+  - Unclear 24, 32 and 31, against 23 to 31 recorded.
+  - "no-outfit-backing" refused 3, 3 and 4 shots, against 1, 2 and 2 for the rival-only build. That is the bar's cost on the real bench: about 2 shots in 216, from reads of a player's own outfit below 0.75.
+
+**What remains.**
+- **Near-identical outfits on somebody else** is the bystander side of the two-players-in-one-outfit gap above, and no outfit bar below a player's own reads closes it. It shows up on real photos: the 0.81 to 0.82 suits on antony-blinken/08, and matching outfits on isabel-guzman/03 at 0.95 and more. In the sim with colours left to chance, seeds 101-1000 of the bystander scenario still gave 14 wrong hits in 6 seeds at 0.75 (11 at 0.76), and the face-only one 16 in 7. Those are draws where his trousers and hair land in hers, which puts the suits 0.73 to 0.77 alike. The direction is the identity-history rule proposed above; the face has to tell them apart.
+- **Light that loses contrast** between the scan and the round (a dim hall, haze) breaks the outfit, not just the bar. A player's own reads fall to a median of 0.56, and half of them contradict the scan and veto the player on their own body. This was true before this change. The phone session should scan in one light and play in another, and read the outfit matches from the shot log.
+- The probe scanned from one frame of a photo. The lobby averages a whole body scan, front and back, so the game's own-outfit reads should be steadier than the ones measured here. The phone session's numbers replace these.
