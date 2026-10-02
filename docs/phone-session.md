@@ -57,6 +57,11 @@ npm run session:report -- --eval 2026-10-08
 
 (the date of the held-out session; a round key or key prefix works too). Give the tuning tools the same argument, `npm run feedback:pull -- --eval 2026-10-08` and `npm run replay -- <export.json> --eval 2026-10-08`: they leave those rounds out of the triage and the calibration sweep and say how many they left out.
 
+**Scan where you play.** A player's outfit backs their face only when it reads like their scan (0.75 or more). A scan in other light, for example outdoors before an indoor round, can leave everybody judged by face alone, and front-facing hits then drop sharply (TRACKING_IMPROVEMENT_PLAN.md, 2026-10-02). Make this the first cell of the session:
+1. Scan two players in the venue's light, and two in other light (another room, or by a window).
+2. Shoot all four at 3 m face-on.
+3. Compare their legit success and their `no-outfit-backing` refusals in the report.
+
 **Acceptance targets** (proposed by the review, not claims about today's build):
 
 - zero observed wrong hits, wrong-player and unknown-person both; any wrong hit blocks a bigger round until its cause is found and fixed, and the one unexplained wrong hit from the 2026-09-26 real-photo runs stays open until a traced run explains it;

@@ -302,6 +302,13 @@ test('an outfit that only resembles a player\'s backs nobody, even with no rival
   const her = track();
   updateOutfitVeto(her, hers, cands, 1000);
   assert.ok(outfitSupports(her, 'p1', 1000), 'her own suit backs her face');
+  // The legitimate side of the bar: her own suit read a little off, as after a light change the camera
+  // corrects (real photos: p5 0.78 in the light of the scan, p10 0.74 after a corrected change), still
+  // backs her at 0.78. Raising OUTFIT_BACK_MIN to 0.80 would leave about 10% of players unbacked in the
+  // light of the scan and 16% after such a change (verifier of 2026-10-02): this assertion fails first.
+  const offLight = track();
+  updateOutfitVeto(offLight, dress([[20, 0.13], [30, 0.22]]), cands, 1000);
+  assert.ok(outfitSupports(offLight, 'p1', 1000), 'her own suit read at 0.78 still backs her face');
   // The resemblance still lifts a veto on her: lifting needs only a sample that does not contradict her.
   const vetoed = track();
   vetoed.outfitVeto = { p1: { at: 900, eased: false } };
