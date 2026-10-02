@@ -689,3 +689,34 @@ test('a burst never lands across an uncertain transition, even with a name accep
   // behind keeps its outfit read on every frame, because that read is what each frame stands on.
   assert.ok(reads.every((n) => n === 1), `outfit reads per frame while the partner may be hidden: ${reads}`);
 });
+
+test('a settled shot says which rule refused it: the burst rules and the decision rules alike', async () => {
+  // A burst that the timer ends before any post-tap frame confirmed it: no frame.
+  const a = harness();
+  await a.establishBob(6);
+  const { result } = a.tapStale();
+  assert.equal(result.kind, 'pending');
+  const expired = a.pipeline.expirePending(result.kind === 'pending' ? result.token : {});
+  assert.equal(expired?.resolution, null);
+  assert.equal(expired?.refusal, 'no-frame', 'nothing confirmed it before the deadline');
+  // A burst whose post-tap frames read Alice's face on Bob's body: the track may have hopped, so the
+  // identity is re-earned and the burst cannot land; it ends naming that rule, Bob still under the dot.
+  const b = harness();
+  await b.establishBob(6);
+  b.ops.cropFaces = async (region) => (region[2] > 0.3 ? [{ box: [0.48, 0.26, 0.08, 0.1], embedding: ALICE_FACE, quality: 1 }] : []);
+  b.tapStale();
+  let settled = null;
+  for (let i = 0, at = b.clock.now + 20; i < 8 && !settled; i++, at = b.t) settled = (await b.frame([body(BOB_BOX, BOB_HIT)], at)).settled;
+  if (!settled && b.pipeline.hasPending()) settled = null;
+  assert.ok(settled, 'the burst ends within its frames');
+  assert.equal(settled.resolution, null);
+  assert.ok(settled.track, 'a body was under the dot: an unclear shot, not a miss');
+  assert.ok(settled.refusal && ['unconfirmed', 'reacquiring', 'transition', 'other-player'].includes(settled.refusal), `a hop names a transition rule: ${settled.refusal}`);
+  // A hit refuses nothing.
+  const c = harness();
+  await c.establishBob(6);
+  c.clock.now = c.t - PERIOD + 30;
+  const shot = c.pipeline.fire({ tap: c.clock.now }, CROSSHAIR);
+  assert.equal(shot.kind, 'instant');
+  assert.equal(shot.kind === 'instant' ? shot.settlement.refusal : 'x', null);
+});

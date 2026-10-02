@@ -145,3 +145,16 @@ test('practice review: counts by verdict and a set-up line that names only what 
   assert.match(CROWD_TEXT, /Too many people/);
   assert.match(CROWD_TEXT, /clear face/);
 });
+
+test('every refusal reason has a line that names what to do, and unknown reasons fall back', async () => {
+  const { refusalAdvice } = await import('../src/ui/advice');
+  const reasons = ['hidden-partner', 'unconfirmed', 'reacquiring', 'transition', 'no-outfit-backing', 'no-fresh-read', 'vetoed', 'conflict', 'other-player', 'no-frame', 'low-confidence', 'margin', 'no-evidence'];
+  for (const r of reasons) {
+    const line = refusalAdvice(r);
+    assert.ok(line && line.length > 10 && line.length <= 70, `${r}: ${line}`);
+  }
+  assert.match(refusalAdvice('no-outfit-backing')!, /outfit/);
+  assert.match(refusalAdvice('hidden-partner')!, /behind/);
+  assert.equal(refusalAdvice(null), null);
+  assert.equal(refusalAdvice('something-new'), null);
+});

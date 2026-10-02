@@ -130,7 +130,11 @@ test('a recorded instant hit names nobody and carries the raw similarities behin
   assert.ok(sample.frames.some((f) => f.tracks[0].outfit?.match[bob]), 'outfit matches recorded');
   // v2 trace (Astra review): every decision can be explained from the sample alone.
   const { CALIBRATION_VERSION } = await import('../src/vision/calibration');
-  assert.equal(sample.v, 2);
+  assert.equal(sample.v, 3);
+  // v3: a hit carries no refusal; the frames before the lock name the rule that held it back.
+  assert.equal(sample.shot.refusal, null);
+  assert.equal(sample.frames.at(-1)?.refusal, null, 'the locked frame refuses nothing');
+  assert.ok(sample.frames.some((f) => typeof f.refusal === 'string'), `a frame before the lock says why: ${sample.frames.map((f) => f.refusal).join(',')}`);
   assert.equal(sample.app.calibration, CALIBRATION_VERSION);
   const final = sample.frames[6];
   assert.equal(final.bodies, 1);

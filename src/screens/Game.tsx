@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Human, Result } from '@vladmandic/human';
 import { backend, MIN_PLAYERS, practiceBackend } from '../net';
 import { decideRoundEnd } from '../net/backend';
-import { CROWD_TEXT, hitFailureText, hitOutcomeUnknown, hitVerdict, OFFLINE_TEXT, PRACTICE_CHECKLIST, practiceVerdict, RANGE_SHOT_NOTE, RANGE_TARGET_NOTE, verdictAdvice } from '../ui/advice';
+import { CROWD_TEXT, hitFailureText, refusalAdvice, hitOutcomeUnknown, hitVerdict, OFFLINE_TEXT, PRACTICE_CHECKLIST, practiceVerdict, RANGE_SHOT_NOTE, RANGE_TARGET_NOTE, verdictAdvice } from '../ui/advice';
 import { useConnection } from '../hooks/useConnection';
 import { withTimeout } from '../net/withTimeout';
 import { NET_CALIB } from '../vision/calibration';
@@ -90,7 +90,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
   const [rangeScenario, setRangeScenario] = useState<PracticeScenario>('still');
   const [rangeTargetId, setRangeTargetId] = useState('');
   const [rangeTick, setRangeTick] = useState(0);
-  const [banner, setBanner] = useState<{ text: string; kind: Kind } | null>(null);
+  const [banner, setBanner] = useState<{ text: string; kind: Kind; advice?: string } | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const [cooling, setCooling] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
@@ -193,8 +193,9 @@ export function Game({ room, me, pid, onLeave }: Props) {
     if (rangeTargetId && rangeTargetId !== UNKNOWN_ID && !eligible.has(rangeTargetId)) setRangeTargetId('');
   }, [rangeTargetId, eligible]);
 
-  const show = (text: string, kind: Kind, ms = 1400) => {
-    setBanner({ text, kind });
+  /** `advice` replaces the verdict's generic second line, e.g. the reason an UNCLEAR TARGET was refused. */
+  const show = (text: string, kind: Kind, ms = 1400, advice?: string | null) => {
+    setBanner({ text, kind, ...(advice ? { advice } : {}) });
     window.clearTimeout(bannerTimer.current);
     bannerTimer.current = window.setTimeout(() => setBanner(null), ms);
   };
@@ -320,7 +321,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
   };
 
   /** The verdict reaches the feedback recorder; a failed shot keeps its photo for the review card. */
-  const recordVerdict = (shotId: string, outcome: string, track: Track | null, extra: { targetId?: string; via?: string; resolveMs?: number; zoom?: boolean }) => {
+  const recordVerdict = (shotId: string, outcome: string, track: Track | null, extra: { targetId?: string; via?: string; resolveMs?: number; zoom?: boolean; refusal?: string }) => {
     const photo = photos.current.get(shotId) ?? Promise.resolve(null);
     photos.current.delete(shotId);
     const sample = recorder.current.endShot(shotId, {
@@ -331,6 +332,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
       zoom: Boolean(extra.zoom),
       track,
       settledBy: settledBy.current,
+      refusal: extra.refusal ?? null,
     });
     if (!sample || !REVIEWABLE_OUTCOMES.has(outcome)) return;
     void photo.then((blob) => feedbackStore.saveShot({ id: shotId, round: sample.round.key, outcome, hadTrack: sample.shot.trackId !== null, roundMs: sample.shot.roundMs, sample, photo: blob }));
@@ -360,12 +362,12 @@ export function Game({ room, me, pid, onLeave }: Props) {
    * session measures. The crosshair photo stays on this phone for the practice review on the results
    * screen; it is never uploaded.
    */
-  const uploadPracticeShot = (context: ShotContext, r: Resolution | null, track: Track | null, resolveMs: number, zoomed: boolean, verdict: ReturnType<typeof practiceVerdict>) => {
+  const uploadPracticeShot = (context: ShotContext, r: Resolution | null, track: Track | null, resolveMs: number, zoomed: boolean, verdict: ReturnType<typeof practiceVerdict>, refusal: string | null) => {
     const round = practiceRound.current;
     const photo = (context.shotId && photos.current.get(context.shotId)) || Promise.resolve(null);
     if (context.shotId) photos.current.delete(context.shotId);
     const sample = context.shotId
-      ? recorder.current.endShot(context.shotId, { outcome: r ? 'hit' : track ? 'unclear' : 'miss', resolvedTo: r?.id ?? null, via: r?.via ?? null, resolveMs, zoom: zoomed, track, settledBy: settledBy.current })
+      ? recorder.current.endShot(context.shotId, { outcome: r ? 'hit' : track ? 'unclear' : 'miss', resolvedTo: r?.id ?? null, via: r?.via ?? null, resolveMs, zoom: zoomed, track, settledBy: settledBy.current, refusal })
       : null;
     if (!round || !sample || !context.expectedId) return;
     // ?practice targets were quick-enrolled with the rear camera; a real room's range test aims at
@@ -384,11 +386,11 @@ export function Game({ room, me, pid, onLeave }: Props) {
   };
 
   /** A shot has a verdict: either register it, or in range-test mode just record how the lock behaved. */
-  const settleShot = ({ track, resolution: r, elapsedMs: resolveMs, zoomed, context }: ShotSettlement<ShotContext>) => {
+  const settleShot = ({ track, resolution: r, refusal, elapsedMs: resolveMs, zoomed, context }: ShotSettlement<ShotContext>) => {
     if (context.practice) {
       // Right or wrong by player id: two players in a real room may share a name.
       const v = practiceVerdict({ id: context.expectedId, name: context.expectedId === UNKNOWN_ID ? 'nobody' : (labels[context.expectedId] ?? '?') }, r ? { id: r.id, name: labels[r.id] ?? '?' } : null);
-      uploadPracticeShot(context, r, track, resolveMs, zoomed, v);
+      uploadPracticeShot(context, r, track, resolveMs, zoomed, v, refusal);
       rangeTest.add({
         t: Date.now(),
         distance: context.distance,
@@ -404,7 +406,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
       setRangeTick((n) => n + 1);
       if (v.kind === 'good') sfx.hit();
       else sfx.unclear();
-      show(`${v.text} · ${resolveMs} ms`, v.kind === 'bad' ? 'bad' : v.kind, 2200);
+      show(`${v.text} · ${resolveMs} ms`, v.kind === 'bad' ? 'bad' : v.kind, 2200, v.kind === 'warn' ? refusalAdvice(refusal) : null);
       return;
     }
     if (!r && !track) {
@@ -416,10 +418,10 @@ export function Game({ room, me, pid, onLeave }: Props) {
     if (!r) {
       const top = topBelief(track!);
       sfx.unclear();
-      logShot('unclear', track, { resolveMs, zoom: zoomed }, context.shotId);
+      logShot('unclear', track, { resolveMs, zoom: zoomed, ...(refusal ? { refusal } : {}) }, context.shotId);
       if (top?.id === pid && top.score > 0.3) return show('THAT IS YOU', 'warn');
       if (top?.id === UNKNOWN_ID && top.score > 0.3) return show('NOT A PLAYER', 'warn');
-      return show('UNCLEAR TARGET', 'warn');
+      return show('UNCLEAR TARGET', 'warn', undefined, refusalAdvice(refusal));
     }
     const name = room.players[r.id]?.name ?? '?';
     // Offline, a Firebase write waits forever; the player gets a verdict either way. The write stays
@@ -566,7 +568,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
         return;
       case 'no-camera':
       case 'stale': {
-        if (context.practice) return settleShot({ track: null, resolution: null, elapsedMs: 0, zoomed: false, context });
+        if (context.practice) return settleShot({ track: null, resolution: null, refusal: null, elapsedMs: 0, zoomed: false, context });
         // The shot log records the frame age next to the allowance, which is the number to compare with staleMs().
         if (result.kind === 'stale') logShot('stale frame', null, { resolveMs: result.frameAgeMs, allowanceMs: result.allowanceMs }, shotId);
         else logShot('no camera', null, { resolveMs: 0 }, shotId);
@@ -576,7 +578,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
         return show(result.kind === 'stale' ? 'CAMERA TOO SLOW' : 'NO CAMERA LOCK', 'warn');
       }
       case 'miss':
-        if (context.practice) return settleShot({ track: null, resolution: null, elapsedMs: 0, zoomed: false, context });
+        if (context.practice) return settleShot({ track: null, resolution: null, refusal: null, elapsedMs: 0, zoomed: false, context });
         logShot('miss', null, { resolveMs: 0 }, shotId);
         return show('MISS', 'info');
       case 'instant':
@@ -657,7 +659,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
       {banner && (
         <div className={`banner ${banner.kind}`}>
           <span>{banner.text}</span>
-          {verdictAdvice(banner.text) && <small>{verdictAdvice(banner.text)}</small>}
+          {(banner.advice ?? verdictAdvice(banner.text)) && <small>{banner.advice ?? verdictAdvice(banner.text)}</small>}
         </div>
       )}
       {countdown !== null && <div className="countdown">{countdown > 0 ? countdown : 'GO'}</div>}

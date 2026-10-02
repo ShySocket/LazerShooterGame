@@ -388,6 +388,8 @@ async function shoot(page: Page) {
   const runs: ShootRun[] = [];
   const total = { shots: 0, correct: 0, wrong: 0, unclear: 0, miss: 0, offTarget: 0, wrongLockFrames: 0 };
   const missCauses: Record<string, number> = {};
+  /** Why the unclear shots were refused, by rule (pipeline.ts ShotRefusal): which refusal costs the most legitimate hits. */
+  const unclearBy: Record<string, number> = {};
   for (const photo of pick) {
     for (let target = 0; target < 2; target++) {
       await page.goto(`http://localhost:${PORT}/?bench&auto=drift&photo=${encodeURIComponent(`/__fixtures/stills/${photo}`)}&target=${target}`);
@@ -401,6 +403,8 @@ async function shoot(page: Page) {
       if (!stats || people < 2) continue;
       const causes = await page.evaluate(() => (window as unknown as { __bench: { raw(): { shots: { outcome: string; cause?: string }[] } } }).__bench.raw().shots.filter((x) => x.outcome === 'miss').map((x) => x.cause ?? 'unknown'));
       for (const c of causes) missCauses[c] = (missCauses[c] ?? 0) + 1;
+      const refusals = await page.evaluate(() => (window as unknown as { __bench: { raw(): { shots: { outcome: string; refusal?: string }[] } } }).__bench.raw().shots.filter((x) => x.outcome === 'unclear').map((x) => x.refusal ?? 'unknown'));
+      for (const r of refusals) unclearBy[r] = (unclearBy[r] ?? 0) + 1;
       rows.push({ photo, target, people, ...stats, missCauses: causes });
       runs.push({ photo, shots: stats.shots ?? 0, correct: stats.correct ?? 0, wrong: stats.wrong ?? 0 });
       if (stats.wrong > 0 || stats.wrongLockFrames > 0) {
@@ -423,7 +427,8 @@ async function shoot(page: Page) {
   const bounds = shootBounds(runs);
   for (const line of formatShootBounds(bounds)) console.log(line);
   console.log('miss causes:', JSON.stringify(missCauses));
-  writeFileSync(join(OUT, 'shoot.json'), JSON.stringify({ total, bounds, missCauses, rows }, null, 1));
+  console.log('unclear by refusal:', JSON.stringify(Object.fromEntries(Object.entries(unclearBy).sort((x, y) => y[1] - x[1]))));
+  writeFileSync(join(OUT, 'shoot.json'), JSON.stringify({ total, bounds, missCauses, unclearBy, rows }, null, 1));
   return { ...total, bounds };
 }
 

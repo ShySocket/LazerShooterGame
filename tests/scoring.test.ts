@@ -263,3 +263,29 @@ test('a wrongly vetoed real player still claims her name, so a look-alike elsewh
   assert.equal(resolveHit(lookalike, eligible, 0.5, 0.2, 1000), null);
   assert.equal(resolveHit(realAlice, eligible, 0.5, 0.2, 1000), null, 'the misread veto only costs her a refusal');
 });
+
+test('explainHit names the rule behind every refusal, in resolveHit\'s order, and agrees with resolveHit', async () => {
+  const { explainHit } = await import('../src/vision/scoring');
+  const eligible2 = new Set(['alice', 'bob']);
+  const why = (t: ReturnType<typeof track>, now = 150) => {
+    const e = explainHit(t, eligible2, 0.5, 0.2, now);
+    assert.deepEqual(e.hit, resolveHit(t, eligible2, 0.5, 0.2, now), 'explainHit.hit is resolveHit');
+    return e.refusal;
+  };
+  // A clear, backed belief is a hit.
+  const clear = track({ alice: 0.95, [UNKNOWN_ID]: 0.02 });
+  clear.outfitSupport = { alice: 140 };
+  assert.equal(why(clear), null);
+  assert.equal(why(clear, 100 + 5000), 'no-evidence', 'evidence older than IDENTITY_TTL_MS');
+  assert.equal(why({ ...clear, unconfirmed: true }), 'unconfirmed');
+  assert.equal(why({ ...clear, unconfirmed: true, hiding: true }), 'hidden-partner');
+  assert.equal(why({ ...clear, reacquireAt: 120, faceSamples: 0, clothingSince: 0 }), 'reacquiring');
+  assert.equal(why({ ...clear, identityConflict: true }), 'conflict');
+  assert.equal(why({ ...clear, belief: { me: 0.95, alice: 0.02 } }), 'not-a-player');
+  assert.equal(why({ ...clear, outfitVeto: { alice: { at: 120, eased: false } } }), 'vetoed');
+  assert.equal(why({ ...clear, belief: { alice: 0.45, [UNKNOWN_ID]: 0.1 } }), 'low-confidence', 'backed by the outfit, just not confident');
+  assert.equal(why({ ...clear, outfitSupport: undefined, belief: { alice: 0.45, [UNKNOWN_ID]: 0.1 } }), 'no-outfit-backing', 'no outfit backing: the face met the strict bar');
+  assert.equal(why({ ...clear, belief: { alice: 0.62, bob: 0.5 } }), 'margin');
+  assert.equal(why({ ...clear, overlapping: true }), 'no-fresh-read', 'an overlap without a read of this body');
+  assert.equal(why({ ...clear, crowded: true, lastSeen: 140, lastRead: { at: 140, id: 'alice', margin: 0.5 } }), null, 'a crowd with this frame\'s own clear read');
+});

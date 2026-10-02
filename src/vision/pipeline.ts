@@ -16,6 +16,8 @@ import {
   outfitVetoed,
   reacquired,
   resolveHit,
+  explainHit,
+  type Refusal,
   topBelief,
   updateBelief,
   updateFaceMean,
@@ -76,10 +78,19 @@ export type LockState =
   | { kind: 'top'; id: string }
   | { kind: 'unknown' };
 
+/**
+ * Why a shot with a body under the dot did not land: a decision rule (scoring.ts Refusal), or a burst
+ * rule: it resolved to another player than the one accepted at the tap, the track went through an
+ * uncertain transition after the tap, or no frame after the tap could confirm it before the deadline.
+ */
+export type ShotRefusal = Refusal | 'other-player' | 'transition' | 'no-frame';
+
 export interface ShotSettlement<C> {
   /** The body under the dot at decision time; null when it vanished or was replaced. */
   track: Track | null;
   resolution: Resolution | null;
+  /** Why it did not land, when a body was under the dot and nothing resolved; null otherwise. */
+  refusal: ShotRefusal | null;
   elapsedMs: number;
   zoomed: boolean;
   context: C;
@@ -103,6 +114,8 @@ export interface FrameOutcome<C> {
   periodMs: number;
   /** The detector returned its full BODY_CAP bodies: someone may be missing, hits need a fresh face. */
   crowded: boolean;
+  /** Why the body in sight would not be a hit now (the lock's reason), null when it would or nobody is in sight. */
+  lockRefusal: Refusal | null;
 }
 
 interface PendingShot<C> {
@@ -115,6 +128,8 @@ interface PendingShot<C> {
   context: C;
   /** The player the track was believed to be at the tap, when it had one: the burst may confirm only them. */
   expectedId: string | null;
+  /** The latest reason a burst frame did not confirm the shot, for a settlement by the timer. */
+  lastRefusal: ShotRefusal;
 }
 
 /** Besides the crosshair target, this many other bodies get a face crop per frame, round-robin. */
@@ -446,9 +461,16 @@ export class VisionPipeline<C = unknown> {
     if (p && now >= p.startedAt) {
       const t = inSight?.id === p.trackId ? inSight : null;
       const elapsed = Math.round(decisionAt - p.startedAt);
-      let r = canConfirmShot(p, t, now, decisionAt, stale) && t ? resolveHit(t, eligible, hitThreshold, hitMargin, decisionAt) : null;
+      const confirming = t && canConfirmShot(p, t, now, decisionAt, stale) ? explainHit(t, eligible, hitThreshold, hitMargin, decisionAt) : null;
+      let r = confirming?.hit ?? null;
+      // The reason a frame did not confirm; a frame that could not judge (before the tap, past the
+      // deadline) keeps the last reason a frame gave, or no-frame when none ever could.
+      let refusal: ShotRefusal | null = confirming?.refusal ?? null;
       // A burst that started on one accepted identity must not quietly land on another.
-      if (r && p.expectedId && r.id !== p.expectedId) r = null;
+      if (r && p.expectedId && r.id !== p.expectedId) {
+        r = null;
+        refusal = 'other-player';
+      }
       // A burst must not land on whatever body an uncertain transition after the tap put the track on:
       // it may be somebody else's. This stays true after the new body re-earns an identity, which is
       // why it reads transitionAt and not reacquireAt (cleared on re-earning, so the old check could
@@ -457,7 +479,11 @@ export class VisionPipeline<C = unknown> {
       // exempt the burst: the rule above holds it to that name, not to that body (slow-phone pan
       // crossing, seed 858: the track sat on Bob's body believed to be Alice at the tap, hopped back
       // onto Alice 550 ms later, and the burst landed on her 1.8 s after a tap on him).
-      if (r && t && (t.transitionAt ?? 0) > p.startedAt) r = null;
+      if (r && t && (t.transitionAt ?? 0) > p.startedAt) {
+        r = null;
+        refusal = 'transition';
+      }
+      if (t && refusal) p.lastRefusal = refusal;
       p.framesLeft--;
       p.zoom ||= zoomed;
       // A frame in which the detector skipped the target is not the target leaving: the burst keeps
@@ -471,14 +497,17 @@ export class VisionPipeline<C = unknown> {
       if ((!t && !targetCoasting) || r || decisionAt >= p.deadline || p.framesLeft <= 0) {
         this.pending = null;
         // No track means the person under the dot changed or vanished: a miss, not an unclear read of them.
-        settled = { track: t, resolution: r, elapsedMs: elapsed, zoomed: p.zoom, context: p.context };
+        settled = { track: t, resolution: r, refusal: r || !t ? null : (refusal ?? p.lastRefusal), elapsedMs: elapsed, zoomed: p.zoom, context: p.context };
       }
     }
 
     // Live lock indicator so the shooter knows what a shot would do.
     let lock: LockState | null = null;
+    let lockRefusal: Refusal | null = null;
     if (inSight && freshFrame(now, decisionAt, stale)) {
-      const hit = resolveHit(inSight, eligible, hitThreshold, hitMargin, decisionAt);
+      const e = explainHit(inSight, eligible, hitThreshold, hitMargin, decisionAt);
+      const hit = e.hit;
+      lockRefusal = e.refusal;
       if (hit) lock = { kind: 'lock', id: hit.id };
       else {
         const b = bestBelief(inSight, eligible, decisionAt);
@@ -489,7 +518,7 @@ export class VisionPipeline<C = unknown> {
         else lock = { kind: 'unknown' };
       }
     }
-    return { dets, tracks, inSight, lock, settled, periodMs: this.period.ms(), crowded };
+    return { dets, tracks, inSight, lock, lockRefusal, settled, periodMs: this.period.ms(), crowded };
   }
 
   /**
@@ -571,12 +600,12 @@ export class VisionPipeline<C = unknown> {
     // farther player of a pan crossing gave instant wrong hits). Otherwise the burst decides.
     const stillUnder = idx >= 0 && !coasted && indexInSight(L.tracks.map((t, i) => moved(L.dets[i].box, t)), crosshair, L.tracks.map((t) => moved(t.hit, t))) === idx;
     const r = coasted || staleStart || !stillUnder ? null : resolveHit(best, eligible, hitThreshold, hitMargin, now);
-    if (r) return { kind: 'instant', settlement: { track: best, resolution: r, elapsedMs: 0, zoomed: false, context } };
+    if (r) return { kind: 'instant', settlement: { track: best, resolution: r, refusal: null, elapsedMs: 0, zoomed: false, context } };
     // A burst opened from an old frame is still waiting for the slow frame in flight, so it gets that
     // much longer before it gives up.
     const burstMs = this.burstMs() + (staleStart ? allowanceMs : 0);
     const believed = bestBelief(best, eligible, now);
-    const shot: PendingShot<C> = { trackId: best.id, startedAt: now, deadline: now + burstMs, framesLeft: BURST_FRAMES, zoom: false, track: best, context, expectedId: believed && believed.score >= hitThreshold ? believed.id : null };
+    const shot: PendingShot<C> = { trackId: best.id, startedAt: now, deadline: now + burstMs, framesLeft: BURST_FRAMES, zoom: false, track: best, context, expectedId: believed && believed.score >= hitThreshold ? believed.id : null, lastRefusal: 'no-frame' };
     this.pending = shot;
     return { kind: 'pending', token: shot, deadline: shot.deadline, burstMs };
   }
@@ -586,6 +615,6 @@ export class VisionPipeline<C = unknown> {
     const p = this.pending;
     if (!p || p !== token) return null;
     this.pending = null;
-    return { track: p.track, resolution: null, elapsedMs: Math.round(this.clock() - p.startedAt), zoomed: p.zoom, context: p.context };
+    return { track: p.track, resolution: null, refusal: p.lastRefusal, elapsedMs: Math.round(this.clock() - p.startedAt), zoomed: p.zoom, context: p.context };
   }
 }

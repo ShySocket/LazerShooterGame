@@ -9,7 +9,8 @@ import type { NBox } from '../vision/geometry';
  * settings, and the label. Player ids are replaced by positional ids (p0, p1, ...) and names are
  * never included, so a sample cannot be tied back to a person outside the room that produced it.
  */
-export const SAMPLE_VERSION = 2;
+export const SAMPLE_VERSION = 3;
+// v3 (2026-10-01): the rule that refused a shot (shot.refusal) and the in-sight body's lock refusal per frame.
 // v2 (2026-10-01, Astra review): app.calibration; per-track vetoes, clothing age, uncertainty, overlap,
 // crowd and fresh-face flags, and whose outfit backed each face read; per-frame body count; practice
 // labels carry the shot's conditions and whether they came from ?practice or a real room's range test.
@@ -73,6 +74,8 @@ export interface FrameSummary {
   lock: string | null;
   /** v2: bodies the pose model returned in this frame. */
   bodies?: number;
+  /** v3: why the body in sight would not have been a hit in this frame (scoring.ts Refusal). */
+  refusal?: string | null;
 }
 
 /** How a practice shot was set up, chosen on the phone before the tap; the session report breaks results down by these. */
@@ -136,6 +139,8 @@ export interface ShotSample {
     /** The body under the dot at decision time and its belief then; null when nobody was there. */
     decisionTrackId: number | null;
     decisionBelief: Record<Pid, number> | null;
+    /** v3: why a shot with a body under the dot did not land (pipeline.ts ShotRefusal), null for a hit or a miss. */
+    refusal?: string | null;
   };
   frames: FrameSummary[];
   target: {

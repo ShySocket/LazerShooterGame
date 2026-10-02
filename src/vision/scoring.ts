@@ -317,13 +317,52 @@ export function reacquired(track: Track): boolean {
   return fresh;
 }
 
-/** A hit only registers when the top candidate is a live opponent, confident, and clearly ahead of everyone else. */
-export function resolveHit(track: Track, eligible: Set<string>, threshold: number, margin: number, now = performance.now()): Resolution | null {
-  if (!Number.isFinite(track.lastEvidenceAt) || now < track.lastEvidenceAt || now - track.lastEvidenceAt > IDENTITY_TTL_MS) return null;
+/**
+ * Why a body under the dot did not resolve to a hit, in the order the rules are checked. Every
+ * refusal is explainable from its reason (review of 2026-10-01): the HUD advice, the shot log, the
+ * shot sample, realcheck and the session report all carry it.
+ */
+export type Refusal =
+  /** No identity evidence within IDENTITY_TTL_MS. */
+  | 'no-evidence'
+  /** Somebody may be hidden behind this body (Track.hiding): only this frame's own read can confirm it. */
+  | 'hidden-partner'
+  /** An overlap, an ambiguous face or another uncertain transition is waiting for agreeing evidence. */
+  | 'unconfirmed'
+  /** After an uncertain transition, not yet REACQUIRE fresh face or clothing samples. */
+  | 'reacquiring'
+  /** Two bodies claim the same player. */
+  | 'conflict'
+  /** The top belief is the shooter, a stranger or someone not in play. */
+  | 'not-a-player'
+  /** The top belief's scanned outfit is ruled out on this body (OUTFIT_VETO). */
+  | 'vetoed'
+  /** Below the hit confidence with no recent clear outfit match on this body, so any face was judged at FACE_ONLY_CALIB. */
+  | 'no-outfit-backing'
+  /** Below the hit confidence. */
+  | 'low-confidence'
+  /** Not clearly ahead of the runner-up. */
+  | 'margin'
+  /** An overlap or a frame at BODY_CAP without this body's own recent face read naming the player. */
+  | 'no-fresh-read';
+
+/**
+ * The hit decision with its reason: `hit` is what resolveHit returns, `refusal` why it is null (null
+ * when it is a hit). The checks and their order are resolveHit's.
+ */
+export function explainHit(track: Track, eligible: Set<string>, threshold: number, margin: number, now = performance.now()): { hit: Resolution | null; refusal: Refusal | null } {
+  const no = (refusal: Refusal) => ({ hit: null, refusal });
+  if (!Number.isFinite(track.lastEvidenceAt) || now < track.lastEvidenceAt || now - track.lastEvidenceAt > IDENTITY_TTL_MS) return no('no-evidence');
   // After a frame that could not tell whose face was whose, the identity waits for fresh evidence.
-  if (track.unconfirmed || !reacquired(track)) return null;
-  const b = bestBelief(track, eligible, now);
-  if (!b || !Number.isFinite(b.score) || !Number.isFinite(b.margin) || b.score < threshold || b.margin < margin || b.margin <= 0) return null;
+  if (track.unconfirmed) return no(track.hiding ? 'hidden-partner' : 'unconfirmed');
+  if (!reacquired(track)) return no('reacquiring');
+  const t = topBelief(track);
+  if (!t) return no('no-evidence');
+  if (track.identityConflict) return no('conflict');
+  if (!eligible.has(t.id)) return no('not-a-player');
+  if (outfitVetoed(track, t.id, now)) return no('vetoed');
+  if (!Number.isFinite(t.score) || t.score < threshold) return no(outfitSupports(track, t.id, now) ? 'low-confidence' : 'no-outfit-backing');
+  if (!Number.isFinite(t.margin) || t.margin < margin || t.margin <= 0) return no('margin');
   // During an overlap the belief may have been carried over from the other body: this body's own
   // latest face must name the same player clearly, on its own. The same holds in a frame at the
   // detector's body cap, where an undetected person may share this box or have handed it over.
@@ -333,7 +372,12 @@ export function resolveHit(track: Track, eligible: Set<string>, threshold: numbe
   // 2026-10-01). How old the frame itself may be is the callers' rule (geometryFresh, freshFrame).
   if (track.overlapping || track.ambiguous || track.crowded) {
     const r = track.lastRead;
-    if (!r || r.at > track.lastSeen || track.lastSeen - r.at > OVERLAP_FACE_FRESH_MS || r.id !== b.id || r.margin < margin) return null;
+    if (!r || r.at > track.lastSeen || track.lastSeen - r.at > OVERLAP_FACE_FRESH_MS || r.id !== t.id || r.margin < margin) return no('no-fresh-read');
   }
-  return b;
+  return { hit: t, refusal: null };
+}
+
+/** A hit only registers when the top candidate is a live opponent, confident, and clearly ahead of everyone else. */
+export function resolveHit(track: Track, eligible: Set<string>, threshold: number, margin: number, now = performance.now()): Resolution | null {
+  return explainHit(track, eligible, threshold, margin, now).hit;
 }

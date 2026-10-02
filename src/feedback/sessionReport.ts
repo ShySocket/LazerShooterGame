@@ -187,6 +187,11 @@ export interface ReportRow {
   lockUntimed: number;
   /** Of the lock times, how many are lower bounds (under the dot when the recording began, locked later). */
   lockAtLeast: number;
+  /**
+   * The rejected player shots by the rule that refused them (sample v3 shot.refusal, pipeline.ts
+   * ShotRefusal): `miss` when no body was under the dot, `unrecorded` for samples older than v3.
+   */
+  rejectedBy: Record<string, number>;
 }
 
 /** The round x target group a shot belongs to: shots in one share the person, the outfit and the light. */
@@ -197,11 +202,16 @@ export function summariseRow(key: string, samples: LabelledSample[]): ReportRow 
   const resolve: number[] = [];
   const lock: number[] = [];
   const lockOther = { never: 0, untimed: 0, atLeast: 0 };
+  const rejectedBy: Record<string, number> = {};
   const wrongByTarget = new Map<string, number>();
   let players = 0;
   for (const s of samples) {
     const o = outcomeOf(s);
     n[o]++;
+    if (o === 'rejected') {
+      const why = s.shot.refusal ?? (s.shot.trackId === null && s.shot.decisionTrackId === null ? 'miss' : s.v >= 3 ? 'miss' : 'unrecorded');
+      rejectedBy[why] = (rejectedBy[why] ?? 0) + 1;
+    }
     if (s.label.kind === 'player') players++;
     const wrong = o === 'wrongPlayer' || o === 'unknownFalse';
     wrongByTarget.set(targetGroup(s), (wrongByTarget.get(targetGroup(s)) ?? 0) + (wrong ? 1 : 0));
@@ -239,6 +249,7 @@ export function summariseRow(key: string, samples: LabelledSample[]): ReportRow 
     lockNever: lockOther.never,
     lockUntimed: lockOther.untimed,
     lockAtLeast: lockOther.atLeast,
+    rejectedBy,
   };
 }
 
@@ -437,6 +448,8 @@ export function formatSection(s: ReportSection): string[] {
     `   legit-shot success ${pct(t.legitSuccess)} (${t.correct}/${t.playerAttempts}, rejections counted); wrong hits ${t.wrongPlayer} on another player + ${t.unknownFalse} on a non-player; ${bounds}`,
     `   lock acquisition p50/p95 ${ms(t.lockMs)} ms over ${t.lockMs.n} shot${t.lockMs.n === 1 ? '' : 's'} that locked after their target came under the dot (${t.lockAtLeast} of them lower bounds: under the dot when the recording began, so the percentiles are lower bounds when they count); ${t.lockNever} never locked (failures); ${t.lockUntimed} already locked when the recording began (time unknown)`,
   ];
+  const why = Object.entries(t.rejectedBy).sort((a, b) => b[1] - a[1]);
+  if (why.length) out.push(`   rejected player shots by rule: ${why.map(([k, v]) => `${k} ${v}`).join(', ')}`);
   if (s.note) out.push(`   (${s.note})`);
   for (const table of s.tables) out.push('', ...formatTable(table, s.boundsNa !== null));
   return out;

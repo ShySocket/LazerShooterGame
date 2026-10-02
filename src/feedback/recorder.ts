@@ -60,6 +60,8 @@ export interface VerdictInfo {
   /** The body under the dot at decision time, when any. */
   track: Track | null;
   settledBy: 'tap' | 'frame' | 'timer';
+  /** Why it did not land (pipeline.ts ShotRefusal), when a body was under the dot. */
+  refusal?: string | null;
 }
 
 interface OpenShot {
@@ -241,7 +243,7 @@ export class ShotRecorder {
         ...ev,
       };
     });
-    const summary = { tracks, bodies: dets.filter((d) => d.body).length, lock: outcome.lock ? (outcome.lock.kind === 'unknown' ? 'unknown' : `${outcome.lock.kind}:${r.ids.pid(outcome.lock.id)}`) : null };
+    const summary = { tracks, bodies: dets.filter((d) => d.body).length, refusal: outcome.lockRefusal ?? null, lock: outcome.lock ? (outcome.lock.kind === 'unknown' ? 'unknown' : `${outcome.lock.kind}:${r.ids.pid(outcome.lock.id)}`) : null };
     this.ring.push({ t: capturedAt, summary });
     if (this.ring.length > PRE_TAP_FRAMES) this.ring.shift();
     for (const [id, shot] of this.open) {
@@ -332,6 +334,7 @@ export class ShotRecorder {
         settledBy: verdict.settledBy,
         decisionTrackId: verdict.track?.id ?? null,
         decisionBelief: verdict.track ? r.ids.record(verdict.track.claimed ?? verdict.track.belief, 2) : null,
+        refusal: verdict.refusal ?? null,
       },
       frames,
       target: shot.target,

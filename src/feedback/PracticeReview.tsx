@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { feedbackStore, type StoredRound, type StoredShot } from './store';
-import { practiceConditionsText, practiceReviewCounts, type PracticeFilter } from '../ui/advice';
+import { practiceConditionsText, practiceReviewCounts, refusalAdvice, type PracticeFilter } from '../ui/advice';
 
 /** Shots shown at first; the rest one tap away, so a long session does not decode 150 photos at once. */
 const PAGE = 12;
@@ -67,6 +67,7 @@ export function PracticeReview() {
             <div>
               <div className={`verdict ${s.practice?.kind ?? ''}`}>{s.practice?.verdict ?? s.outcome}</div>
               <div className="tag">{practiceConditionsText(s.practice?.aimed ?? '?', s.sample.label ?? {}, s.practice?.resolveMs ?? null)}</div>
+              {s.sample.shot.refusal && <div className="tag">refused: {s.sample.shot.refusal}{refusalAdvice(s.sample.shot.refusal) ? ` (${refusalAdvice(s.sample.shot.refusal)})` : ''}</div>}
             </div>
           </li>
         ))}

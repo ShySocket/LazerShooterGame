@@ -44,6 +44,8 @@ interface Shot {
   elapsedMs: number;
   /** For a miss: what was under the dot in the last frame (trace `under`): a detection index, -1 none, -2 ambiguous. */
   cause?: 'off-torso' | 'no-detection' | 'covered';
+  /** For an unclear shot: the rule that refused it (pipeline.ts ShotRefusal). */
+  refusal?: string;
 }
 
 interface FrameTrace {
@@ -418,7 +420,7 @@ export function Bench() {
     setLock(l ? (l.kind === 'lock' ? `LOCK ${labels[l.id]}` : l.kind === 'maybe' ? `${labels[l.id]}? ${Math.round(l.score * 100)}%` : l.kind === 'top' ? labels[l.id] : 'UNKNOWN') : '');
     if (outcome.settled) {
       window.clearTimeout(pendingTimer.current);
-      settle(outcome.settled.resolution?.id, outcome.settled.track !== null, outcome.settled.elapsedMs, outcome.settled.context.target, under);
+      settle(outcome.settled.resolution?.id, outcome.settled.track !== null, outcome.settled.elapsedMs, outcome.settled.context.target, under, outcome.settled.refusal);
     }
     if (overlayRef.current) {
       drawOverlay(overlayRef.current, { dets, tracks: outcome.tracks, vidW: res.width, vidH: res.height, labels }, false);
@@ -437,9 +439,9 @@ export function Bench() {
     if (s.frames % 5 === 0) setTick((n) => n + 1);
   };
 
-  const settle = (resolved: string | undefined, hadTrack: boolean, elapsedMs: number, target: string, under: Set<string>) => {
+  const settle = (resolved: string | undefined, hadTrack: boolean, elapsedMs: number, target: string, under: Set<string>, refusal?: string | null) => {
     const outcome: Outcome = resolved ? (under.has(resolved) ? 'correct' : 'wrong') : !under.has(target) ? 'off-target' : hadTrack ? 'unclear' : 'miss';
-    stats.current.shots.push({ at: Date.now(), outcome, target, resolved, elapsedMs });
+    stats.current.shots.push({ at: Date.now(), outcome, target, resolved, elapsedMs, ...(outcome === 'unclear' && refusal ? { refusal } : {}) });
     setTick((n) => n + 1);
   };
 
@@ -466,7 +468,7 @@ export function Bench() {
         const s = pipeline.current.expirePending(token);
         const w = windowRef.current;
         const c = w ? aim(w) : null;
-        if (s) settle(undefined, s.track !== null, s.elapsedMs, target, w && c ? truthUnder(c, w) : new Set());
+        if (s) settle(undefined, s.track !== null, s.elapsedMs, target, w && c ? truthUnder(c, w) : new Set(), s.refusal);
       }, burstMs);
     }
     setTick((n) => n + 1);
