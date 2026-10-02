@@ -10,7 +10,10 @@ import type { NBox } from '../vision/geometry';
  * never included, so a sample cannot be tied back to a person outside the room that produced it.
  */
 export const SAMPLE_VERSION = 3;
-// v3 (2026-10-01): the rule that refused a shot (shot.refusal) and the in-sight body's lock refusal per frame.
+// v3 (2026-10-01): the rule that refused a shot (shot.refusal) and the in-sight body's lock refusal per
+// frame; per track whether a partner was presumed hidden behind it (hiding, added within v3 before any
+// v3 build reached main, so a v3 sample without it is judged on its recorded unconfirmed flag); and the
+// face similarities are taken against the galleries the pipeline scored with, live-learned faces included.
 // v2 (2026-10-01, Astra review): app.calibration; per-track vetoes, clothing age, uncertainty, overlap,
 // crowd and fresh-face flags, and whose outfit backed each face read; per-frame body count; practice
 // labels carry the shot's conditions and whether they came from ?practice or a real room's range test.
@@ -65,6 +68,13 @@ export interface TrackSummary extends EvidenceSummary {
   crowded?: boolean;
   /** v2: a face crop was read on this body in this frame, not carried from an earlier one (information only: the replay's overlap/crowd gate follows the reads themselves). */
   freshFace?: boolean;
+  /**
+   * v3: a partner was presumed hidden behind this body (tracker.ts Track.hiding), so only this frame's
+   * own reads could confirm its identity. A sample with this field lets the replay keep `unconfirmed`
+   * itself, from the recorded reads under its own parameters, instead of trusting the recorded flag
+   * (which is the game's calibration's verdict).
+   */
+  hiding?: boolean;
 }
 
 export interface FrameSummary {

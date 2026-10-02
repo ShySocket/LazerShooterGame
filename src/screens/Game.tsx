@@ -482,13 +482,16 @@ export function Game({ room, me, pid, onLeave }: Props) {
       replayRecorder.current = new Recorder({ width: res.width, height: res.height, candidates, selfId: pid, hitThreshold: settings.hitThreshold, hitMargin: settings.hitMargin, notes: `room ${room.code}, ${navigator.userAgent}` });
       if (import.meta.env.DEV) (window as unknown as { __lzRecorder?: Recorder }).__lzRecorder = replayRecorder.current;
     }
+    // The galleries this frame's faces are scored against, live-learned faces included: the shot
+    // sample records similarities against exactly these, so the replay sees what the game decided on.
+    const galleries = pipeline.current.galleries();
     const outcome = await pipeline.current.processFrame(dets, now, res.width, res.height, ch, replayRecorder.current ? replayRecorder.current.frame(now, ch, dets, ops) : ops);
     // A frame the pipeline abandoned (camera changed, round reset) never happened as far as a replay is concerned.
     if (!outcome) replayRecorder.current?.discardLast();
     if (replayRecorder.current && replayRecorder.current.frameCount % 20 === 0) setRecordedFrames(replayRecorder.current.frameCount);
     done();
     if (!outcome) return;
-    recorder.current.frameDone(outcome, dets, now, candidates);
+    recorder.current.frameDone(outcome, dets, now, galleries);
     if (outcome.settled) {
       window.clearTimeout(pendingTimer.current);
       settledBy.current = 'frame';

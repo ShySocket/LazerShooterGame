@@ -79,6 +79,14 @@ interface BeliefState {
   lastClothT: number;
   /** The body's latest read; a belief reset does not forget it, as in the game. */
   read: FaceRead | null;
+  /**
+   * Whether the identity waits for agreeing evidence (Track.unconfirmed). On samples that record
+   * `hiding` (v3) the replay keeps it itself, from the frames that set it and the evidence that clears
+   * it under the replay's parameters; on older samples it is the recorded flag.
+   */
+  unconfirmed: boolean;
+  /** The recorded `reacquiring` of this track's previous frame: its turning on marks a transition. */
+  reacquiring: boolean;
 }
 
 function top(belief: Record<Pid, number>): { id: Pid; score: number; margin: number } | null {
@@ -146,7 +154,16 @@ function combine(face: Record<Pid, number> | null, cloth: Record<Pid, number> | 
   return out;
 }
 
-function update(state: BeliefState, ev: Record<Pid, number>, alpha: number, t: number): void {
+/**
+ * Blend one frame's evidence into the belief. With `confirm` (a sample whose unconfirmed flag the replay
+ * keeps itself), evidence whose top names the belief's top before the update confirms the identity, as
+ * scoring.ts updateBelief does; evidence for somebody else leaves it waiting.
+ */
+function update(state: BeliefState, ev: Record<Pid, number>, alpha: number, t: number, confirm?: Record<Pid, number>): void {
+  if (confirm) {
+    const believed = top(state.belief)?.id;
+    if (believed === undefined || top(confirm)?.id === believed) state.unconfirmed = false;
+  }
   for (const id of new Set([...Object.keys(state.belief), ...Object.keys(ev)])) {
     const v = Number.isFinite(ev[id]) ? clamp01(ev[id]) : 0;
     state.belief[id] = (1 - alpha) * (state.belief[id] ?? 0) + alpha * v;
@@ -173,13 +190,33 @@ export function replayShot(sample: ShotSample, overrides: Partial<ReplayParams> 
   for (let i = 0; i <= last; i++) {
     const frame = sample.frames[i];
     for (const t of frame.tracks) {
+      // Samples that record `hiding` (v3) let the replay keep the unconfirmed flag itself, as the game
+      // does: set on every frame of a presumed hidden partner, an overlap or an ambiguous association
+      // and at a transition (`reacquiring` turning on), cleared by evidence that names the believed
+      // player (on a hiding frame only this frame's own face read or outfit). A looser or stricter face
+      // bar then confirms where the game would have confirmed with it; the recorded flag is the game's
+      // calibration's verdict (review of 2026-10-01: under a looser bar it kept refusing hiding frames
+      // the game would have confirmed, under-counting the wrong hits that bar would cause). What the
+      // flag was before the sample's first frame of a track is unknown, so it starts as recorded there.
+      const derived = typeof t.hiding === 'boolean';
       let s = states.get(t.id);
       if (!s) {
-        s = { belief: {}, lastEvidenceT: -Infinity, lastFaceT: -Infinity, lastClothT: -Infinity, read: null };
+        s = { belief: {}, lastEvidenceT: -Infinity, lastFaceT: -Infinity, lastClothT: -Infinity, read: null, unconfirmed: Boolean(t.unconfirmed), reacquiring: Boolean(t.reacquiring) };
         states.set(t.id, s);
       }
-      if (Number.isFinite(s.lastEvidenceT) && frame.t - s.lastEvidenceT > p.identityTtlMs) s.belief = {};
+      if (!derived) s.unconfirmed = Boolean(t.unconfirmed);
+      else if (t.hiding || t.overlapping || t.ambiguous || (t.reacquiring && !s.reacquiring)) s.unconfirmed = true;
+      s.reacquiring = Boolean(t.reacquiring);
+      if (Number.isFinite(s.lastEvidenceT) && frame.t - s.lastEvidenceT > p.identityTtlMs) {
+        s.belief = {};
+        // resetIdentity, which an ambiguous body skips (pipeline.ts processFrame).
+        if (derived && !t.ambiguous) s.unconfirmed = false;
+      }
       if (t.ambiguous) continue;
+      // Whose outfit backed a face on this body, as the game judged each player's face (v2): a player
+      // outside it at the face-only bar, for this frame's read and for the running mean alike
+      // (pipeline.ts applyFace). v1 samples do not say, and judge everyone at the normal bar.
+      const corroborated = sample.v >= 2 ? new Set(t.face?.corroborated ?? []) : undefined;
       // Same order and gates as processFrame: clothing first, fused only while the face is not
       // carrying the identity (otherwise it is an audit that fuses nothing), then the face crops.
       if (t.outfit) {
@@ -188,18 +225,20 @@ export function replayShot(sample: ShotSample, overrides: Partial<ReplayParams> 
         const audit = faceFresh && frame.t - s.lastClothT >= p.clothingAuditMs;
         s.lastClothT = frame.t;
         if (!faceFresh || audit) {
-          const ev = audit ? null : combine(null, clothingEvidence(t.outfit.match, s.belief, p), t.outfit.body ?? null, p);
-          if (ev) update(s, ev, p.clothAlpha, frame.t);
+          // An unconfirmed identity is not propped up by its own old belief (pipeline.ts).
+          const ev = audit ? null : combine(null, clothingEvidence(t.outfit.match, derived && s.unconfirmed ? {} : s.belief, p), t.outfit.body ?? null, p);
+          if (ev) update(s, ev, p.clothAlpha, frame.t, derived ? ev : undefined);
         }
       }
       if (t.face && Object.keys(t.face.meanSims ?? {}).length) {
         // A frame that strongly names somebody else restarts the belief (applyFace's reset).
         const current = top(s.belief);
-        const raw = faceEvidence(t.face.sims ?? {}, t.face.quality, p);
+        const raw = faceEvidence(t.face.sims ?? {}, t.face.quality, p, corroborated);
         const best = top(raw);
         if (current && best && best.id !== current.id && best.score >= 0.8 && (raw[current.id] ?? 0) < 0.2) s.belief = {};
-        const ev = combine(faceEvidence(t.face.meanSims, t.face.quality, p), null, null, p);
-        if (ev) update(s, ev, p.faceAlpha, frame.t);
+        const ev = combine(faceEvidence(t.face.meanSims, t.face.quality, p, corroborated), null, null, p);
+        // While a partner may be hidden only this frame's own read confirms; otherwise the mean does.
+        if (ev) update(s, ev, p.faceAlpha, frame.t, derived ? (t.hiding ? raw : ev) : undefined);
         s.lastFaceT = frame.t;
         // This frame's read on its own, at the bar the game judged each player's face at.
         const read = top(faceEvidence(t.face.sims ?? {}, t.face.quality, p, new Set(t.face.corroborated ?? [])));
@@ -217,15 +256,16 @@ export function replayShot(sample: ShotSample, overrides: Partial<ReplayParams> 
   if (!best) return { resolved: null, top: null };
   const eligible = new Set(sample.round.eligible ?? []);
   // v2 samples carry the refusals the game applies on top of the belief: an identity not yet
-  // re-earned after a transition, a player the outfit rules out, and an overlap or a crowded frame
-  // where the body's latest read, from a frame within overlapFaceFreshMs of the deciding one, does
-  // not name the same player by the margin on its own (scoring.ts resolveHit). v1 samples lack the
-  // fields and are judged on belief alone.
+  // confirmed or re-earned after a transition, a player the outfit rules out, and an overlap or a
+  // crowded frame where the body's latest read, from a frame within overlapFaceFreshMs of the
+  // deciding one, does not name the same player by the margin on its own (scoring.ts resolveHit).
+  // v1 samples lack the fields and are judged on belief alone. The unconfirmed flag is the replay's
+  // own on samples that record `hiding` (see above), the recorded one otherwise.
   const g = gate as ShotSample['frames'][number]['tracks'][number] | null;
   const decidedAt = sample.frames[last].t;
   const r = decision.read;
   const readNames = Boolean(r && decidedAt - r.t <= p.overlapFaceFreshMs && r.id === best.id && r.margin >= margin);
-  const refused = Boolean(g && (g.unconfirmed || g.reacquiring || g.vetoed?.includes(best.id) || ((g.overlapping || g.ambiguous || g.crowded) && !readNames)));
+  const refused = Boolean(g && (decision.unconfirmed || g.reacquiring || g.vetoed?.includes(best.id) || ((g.overlapping || g.ambiguous || g.crowded) && !readNames)));
   const ok = !conflict && !refused && eligible.has(best.id) && best.score >= threshold && best.margin >= margin && best.margin > 0;
   return { resolved: ok ? best.id : null, top: best };
 }
