@@ -456,9 +456,14 @@ test('a partner hidden behind a track keeps it unconfirmed every frame through a
   // The stale-box check could not have seen him: his track retired and the pan carried Alice off his last box.
   assert.equal(tracker.get(b.id), undefined);
   assert.ok(iou(a.box, bobLastBox) < CROSSING_IOU);
-  // HIDDEN_PARTNER_MS after the two were last seen overlapping, the presumption lapses.
-  t += 440;
-  const [later] = tracker.update([detection(x, 0.24)], t);
+  // HIDDEN_PARTNER_MS after the two were last seen overlapping (here: after her box last overlapped
+  // where his lost track last was), the presumption lapses.
+  const lapse = a.partners![b.id] + HIDDEN_PARTNER_MS;
+  for (; t + 220 <= lapse; readAlice(t)) {
+    t += 220;
+    assert.equal(tracker.update([detection(x, 0.24)], t)[0].unconfirmed, true);
+  }
+  const [later] = tracker.update([detection(x, 0.24)], t + 220);
   assert.equal(later.unconfirmed, false);
   assert.equal(later.partners, undefined);
 });
@@ -564,4 +569,127 @@ test('a persistent overlap starts the identity over once, not every frame, so th
   }
   assert.equal(a.reacquireAt, 100, 'the overlap started the identity over at its onset only');
   assert.ok(a.faceSamples >= 2, 'fresh samples accumulate while the overlap lasts');
+});
+
+test('a neighbour lost behind a track before their boxes reached the crossing overlap stays presumed hidden after their lost track retires', async () => {
+  // crossing-lookalike-faces seed 716 (2026-10-01): Bob was last seen beside Alice at IoU 0.23, under
+  // CROSSING_IOU, then disappeared behind her. Her box overlapped his last box only while his lost
+  // track lived (LOST_TRACK_MS); after it retired he was forgotten, though still behind her, and a
+  // frame that found only his body handed her track his body with nothing to flag it.
+  const { CROSSING_IOU, HIDDEN_PARTNER_MS, LOST_TRACK_MS } = await import('../src/vision/calibration.ts');
+  const { iou } = await import('../src/vision/geometry.ts');
+  const tracker = new Tracker();
+  const [a, b] = tracker.update([detection(0.29, 0.24), detection(0.46, 0.24)], 100);
+  tracker.update([detection(0.30, 0.24), detection(0.46, 0.24)], 320);
+  assert.ok(iou(a.box, b.box) < CROSSING_IOU, 'never seen overlapping');
+  assert.equal(a.partners, undefined);
+  const readAlice = (t: number) => {
+    updateFaceMean(a, [1, 0], t);
+    updateBelief(a, { alice: 1 }, 1, t);
+  };
+  readAlice(320);
+  // Bob is no longer detected; Alice walks on over where he stood and then stays there.
+  let x = 0.30;
+  let t = 320;
+  while (t < 320 + LOST_TRACK_MS + 1100) {
+    t += 220;
+    x = Math.min(x + 0.02, 0.38);
+    const [onlyA] = tracker.update([detection(x, 0.24)], t);
+    assert.equal(onlyA.id, a.id);
+    assert.equal(onlyA.unconfirmed, true, `t=${t}: Bob may be behind her, so the frame has to confirm Alice itself`);
+    readAlice(t);
+  }
+  assert.equal(tracker.get(b.id), undefined, 'his lost track has retired');
+  assert.equal(a.hiding, true);
+  // HIDDEN_PARTNER_MS after her box last overlapped where he was, the presumption lapses.
+  const lapse = a.partners![b.id] + HIDDEN_PARTNER_MS;
+  for (; t + 220 <= lapse; readAlice(t)) {
+    t += 220;
+    assert.equal(tracker.update([detection(x, 0.24)], t)[0].unconfirmed, true);
+  }
+  const [later] = tracker.update([detection(x, 0.24)], t + 220);
+  assert.equal(later.unconfirmed, false);
+  assert.equal(later.hiding, false);
+});
+
+test('a neighbour seen in one frame only is not presumed hidden behind a track once lost: a ghost or a flicker is nobody hiding', async () => {
+  // Review of 2026-10-01: on real group photos where nobody moves, a bystander the detector finds in
+  // one frame and misses in the next leaves a tentative track that a neighbour's box overlaps; every
+  // such flicker made it a partner and restarted HIDDEN_PARTNER_MS, so the neighbour stayed "hiding"
+  // (identity standing on each frame's own reads) for most of the photo. Only confirmed tracks count,
+  // as in the contested rule; a confirmed neighbour lost there still does (the test above).
+  const { CROSSING_IOU, LOST_TRACK_MS } = await import('../src/vision/calibration.ts');
+  const { iou } = await import('../src/vision/geometry.ts');
+  const tracker = new Tracker();
+  const [a] = tracker.update([detection(0.29, 0.24)], 100);
+  tracker.update([detection(0.30, 0.24)], 320);
+  // The flicker beside her, under CROSSING_IOU (as Bob in the test above, but seen in one frame only).
+  const [, ghost] = tracker.update([detection(0.30, 0.24), detection(0.46, 0.24)], 540);
+  assert.equal(ghost.observations, 1, 'seen once: tentative');
+  assert.ok(iou(a.box, ghost.box) < CROSSING_IOU);
+  // Alice moves over where it was, and its lost track's box overlaps hers until it retires.
+  let x = 0.30;
+  let t = 540;
+  let overlapped = false;
+  while (t < 540 + LOST_TRACK_MS + 440) {
+    t += 220;
+    x = Math.min(x + 0.02, 0.38);
+    const [onlyA] = tracker.update([detection(x, 0.24)], t);
+    assert.equal(onlyA.id, a.id);
+    overlapped ||= Boolean(onlyA.overlapping);
+    assert.equal(onlyA.partners, undefined, `t=${t}: a track seen once is not a partner`);
+    assert.equal(onlyA.hiding, false);
+    updateBelief(a, { alice: 1 }, 1, t);
+  }
+  assert.ok(overlapped, 'her box did overlap the lost flicker\'s last box (the overlap rule still applies while it lives)');
+  assert.equal(tracker.get(ghost.id), undefined, 'the flicker\'s track has retired');
+  const [later] = tracker.update([detection(x, 0.24)], t + 220);
+  assert.equal(later.unconfirmed, false, 'nothing presumes anybody hidden behind Alice');
+});
+
+test('a body that an unmatched neighbour\'s track explains about as well as the track that took it comes out unconfirmed', () => {
+  // pan-crossing seed 909 geometry (2026-10-01, found while testing another change): Alice was skipped
+  // for a frame during a pan; the next frame her body landed where Bob's live track's stationary
+  // hypothesis expected him, and live tracks win, so his track took her body and showed LOCK bob on
+  // her. Her own (skipped) track's prediction fitted that body as well: geometry could not tell.
+  const gap = 691;
+  const tracker = new Tracker();
+  const frames: [number, NBox | null, NBox | null][] = [
+    [4816, [0.10, 0.34, 0.24, 0.36], [0.36, 0.35, 0.23, 0.34]],
+    [5032, [0.12, 0.34, 0.24, 0.36], [0.35, 0.35, 0.23, 0.34]],
+    [5248, [0.14, 0.34, 0.23, 0.36], [0.34, 0.35, 0.23, 0.34]],
+    [5464, [0.16, 0.34, 0.26, 0.36], [0.34, 0.34, 0.22, 0.34]],
+    [5680, [0.21, 0.33, 0.24, 0.38], [0.36, 0.35, 0.23, 0.32]],
+    [5916, null, [0.42, 0.35, 0.22, 0.36]],
+  ];
+  let alice!: ReturnType<Tracker['update']>[number];
+  let bob!: ReturnType<Tracker['update']>[number];
+  for (const [t, aBox, bBox] of frames) {
+    const dets = [aBox, bBox].filter((v): v is NBox => v !== null).map((box) => ({ box }));
+    const out = tracker.update(dets, t, 1500, gap);
+    if (aBox) alice = out[0];
+    bob = out[out.length - 1];
+    if (aBox) updateBelief(alice, { alice: 1 }, 1, t);
+    updateBelief(bob, { bob: 1 }, 1, t);
+  }
+  assert.notEqual(alice.id, bob.id);
+  // Only Alice is detected, where Bob's track expects him if he stood still.
+  const [taken] = tracker.update([{ box: [0.36, 0.33, 0.25, 0.36] }], 6132, 1500, gap);
+  assert.equal(taken.unconfirmed, true, 'the body may be the skipped neighbour\'s: the identity waits for evidence read on it');
+  assert.equal(resolveHit(taken, new Set(['alice', 'bob']), 0.5, 0.2, 6140), null);
+});
+
+test('a face beside or below a headless body\'s shoulders is not attached to it and does not widen its hit region', () => {
+  // occlusion seed 690 and the pan crossing at a 2.2 s period, seed 43 (2026-10-01): a body whose head
+  // landmarks were missed took the face of the person behind or beside it through the weak fallback,
+  // and the hit region stretched over that face: LOCK on the near player with the dot on the other.
+  const near = pose([0.35, 0.25, 0.30, 0.65], [kp('leftShoulder', 0.42, 0.40), kp('rightShoulder', 0.58, 0.40), kp('leftHip', 0.44, 0.6), kp('rightHip', 0.56, 0.6)]);
+  const behind = face([0.30, 0.42, 0.06, 0.08], 1);
+  const dets = buildDetections([near], [behind]);
+  assert.equal(dets[0].face, undefined, 'a face at chest height left of the shoulders is somebody else\'s');
+  assert.ok(dets[0].hit![0] > 0.36, `the hit region stays on his torso: ${dets[0].hit}`);
+  assert.equal(dets.length, 2, 'the other face stays a face of its own');
+  // His own face, above and between his shoulders, is still his.
+  const own = face([0.46, 0.27, 0.08, 0.1], 2);
+  assert.equal(buildDetections([near], [own])[0].face?.id, 2);
 });

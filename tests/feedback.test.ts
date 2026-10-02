@@ -130,7 +130,11 @@ test('a recorded instant hit names nobody and carries the raw similarities behin
   assert.ok(sample.frames.some((f) => f.tracks[0].outfit?.match[bob]), 'outfit matches recorded');
   // v2 trace (Astra review): every decision can be explained from the sample alone.
   const { CALIBRATION_VERSION } = await import('../src/vision/calibration');
-  assert.equal(sample.v, 2);
+  assert.equal(sample.v, 3);
+  // v3: a hit carries no refusal; the frames before the lock name the rule that held it back.
+  assert.equal(sample.shot.refusal, null);
+  assert.equal(sample.frames.at(-1)?.refusal, null, 'the locked frame refuses nothing');
+  assert.ok(sample.frames.some((f) => typeof f.refusal === 'string'), `a frame before the lock says why: ${sample.frames.map((f) => f.refusal).join(',')}`);
   assert.equal(sample.app.calibration, CALIBRATION_VERSION);
   const final = sample.frames[6];
   assert.equal(final.bodies, 1);
@@ -192,7 +196,8 @@ test('a burst records the frames after the tap and the replay reproduces the ver
   assert.equal(agreement([labelled]), 1);
   assert.equal(judge(labelled.label!, replayShot(labelled).resolved), 'correct');
   assert.equal(replayShot(labelled, { hitThreshold: 0.99 }).resolved, null, 'an impossible threshold turns it into a miss');
-  assert.equal(replayShot(labelled, { faceReject: 1, faceAccept: 1.5 }).resolved, null, 'a face calibration nothing reaches gives no evidence');
+  // Both bars: a face its outfit did not back was judged at the face-only bar (corroborated, v2).
+  assert.equal(replayShot(labelled, { faceReject: 1, faceAccept: 1.5, faceOnlyReject: 1, faceOnlyAccept: 1.5 }).resolved, null, 'a face calibration nothing reaches gives no evidence');
   const none: ShotSample = { ...sample, label: { kind: 'none', answeredAt: 1, reviewMs: 1 } };
   const e = evaluate([labelled, none]);
   assert.deepEqual({ n: e.n, correct: e.correct, wrong: e.wrong, miss: e.miss }, { n: 2, correct: 1, wrong: 1, miss: 0 });
@@ -221,7 +226,12 @@ test('a burst records the frames after the tap and the replay reproduces the ver
   assert.equal(replayShot({ ...labelled, frames: labelled.frames.map((f, i) => (i === 1 ? { ...f, tracks: f.tracks.map((t) => ({ ...t, conflict: true })) } : f)) }).resolved, null, 'an identity conflict at decision time refuses the hit');
   const withGate = (g: Record<string, unknown>) => replayShot({ ...back, shot: { ...back.shot, decidedAtFrame: 2 }, frames: back.frames.map((f, i) => (i === 2 ? { ...f, tracks: f.tracks.map((t) => ({ ...t, ...g })) } : f)) }).resolved;
   assert.equal(withGate({}), bob, 'the v2 fields absent: judged on belief alone');
-  assert.equal(withGate({ unconfirmed: true }), null, 'an identity not yet re-earned refuses the hit');
+  // Without the v3 hiding field the recorded flag is the unconfirmed state; with it the replay keeps
+  // the state itself, so a transition (reacquiring turning on) sets it and a recorded flag that nothing
+  // on the replayed frames sets is the game's calibration's verdict, not a fact the replay inherits.
+  assert.equal(withGate({ unconfirmed: true, hiding: undefined }), null, 'an identity not yet confirmed refuses the hit (recorded flag, no hiding field)');
+  assert.equal(withGate({ unconfirmed: true, reacquiring: true }), null, 'an identity not yet re-earned after a transition refuses the hit');
+  assert.equal(withGate({ unconfirmed: true }), bob, 'with the hiding field, the replay decides the flag from the frames itself');
   assert.equal(withGate({ vetoed: [bob] }), null, 'a player the outfit rules out is refused');
   assert.equal(withGate({ crowded: true }), bob, 'a crowded frame whose own read names the player by the margin may hit');
   assert.equal(withGate({ overlapping: true }), bob, 'so may an overlap');
@@ -288,6 +298,170 @@ test('the replay applies the game\'s overlap/crowd rule: the body\'s latest read
     backed.frames.some((f) => f.tracks[0].face?.corroborated?.includes(bob)),
     'a face read while the outfit backs it records who it was backed for',
   );
+});
+
+/**
+ * Replay parity on a body somebody may be hidden behind (review of 2026-10-01). Bob, his genuine face
+ * reading 0.72 like his scan (above FACE_CALIB.accept, below FACE_ONLY_CALIB.accept), is alone and
+ * recognised; Alice overlaps him for two frames (8 and 9) and is then presumed hidden behind him
+ * (frames 10-15 over her lost track's box, 16-33 hiding only). A face is judged at the normal bar only
+ * on frames where his own outfit is read and backs it, otherwise at the face-only bar. The game,
+ * recorder and replay are wired as Game.tsx wires them: the galleries taken from the pipeline before
+ * each frame.
+ */
+const hot = (i: number): number[] => Array.from({ length: 8 }, (_, k) => (k === i ? 1 : 0));
+const wardrobe = (top: number, thighs: number) => ({ top: hot(top), thighs: hot(thighs) });
+const DRESSED: Candidate[] = [
+  { id: 'me', profile: { faceModel: 'test', face: [ME_FACE], outfit: { front: wardrobe(6, 7), back: wardrobe(6, 7) } } },
+  { id: 'alice', profile: { faceModel: 'test', face: [ALICE_FACE], outfit: { front: wardrobe(0, 1), back: wardrobe(0, 1) } } },
+  { id: 'bob', profile: { faceModel: 'test', face: [BOB_FACE], outfit: { front: wardrobe(2, 3), back: wardrobe(2, 3) } } },
+];
+const withCosine = (u: number[], cos: number, seed: number): number[] => {
+  const n = embedding(seed);
+  const d = n.reduce((s, x, i) => s + x * u[i], 0);
+  const perp = unit(n.map((x, i) => x - d * u[i]));
+  return u.map((x, i) => cos * x + Math.sqrt(1 - cos * cos) * perp[i]);
+};
+const HIDE_BOB: NBox = [0.30, 0.24, 0.30, 0.61];
+const HIDE_ALICE: NBox = [0.40, 0.25, 0.28, 0.58];
+
+interface HidingScene {
+  /** Face quality of every read; under LIVE_FACE_MIN_QUALITY nothing is learned live. */
+  quality: number;
+  /** Frames on which Bob's torso cannot be read. */
+  unreadable: (frame: number) => boolean;
+  /** Frames on which the crop on Bob's body reads a face that names nobody (0.4 to his scan, like a hidden partner's blurred face). */
+  blurred?: (frame: number) => boolean;
+  /** How a burst settles: by the frames after the tap, or by its timer before any arrives (a stalled camera). */
+  settle: 'frames' | 'timer';
+  /** Test-only: hand the recorder the configured candidates instead of the pipeline's galleries. */
+  galleries?: 'pipeline' | 'configured';
+}
+
+/** Plays the scene up to a tap on frame `tapFrame` and settles it; returns the game's verdict and the recorded sample. */
+async function hidingShot(tapFrame: number, scene: HidingScene) {
+  const clock = { now: 0 };
+  const eligible = new Set(['alice', 'bob']);
+  const pipeline = new VisionPipeline<{ shotId: string }>({ candidates: DRESSED, exclusiveIds: new Set(DRESSED.map((c) => c.id)), eligible, hitThreshold: 0.5, hitMargin: 0.2 }, () => clock.now);
+  const recorder = new ShotRecorder();
+  recorder.startRound({ code: 'ABCD', startAt: 1_000_000, settings: DEFAULT_SETTINGS, playerIds: ['me', 'alice', 'bob'], shooter: 'me' });
+  const bobRead = withCosine(BOB_FACE, 0.72, 21);
+  const blurredRead = withCosine(BOB_FACE, 0.4, 22);
+  const isBob = (d: Detection) => d.box[0] === HIDE_BOB[0];
+  let frameNo = 0;
+  const raw: FrameOps = {
+    sampleOutfit: (d) => ({ sig: !isBob(d) ? wardrobe(0, 1) : scene.unreadable(frameNo) ? null : wardrobe(2, 3), props: null }),
+    cropFaces: async (_r, d) => [{ box: [d.box[0] + d.box[2] * 0.35, d.box[1] + 0.02, d.box[2] * 0.3, 0.08], embedding: !isBob(d) ? ALICE_FACE : scene.blurred?.(frameNo) ? blurredRead : bobRead, quality: scene.quality }],
+    isCurrent: () => true,
+  };
+  // Each body carries a nose under its face, as the pose model reports one: while somebody may be hidden,
+  // a face counts only on the body's own head (tracker.ts faceOnOwnHead).
+  const people = (i: number): Detection[] => (i === 8 || i === 9 ? [HIDE_BOB, HIDE_ALICE] : [HIDE_BOB]).map((box) => ({ box, body: { keypoints: [{ part: 'nose', positionRaw: [box[0] + box[2] * 0.5, box[1] + 0.06], score: 0.9 }] } as unknown as Detection['body'] }));
+  let t = 0;
+  const frame = async () => {
+    const dets = people(frameNo);
+    clock.now = t + PERIOD;
+    const galleries = scene.galleries === 'configured' ? DRESSED : pipeline.galleries();
+    const out = await pipeline.processFrame(dets, t, 1280, 720, CROSSHAIR, recorder.wrapOps(raw, dets));
+    assert.ok(out);
+    recorder.frameDone(out, dets, t, galleries);
+    frameNo++;
+    t += PERIOD;
+    return out;
+  };
+  let last;
+  while (frameNo <= tapFrame) last = await frame();
+  clock.now = t - PERIOD + 30;
+  const L = pipeline.getLatest()!;
+  const fire = pipeline.fire({ shotId: 's' }, CROSSHAIR);
+  const track = fire.kind === 'instant' ? fire.settlement.track : L.tracks[0];
+  recorder.beginShot({ id: 's', tapAt: clock.now, roundNow: 1_000_000 + clock.now, kind: fire.kind, crosshair: CROSSHAIR, frameT: L.t, frameAgeMs: Math.round(clock.now - L.t), allowanceMs: pipeline.staleMs(), trackId: track?.id ?? null, track, width: 1280, height: 720, periodMs: pipeline.periodMs(), staleMs: pipeline.staleMs(), burstMs: pipeline.burstMs(), liveFaces: pipeline.liveFaceCounts(), eligible });
+  let game: string | null = null;
+  let settledBy: 'tap' | 'frame' | 'timer' = 'tap';
+  let settledTrack = track;
+  if (fire.kind === 'instant') game = fire.settlement.resolution?.id ?? null;
+  else if (fire.kind === 'pending' && scene.settle === 'timer') {
+    settledTrack = pipeline.expirePending(fire.token)!.track;
+    settledBy = 'timer';
+  } else {
+    assert.equal(fire.kind, 'pending');
+    for (let k = 0; k < 6; k++) {
+      const out = await frame();
+      if (out.settled) {
+        game = out.settled.resolution?.id ?? null;
+        settledBy = 'frame';
+        settledTrack = out.settled.track;
+        break;
+      }
+    }
+  }
+  const sample = recorder.endShot('s', { outcome: game ? 'hit' : 'unclear', resolvedTo: game, via: 'face', resolveMs: 0, zoom: true, track: settledTrack, settledBy })!;
+  const decided = sample.frames[sample.shot.decidedAtFrame].tracks.find((x) => x.id === (sample.shot.decisionTrackId ?? sample.shot.trackId));
+  return { game: game ? new IdMap(['me', 'alice', 'bob']).pid(game) : null, sample, decided, hiding: Boolean(last?.tracks[0].hiding && !last.tracks[0].overlapping), learned: pipeline.liveFaceCounts().bob ?? 0 };
+}
+
+test('the replay follows the game on a body somebody may be hidden behind, under the game\'s face bar and a looser one', async () => {
+  const bob = new IdMap(['me', 'alice', 'bob']).pid('bob');
+  // A tap while Alice is presumed hidden behind Bob, on the one frame whose torso cannot be read: that
+  // frame's own face read is judged at the face-only bar, names nobody and cannot confirm him. The
+  // camera stalls, so the burst's timer settles the shot on that frame: the game refuses.
+  const hiding: HidingScene = { quality: 0.75, unreadable: (f) => f === 20, settle: 'timer' };
+  const hidden = await hidingShot(20, hiding);
+  assert.ok(hidden.hiding, 'the tap frame is a hiding frame, overlapping nobody');
+  assert.equal(hidden.learned, 0, 'a face under LIVE_FACE_MIN_QUALITY is never learned live');
+  assert.equal(hidden.game, null, 'the game refuses');
+  assert.equal(hidden.decided?.hiding, true, 'the sample records that a partner was presumed hidden');
+  assert.equal(hidden.decided?.unconfirmed, true, 'and that the frame\'s own read did not confirm him');
+  assert.equal(hidden.decided?.outfit, undefined, 'an unreadable torso is not a sample: nothing is recorded for the replay to fuse');
+  assert.equal(replayShot(hidden.sample).resolved, hidden.game, 'the replay refuses with it');
+  // The same scene under a looser face-only bar (accept 0.75): the game itself, with the bar changed for
+  // this run only, confirms Bob on that frame's own read and hits at once. A replay of the sample
+  // recorded under the game's bar, with the looser bar as its override, must say the same; trusting the
+  // recorded flag (the game's bar's verdict) it kept refusing, under-counting what a looser bar hits.
+  const { FACE_ONLY_CALIB } = await import('../src/vision/calibration');
+  const accept = FACE_ONLY_CALIB.accept;
+  let loose;
+  try {
+    FACE_ONLY_CALIB.accept = 0.75;
+    loose = await hidingShot(20, hiding);
+  } finally {
+    FACE_ONLY_CALIB.accept = accept;
+  }
+  assert.equal(loose.game, bob, 'under the looser bar the game hits');
+  assert.equal(loose.sample.frames.length, hidden.sample.frames.length, 'on the same frame');
+  assert.equal(replayShot(hidden.sample, { faceOnlyAccept: 0.75 }).resolved, loose.game, 'and so does the replay of the sample recorded under the game\'s bar');
+
+  // A hiding frame whose torso reads as Bob but whose crop reads a face that names nobody (the hidden
+  // partner's, blurred): his running face mean still names him, but only the frame's own read may
+  // confirm him there (pipeline.ts applyFace, pan-crossing seed 748). The game refuses; so must the
+  // replay, which confirming on the recorded mean similarities would turn into a hit.
+  const blurred = await hidingShot(20, { quality: 0.75, unreadable: () => false, blurred: (f) => f === 20, settle: 'timer' });
+  assert.ok(blurred.hiding);
+  assert.ok(blurred.decided?.outfit && blurred.decided.face, 'his outfit and the blurred face were both read on that frame');
+  assert.equal(blurred.game, null, 'the game refuses on the frame\'s own read');
+  assert.equal(replayShot(blurred.sample).resolved, blurred.game, 'and so does the replay');
+
+  // Later, Alice no longer presumed hidden and Bob's outfit unread for longer than OUTFIT_RECENT_MS: the
+  // game judges his running face mean at the face-only bar too, and refuses. The replay must judge the
+  // recorded mean similarities at the bar the game used for them (the recorded corroboration), not at
+  // the normal bar, which names him.
+  const unbacked = await hidingShot(40, { quality: 0.75, unreadable: (f) => f >= 8, settle: 'frames' });
+  assert.ok(!unbacked.hiding);
+  assert.equal(unbacked.game, null, 'the game refuses an unbacked 0.72 face');
+  assert.equal(replayShot(unbacked.sample).resolved, unbacked.game, 'the replay judges the running mean at the same bar');
+
+  // With a sharp face Bob's own read is learned live while his outfit backs it (pipeline.ts learnFace);
+  // the game then scores later reads against that sample too, and hits. The sample's similarities are
+  // taken against the pipeline's galleries, so the replay sees the read the game decided on.
+  const learned = await hidingShot(40, { quality: 1, unreadable: (f) => f >= 8, settle: 'frames' });
+  assert.ok(learned.learned > 0, 'Bob\'s face was learned live');
+  assert.equal(learned.game, bob, 'the game hits on the learned face');
+  assert.equal(replayShot(learned.sample).resolved, learned.game, 'the replay lands where the game did');
+  // Recorded against the configured candidates (Game.tsx before 2026-10-01.8), the same shot's
+  // similarities leave the learned face out and the replay refuses what the game hit.
+  const configured = await hidingShot(40, { quality: 1, unreadable: (f) => f >= 8, settle: 'frames', galleries: 'configured' });
+  assert.equal(configured.game, bob);
+  assert.equal(replayShot(configured.sample).resolved, null, 'without the learned face the replay misses the game\'s hit');
 });
 
 test('a sample that grows past the upload budget loses its oldest frames first', () => {
@@ -409,4 +583,29 @@ test('range-test photos never outlive ROUND_TTL_MS: the store drops expired roun
   } finally {
     Date.now = realNow;
   }
+});
+
+test('the replay, like the game, never lets an outfit read confirm a body somebody may be hidden behind', () => {
+  // Bob's own outfit read three times on his body while a partner may be hidden behind it, no face:
+  // the game moves the belief but confirms nothing (pipeline.ts, the sliver rules), so it refuses.
+  const track = (t: number) => ({
+    id: 1, box: [0.3, 0.2, 0.3, 0.6] as NBox, hit: [0.36, 0.25, 0.18, 0.35] as NBox, belief: { p2: 0.9, unknown: 0.05 }, via: 'clothing', conflict: false, ambiguous: false,
+    faceSamples: 0, faceAgeMs: null, evidenceAgeMs: 0, inSight: true, unconfirmed: true, reacquiring: false, overlapping: false, crowded: false, hiding: true, freshFace: false,
+    outfit: { match: { p1: { sim: 0.1, cov: 1, thighs: true }, p2: { sim: 0.97, cov: 1, thighs: true } } },
+    t,
+  });
+  const frames = [-400, -200, 0].map((t) => ({ t, tracks: [track(t)], lock: null }));
+  const s: ShotSample = {
+    v: 3,
+    app: { commit: 'x', faceModel: 'x', bodyModel: 'x', ua: 'x' },
+    round: { key: 'K', code: 'ABCD', startAt: 0, settings: DEFAULT_SETTINGS, players: 3, shooter: 'p0', eligible: ['p1', 'p2'] },
+    device: { periodMs: 200, staleMs: 520, burstMs: 500, width: 1280, height: 720 },
+    shot: { id: 's', roundMs: 0, outcome: 'unclear', kind: 'pending', resolvedTo: null, via: null, resolveMs: 0, zoom: false, frameAgeMs: 0, allowanceMs: 0, crosshair: [0.29, 0.35, 0.42, 0.3], trackId: 1, decidedAtFrame: 2, settledBy: 'frame', decisionTrackId: 1, decisionBelief: null },
+    frames: frames as unknown as ShotSample['frames'],
+    target: null,
+  };
+  assert.equal(replayShot(s).resolved, null, 'an outfit read on a hiding body confirms nothing in the replay either');
+  // The same reads on a body nobody may be hidden behind do confirm, and the replay hits.
+  const clear = { ...s, frames: frames.map((f) => ({ ...f, tracks: f.tracks.map((x) => ({ ...x, hiding: false, unconfirmed: false })) })) as unknown as ShotSample['frames'] };
+  assert.equal(replayShot(clear).resolved, 'p2');
 });

@@ -104,6 +104,38 @@ export const MUTE_SWITCH_NOTE = 'On an iPhone, sounds stay off while the mute sw
  * The second line under a HUD verdict: what the player can do about it. Hits and a clean miss need
  * none; every refusal names the one thing that helps.
  */
+/**
+ * The line under UNCLEAR TARGET, from the rule that refused the shot (scoring.ts Refusal and the
+ * burst rules in pipeline.ts ShotRefusal). Null falls back to verdictAdvice's generic line.
+ */
+export function refusalAdvice(refusal: string | null | undefined): string | null {
+  switch (refusal) {
+    case 'hidden-partner':
+      return 'Someone may be behind them: wait for their face.';
+    case 'unconfirmed':
+    case 'reacquiring':
+    case 'transition':
+      return 'They just crossed someone: hold on them a moment.';
+    case 'no-outfit-backing':
+      return 'Get their outfit in view, hips too, or a clear face.';
+    case 'no-fresh-read':
+      return 'People overlap or too many in view: wait for a clear face.';
+    case 'vetoed':
+      return "Their outfit does not match that player's scan.";
+    case 'conflict':
+    case 'other-player':
+      return 'Two people look alike here: fire again.';
+    case 'no-frame':
+      return 'Hold steady: the camera needs a fresh frame.';
+    case 'low-confidence':
+    case 'margin':
+    case 'no-evidence':
+      return 'Get closer or wait for the green name.';
+    default:
+      return null;
+  }
+}
+
 export function verdictAdvice(text: string): string {
   switch (text) {
     case 'UNCLEAR TARGET':

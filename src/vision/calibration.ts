@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-10-01.7';
+export const CALIBRATION_VERSION = '2026-10-01.11';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /**
@@ -206,9 +206,17 @@ export const CROSSING_IOU = 0.25;
  * in front of) that body, not gone: in any frame the detector may find only them and hand the track
  * their body. Until they are seen apart from it again, or this long after the two were last seen
  * overlapping, the track needs evidence read on each frame's own body to lock or hit (tracker.ts
- * Track.partners). Measured on the sim (2026-10-01): a partner stayed hidden 2.4 s before the
- * detector handed the track their body (pan-crossing-far seed 85); the hit-rate cost on the crossing
- * scenarios is the same from 2.5 s to 6 s.
+ * Track.partners, Track.hiding). Measured on the sim (2026-10-01): a partner stayed hidden 2.4 s before
+ * the detector handed the track their body (pan-crossing-far seed 85); the hit-rate cost on the
+ * crossing scenarios is the same from 2.5 s to 6 s. Since 2026-10-01.9 the clock also runs from a
+ * track's box overlapping the last box of a confirmed neighbour lost a moment ago (crossing-lookalike-
+ * faces seed 716: Bob vanished beside Alice before their boxes reached CROSSING_IOU; that rule first
+ * shipped as 2026-10-01.7, a number main's capture-time read age (8cf05bb) already carried, so a
+ * recording marked .7 may come from either build). Since 2026-10-01.9 (no value changed) a face read
+ * counts on such a frame only on the body's own head (tracker.ts faceOnOwnHead), an outfit read alone
+ * confirms nothing there (its pixels may be the partner's), and a burst on such a body ends when a frame
+ * after the tap shows the dot off its torso (the sliver scenarios, tests/sim/engine.ts). Two unshipped
+ * branches both used .8.
  */
 export const HIDDEN_PARTNER_MS = 4000;
 /** Below this height ratio a detection cannot continue a track at all. */
@@ -285,11 +293,54 @@ export const REACQUIRE = { faceSamples: 2, clothingSamples: 2 };
 /**
  * A face names a player at the normal bar (FACE_CALIB) only while their own outfit corroborates it: a
  * readable sample covering at least `OUTFIT_VETO.clearCoverage` (top and trousers) matched them at
- * `clearSim` or better on this body this recently, since its last uncertain transition, and not while
- * it overlaps someone. Otherwise (torso hidden, legs out of view, an overlap, a different outfit) the
- * face must clear FACE_ONLY_CALIB, the bar a candidate enrolled without an outfit gets.
+ * OUTFIT_BACK_MIN or better on this body this recently, since its last uncertain transition, and not
+ * while it overlaps someone, and it was their outfit rather than one like it (OUTFIT_BACK_MIN,
+ * OUTFIT_RIVAL_LEAD). Otherwise (torso hidden, legs out of view, an overlap, a different outfit, a
+ * similar one) the face must clear FACE_ONLY_CALIB, the bar a candidate enrolled without an outfit gets.
  */
 export const OUTFIT_RECENT_MS = 3000;
+/**
+ * A sample backs a player's face (and agrees with them, for a hiding body's frame) only when no other
+ * player's scanned outfit matches it better by more than this, nor this body's samples on average since
+ * its last uncertain transition (Track.outfitReads); a sample that a rival explains that much better
+ * takes back what earlier samples gave. Two reads of the same clothes differ by about this much (0.86
+ * to 0.97 from 2 to 8 m, clothing.ts REGION_CONTRADICTION), so a rival ahead by more is wearing it.
+ * Players in similar dark suits match each other's scans at 0.61 to 0.69 and their own at 0.91 to 0.95
+ * (realcheck antony-blinken/08, 2026-10-02), above clearSim either way: before this rule every suit
+ * backed every suited face, so poor crops of one player (0.38 to 0.55 like another's scan, 0.16 to
+ * 0.40 like his own) were judged at the normal bar for the other, who was locked and hit on the first
+ * player's body. Judged on each sample alone, one sample within the noise of two near-identical suits
+ * still backed the other player for OUTFIT_RECENT_MS (sim dark-suits, 1000-seed sweep).
+ */
+export const OUTFIT_RIVAL_LEAD = 0.1;
+/**
+ * How well outfit samples must match a player's scan to back their face (or agree with them on a
+ * hiding body's frame): the sample itself, and this body's samples on average since its last uncertain
+ * transition (Track.outfitReads), so a lucky read of a suit that only resembles theirs backs nothing
+ * and the reads after it take back what it gave. OUTFIT_VETO.clearSim (0.6) only says a sample does
+ * not contradict a player, which is all lifting a veto needs; a suit like theirs clears it too, and
+ * OUTFIT_RIVAL_LEAD refuses it only when the wearer's own scan explains it better. With nobody enrolled
+ * in it (a bystander, a face-only practice target) there is no rival, and until this bar the suit
+ * backed the face of every player it resembled (review of 2026-10-02: bench &stranger=1 on
+ * antony-blinken/08, LOCK and a hit on P1 with P2, left out of the candidates, under the dot; sim
+ * bystander-suit 228 wrong hits in 100 seeds, faceonly-suit 434). The average leaves out samples that
+ * contradict the player (OUTFIT_VETO.maxSim), which veto them anyway: counted, a glitching sampler (sim
+ * vetoed-player, a quarter of samples another colour) kept the player's own outfit from backing their
+ * face for several reads after each glitch, 5 points of hits.
+ *
+ * Measured 2026-10-02 on the realcheck stills (135 people scanned from a close crop and read in the
+ * group view at full and 0.6 size): a player's own outfit p5 0.78, p10 0.81, 96% of reads at 0.75 or
+ * more in the light of the scan; after a change of light the camera's exposure and white balance
+ * correct (dimmer, brighter, warmer, cooler), p10 0.74 and 90% (92% at 0.70, 95% at clearSim). Other
+ * people in the same photo against a scan: p90 0.72, 7% at 0.75 or more (near-identical clothes, which
+ * no outfit bar can separate); the dark suits on antony-blinken/08 0.65 to 0.75 against each other's
+ * scans. Sim, suits averaging 0.63 / 0.67 / 0.72 like her scan (bystander-suit with share 0.65 / 0.7 /
+ * 0.75, 300 seeds): with the read over time 0.68 / 0.72 / about 0.8 refuse them (0.75 leaves 5
+ * wrong-lock frames on the last); 0.75 on each sample alone leaves 2 and 93 wrong hits on the last two.
+ * 0.75 is the lowest bar that keeps the real photo's suits (up to 0.75 alike in one read) out of reach;
+ * 0.70 also passed 15 bench runs on it.
+ */
+export const OUTFIT_BACK_MIN = 0.75;
 /**
  * While a body overlaps someone (or its face association is ambiguous) the track may hop between
  * them without any transition, carrying the belief across; a hit then needs this body's latest face

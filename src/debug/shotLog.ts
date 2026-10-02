@@ -19,6 +19,8 @@ export interface ShotRecord {
   calibration?: string;
   /** Face samples learned live this round per player at the time of the shot, so a hit decided by a learned sample is visible. */
   liveFaces?: Record<string, number>;
+  /** Why a shot with a body under the dot did not land (pipeline.ts ShotRefusal). */
+  refusal?: string;
 }
 
 /** Per-round record of every FIRE press on this phone, so a wrong hit can be explained afterwards. */

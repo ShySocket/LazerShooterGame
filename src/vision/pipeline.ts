@@ -1,7 +1,7 @@
 import { UNKNOWN_ID, type BodyProps, type OutfitSig } from '../types';
 import { clothingDue, cropBudget } from './schedule';
-import { CLOTHING_AUDIT_MS, CLOTHING_BELIEF_ALPHA, CLOTHING_CONTRADICTION, FACE_BELIEF_ALPHA, FACE_FRESH_MIN_MARGIN, FACE_FRESH_MS, FACE_REFRESH_MIN_LEAD, FACE_REFRESH_MS, FACE_VIA_TIMEOUT_MS, MATURE_TRACK_OBSERVATIONS, TORSO_COVER_FRACTION, LIVE_FACE_ENROLLED_MIN, LIVE_FACE_MIN, LIVE_FACE_MIN_BELIEF, LIVE_FACE_MIN_QUALITY, LIVE_FACE_MIN_TRACK_SAMPLES, LIVE_FACE_NOVELTY, LIVE_FACE_RUNNER_UP, LIVE_FACES_PER_PLAYER, HOP_READ_MARGIN, BODY_CAP } from './calibration';
-import { containsPoint, faceOwner, markUncertain, resetIdentity, trackGapMs, Tracker, type Detection, type Track } from './tracker';
+import { CLOTHING_AUDIT_MS, CLOTHING_BELIEF_ALPHA, CLOTHING_INTERVAL_MS, CLOTHING_CONTRADICTION, FACE_BELIEF_ALPHA, FACE_FRESH_MIN_MARGIN, FACE_FRESH_MS, FACE_REFRESH_MIN_LEAD, FACE_REFRESH_MS, FACE_VIA_TIMEOUT_MS, MATURE_TRACK_OBSERVATIONS, TORSO_COVER_FRACTION, LIVE_FACE_ENROLLED_MIN, LIVE_FACE_MIN, LIVE_FACE_MIN_BELIEF, LIVE_FACE_MIN_QUALITY, LIVE_FACE_MIN_TRACK_SAMPLES, LIVE_FACE_NOVELTY, LIVE_FACE_RUNNER_UP, LIVE_FACES_PER_PLAYER, HOP_READ_MARGIN, BODY_CAP } from './calibration';
+import { containsPoint, faceOnOwnHead, faceOwner, markUncertain, resetIdentity, trackGapMs, Tracker, type Detection, type Track } from './tracker';
 import { crosshairCentre, indexInSight, intersectArea, type NBox } from './geometry';
 import {
   assignIdentities,
@@ -16,6 +16,8 @@ import {
   outfitVetoed,
   reacquired,
   resolveHit,
+  explainHit,
+  type Refusal,
   topBelief,
   updateBelief,
   updateFaceMean,
@@ -76,10 +78,19 @@ export type LockState =
   | { kind: 'top'; id: string }
   | { kind: 'unknown' };
 
+/**
+ * Why a shot with a body under the dot did not land: a decision rule (scoring.ts Refusal), or a burst
+ * rule: it resolved to another player than the one accepted at the tap, the track went through an
+ * uncertain transition after the tap, or no frame after the tap could confirm it before the deadline.
+ */
+export type ShotRefusal = Refusal | 'other-player' | 'transition' | 'no-frame';
+
 export interface ShotSettlement<C> {
   /** The body under the dot at decision time; null when it vanished or was replaced. */
   track: Track | null;
   resolution: Resolution | null;
+  /** Why it did not land, when a body was under the dot and nothing resolved; null otherwise. */
+  refusal: ShotRefusal | null;
   elapsedMs: number;
   zoomed: boolean;
   context: C;
@@ -103,6 +114,8 @@ export interface FrameOutcome<C> {
   periodMs: number;
   /** The detector returned its full BODY_CAP bodies: someone may be missing, hits need a fresh face. */
   crowded: boolean;
+  /** Why the body in sight would not be a hit now (the lock's reason), null when it would or nobody is in sight. */
+  lockRefusal: Refusal | null;
 }
 
 interface PendingShot<C> {
@@ -115,6 +128,8 @@ interface PendingShot<C> {
   context: C;
   /** The player the track was believed to be at the tap, when it had one: the burst may confirm only them. */
   expectedId: string | null;
+  /** The latest reason a burst frame did not confirm the shot, for a settlement by the timer. */
+  lastRefusal: ShotRefusal;
 }
 
 /** Besides the crosshair target, this many other bodies get a face crop per frame, round-robin. */
@@ -122,8 +137,19 @@ const EXTRA_CROPS = 1;
 /** The live-enrolment log kept for the shot log and the bench; older entries roll off. */
 const LEARNED_LOG_MAX = 200;
 
-/** Whether a track other than `id` in the list still covers the point. */
-const coveredByOther = (tracks: Track[], id: number, x: number, y: number): boolean => tracks.some((c) => c.id !== id && containsPoint(c.box, x, y));
+/** Where a box seen on track `t` is expected at `at`: its velocity plus bounded acceleration, as the tracker predicts. */
+function movedTo(b: NBox, t: Track, at: number): NBox {
+  const age = at - t.lastSeen;
+  const ax = Math.max(-b[2] * 0.5, Math.min(b[2] * 0.5, 0.5 * t.ax * age * age));
+  const ay = Math.max(-b[3] * 0.5, Math.min(b[3] * 0.5, 0.5 * t.ay * age * age));
+  return [b[0] + t.vx * age + ax, b[1] + t.vy * age + ay, b[2], b[3]];
+}
+
+/**
+ * Whether a track other than `id` in the list still covers the point at `at`: where it was last seen,
+ * or where its motion has carried it since. A pan carries a skipped person away from their last box.
+ */
+const coveredByOther = (tracks: Track[], id: number, x: number, y: number, at: number): boolean => tracks.some((c) => c.id !== id && (containsPoint(c.box, x, y) || containsPoint(movedTo(c.box, c, at), x, y)));
 
 /**
  * Everything between detector output and a shot verdict: tracking, evidence fusion, identity
@@ -182,8 +208,12 @@ export class VisionPipeline<C = unknown> {
     return Object.fromEntries([...this.liveFaces].map(([id, list]) => [id, list.length]));
   }
 
-  /** The configured candidates with this round's live face samples appended. */
-  private galleries(): Candidate[] {
+  /**
+   * The galleries faces are scored against: the configured candidates with this round's live face
+   * samples appended. Read-only. The shot recorder takes it before each frame, so the similarities a
+   * shot sample carries are the ones the game decided on (a live-learned face included).
+   */
+  galleries(): readonly Candidate[] {
     const source = this.config.candidates;
     if (this.augmented && this.augmented.source === source) return this.augmented.candidates;
     const candidates = source.map((c) => {
@@ -262,8 +292,11 @@ export class VisionPipeline<C = unknown> {
     const mean = updateFaceMean(t, emb, now);
     const fe = faceEvidence(mean, candidates, centredSimilarity, FACE_CALIB, quality, corroborated);
     const ev = combineEvidence({ face: fe, cloth: null, body: null });
-    // The running mean already smooths frame noise, so the belief may follow it quickly.
-    if (ev) updateBelief(t, ev, FACE_BELIEF_ALPHA, now);
+    // The running mean already smooths frame noise, so the belief may follow it quickly. While a
+    // partner may be hidden behind this body, only this frame's own read confirms the identity: the
+    // mean is mostly earlier frames, which may have been another body (pan-crossing seed 748: Bob's
+    // mean named him on a frame whose own face, the hidden partner's, named nobody).
+    if (ev) updateBelief(t, ev, FACE_BELIEF_ALPHA, now, t.hiding ? raw : ev);
     t.via = 'face';
     t.lastFaceAt = now;
   }
@@ -294,8 +327,19 @@ export class VisionPipeline<C = unknown> {
       // Clothing and body ratios only matter while the face is not carrying the identity, except for
       // an occasional audit: a wardrobe that strongly contradicts the face is a reason to re-verify.
       const faceFresh = t.lastFaceAt > 0 && now - t.lastFaceAt < FACE_FRESH_MS && (topBelief(t)?.margin ?? 0) >= FACE_FRESH_MIN_MARGIN;
-      const audit = faceFresh && now - t.lastClothingAt >= CLOTHING_AUDIT_MS;
-      if (sampleClothing && d.body && (!faceFresh || audit)) {
+      // While a partner may be hidden behind this body (tracker.ts Track.hiding) the detector may hand
+      // the track their body in any frame, so the outfit, the cue that tells two bodies apart when
+      // their faces are alike, is checked on every frame rather than once a second
+      // (crossing-lookalike-faces seed 716: the frame that gave Alice's track Bob's body went unread;
+      // read, his outfit is one her own reads had ruled out, a reversal below).
+      const audit = faceFresh && (now - t.lastClothingAt >= CLOTHING_AUDIT_MS || Boolean(t.hiding));
+      // Neither work shedding (schedule.ts) nor the clothing interval spaces that read out: it is what
+      // such a frame's identity stands on (scoring.ts outfitSupports needs this frame's own read), as
+      // the target's crop is what a shot stands on. Spaced 150 ms apart, a phone faster than that left
+      // every other hiding frame unread, judged its own face at the face-only bar, and lost the lock
+      // on a genuine face (review of 2026-10-01: LOCK on 19 of 60 hiding frames at 66 ms per frame).
+      const readOutfit = sampleClothing || (ops.sampleOutfit && t.hiding);
+      if (readOutfit && d.body && (!faceFresh || audit)) {
         // Another person's box over this torso means the pixels may be theirs: abstain.
         const torso = t.hit;
         const covered = dets.some((o, j) => j !== i && intersectArea(o.box, torso) > TORSO_COVER_FRACTION * torso[2] * torso[3]);
@@ -336,8 +380,19 @@ export class VisionPipeline<C = unknown> {
           }
           return;
         }
-        updateBelief(t, ev, CLOTHING_BELIEF_ALPHA, now);
-        t.clothingSince = (t.clothingSince ?? 0) + 1;
+        // While somebody may be hidden at this body, the pixels of its torso may be theirs: a person in
+        // front covering the torso of the body the detector found fills its outfit sample with their
+        // own clothes, which then agree with their name. Such a read moves the belief and may still
+        // rule a player out (above), but it cannot confirm the identity on this frame.
+        updateBelief(t, ev, CLOTHING_BELIEF_ALPHA, now, t.hiding ? {} : ev);
+        // Reads closer together than the clothing interval are one moment seen twice: they move the
+        // belief (at its wall-clock rate) but count once toward re-earning an identity
+        // (REACQUIRE.clothingSamples), so reading a hiding body on every frame of a fast phone does not
+        // re-earn it any sooner than the clothing schedule would.
+        if (t.clothingCountedAt === undefined || now - t.clothingCountedAt >= CLOTHING_INTERVAL_MS) {
+          t.clothingSince = (t.clothingSince ?? 0) + 1;
+          t.clothingCountedAt = now;
+        }
         if (t.via !== 'face' || now - t.lastFaceAt > FACE_VIA_TIMEOUT_MS) t.via = 'clothing';
       }
     });
@@ -351,9 +406,12 @@ export class VisionPipeline<C = unknown> {
       crosshair,
       tracks.map((t) => t.hit),
     );
-    // A person seen a moment ago whose box still covers the dot has not vanished: aiming there is ambiguous.
+    // A person seen a moment ago whose box still covers the dot has not vanished: aiming there is
+    // ambiguous. Their box is where they were or where their motion has carried them since: a pan
+    // carries a skipped person off their last box (pan-crossing-far seed 2146: Alice's last box ended
+    // short of the dot, she had moved over it in front of Bob, and LOCK bob showed).
     const [dotX, dotY] = crosshairCentre(crosshair);
-    const blocked = idx >= 0 && coveredByOther(coasting, tracks[idx].id, dotX, dotY);
+    const blocked = idx >= 0 && coveredByOther(coasting, tracks[idx].id, dotX, dotY, now);
     const inSight: Track | null = idx >= 0 && !blocked && !dets[idx].associationAmbiguous ? tracks[idx] : null;
     let zoomed = false;
     const order: number[] = [];
@@ -397,6 +455,10 @@ export class VisionPipeline<C = unknown> {
       const owned = new Map<number, FaceObservation[]>();
       for (const zf of faces) {
         const owner = faceOwner(zf.box, dets);
+        // While somebody may be hidden at that body (Track.hiding), a face that is not on its own head
+        // may be theirs: the face of the person in front, read on the sliver of the person behind,
+        // would otherwise name the front person on the hidden person's body. It says nothing here.
+        if (owner >= 0 && tracks[owner].hiding && !faceOnOwnHead(zf.box, dets[owner])) continue;
         if (owner >= 0 && !faced.has(owner)) owned.set(owner, [...(owned.get(owner) ?? []), zf]);
       }
       for (const [owner, matched] of owned) {
@@ -421,16 +483,29 @@ export class VisionPipeline<C = unknown> {
     if (p && now >= p.startedAt) {
       const t = inSight?.id === p.trackId ? inSight : null;
       const elapsed = Math.round(decisionAt - p.startedAt);
-      let r = canConfirmShot(p, t, now, decisionAt, stale) && t ? resolveHit(t, eligible, hitThreshold, hitMargin, decisionAt) : null;
+      const confirming = t && canConfirmShot(p, t, now, decisionAt, stale) ? explainHit(t, eligible, hitThreshold, hitMargin, decisionAt) : null;
+      let r = confirming?.hit ?? null;
+      // The reason a frame did not confirm; a frame that could not judge (before the tap, past the
+      // deadline) keeps the last reason a frame gave, or no-frame when none ever could.
+      let refusal: ShotRefusal | null = confirming?.refusal ?? null;
       // A burst that started on one accepted identity must not quietly land on another.
-      if (r && p.expectedId && r.id !== p.expectedId) r = null;
-      // A burst that started on no accepted identity must not land on whoever an uncertain transition
-      // after the tap put on the track: it may now be somebody else's body. This stays true after the
-      // new body re-earns an identity, which is why it reads transitionAt and not reacquireAt (cleared
-      // on re-earning, so the old check could never refuse anything resolveHit had not already
-      // refused; crossing-lookalike-faces seed 63, 2026-10-01: a 1.1 s burst on her settled on him).
-      // With an accepted identity at the tap, the rule above already holds the burst to it.
-      if (r && t && !p.expectedId && (t.transitionAt ?? 0) > p.startedAt) r = null;
+      if (r && p.expectedId && r.id !== p.expectedId) {
+        r = null;
+        refusal = 'other-player';
+      }
+      // A burst must not land on whatever body an uncertain transition after the tap put the track on:
+      // it may be somebody else's. This stays true after the new body re-earns an identity, which is
+      // why it reads transitionAt and not reacquireAt (cleared on re-earning, so the old check could
+      // never refuse anything resolveHit had not already refused; crossing-lookalike-faces seed 63,
+      // 2026-10-01: a 1.1 s burst on her settled on him). An accepted identity at the tap does not
+      // exempt the burst: the rule above holds it to that name, not to that body (slow-phone pan
+      // crossing, seed 858: the track sat on Bob's body believed to be Alice at the tap, hopped back
+      // onto Alice 550 ms later, and the burst landed on her 1.8 s after a tap on him).
+      if (r && t && (t.transitionAt ?? 0) > p.startedAt) {
+        r = null;
+        refusal = 'transition';
+      }
+      if (t && refusal) p.lastRefusal = refusal;
       p.framesLeft--;
       p.zoom ||= zoomed;
       // A frame in which the detector skipped the target is not the target leaving: the burst keeps
@@ -439,19 +514,30 @@ export class VisionPipeline<C = unknown> {
       // frame that cannot select them (ambiguous association, the dot off the observed torso, a
       // neighbour's edge within the band) is a reason to wait for the next frame, not a miss.
       const [cx, cy] = crosshairCentre(crosshair);
-      const someoneElse = !t && dets.some((d, j) => tracks[j].id !== p.trackId && containsPoint(d.box, cx, cy));
+      // While somebody may be hidden behind the target's body (Track.hiding), a frame that sees that
+      // body with the dot off its observed torso may have the dot on the hidden person: that is somebody
+      // else under the dot as much as a detected body is, and waiting would let the burst land on the
+      // target once the dot drifts onto them (pan-crossing-far-sliver seed 28, 2026-10-01: a tap on the
+      // sliver of Bob beside Alice nominated her track from its motion, the next frame saw her with the
+      // dot off her torso on him, and the burst landed on her 670 ms later once he had gone behind her).
+      const seenTarget = t ? null : tracks.find((x) => x.id === p.trackId);
+      const offHiddenTarget = Boolean(seenTarget?.hiding && !containsPoint(seenTarget.hit, cx, cy));
+      const someoneElse = !t && (offHiddenTarget || dets.some((d, j) => tracks[j].id !== p.trackId && containsPoint(d.box, cx, cy)));
       const targetCoasting = !t && !someoneElse && this.tracker.live().some((x) => x.id === p.trackId && now - x.lastSeen <= gapMs);
       if ((!t && !targetCoasting) || r || decisionAt >= p.deadline || p.framesLeft <= 0) {
         this.pending = null;
         // No track means the person under the dot changed or vanished: a miss, not an unclear read of them.
-        settled = { track: t, resolution: r, elapsedMs: elapsed, zoomed: p.zoom, context: p.context };
+        settled = { track: t, resolution: r, refusal: r || !t ? null : (refusal ?? p.lastRefusal), elapsedMs: elapsed, zoomed: p.zoom, context: p.context };
       }
     }
 
     // Live lock indicator so the shooter knows what a shot would do.
     let lock: LockState | null = null;
+    let lockRefusal: Refusal | null = null;
     if (inSight && freshFrame(now, decisionAt, stale)) {
-      const hit = resolveHit(inSight, eligible, hitThreshold, hitMargin, decisionAt);
+      const e = explainHit(inSight, eligible, hitThreshold, hitMargin, decisionAt);
+      const hit = e.hit;
+      lockRefusal = e.refusal;
       if (hit) lock = { kind: 'lock', id: hit.id };
       else {
         const b = bestBelief(inSight, eligible, decisionAt);
@@ -462,7 +548,7 @@ export class VisionPipeline<C = unknown> {
         else lock = { kind: 'unknown' };
       }
     }
-    return { dets, tracks, inSight, lock, settled, periodMs: this.period.ms(), crowded };
+    return { dets, tracks, inSight, lock, lockRefusal, settled, periodMs: this.period.ms(), crowded };
   }
 
   /**
@@ -492,15 +578,10 @@ export class VisionPipeline<C = unknown> {
     const [cx, cy] = crosshairCentre(crosshair);
     let best = idx >= 0 && !L.dets[idx].associationAmbiguous ? L.tracks[idx] : null;
     // Somebody seen a moment ago still covering the dot makes the aim ambiguous, whoever is detected now.
-    if (best && coveredByOther(L.coasting, best.id, cx, cy)) best = null;
+    if (best && coveredByOther(L.coasting, best.id, cx, cy, L.t)) best = null;
     let coasted = false;
-    const moved = (b: NBox, t: Track): NBox => {
-      const age = now - t.lastSeen;
-      // Velocity plus bounded acceleration, the same shift the tracker predicts with.
-      const ax = Math.max(-b[2] * 0.5, Math.min(b[2] * 0.5, 0.5 * t.ax * age * age));
-      const ay = Math.max(-b[3] * 0.5, Math.min(b[3] * 0.5, 0.5 * t.ay * age * age));
-      return [b[0] + t.vx * age + ax, b[1] + t.vy * age + ay, b[2], b[3]];
-    };
+    // Velocity plus bounded acceleration, the same shift the tracker predicts with.
+    const moved = (b: NBox, t: Track): NBox => movedTo(b, t, now);
     const moving = (t: Track) => t.vx !== 0 || t.vy !== 0;
     if (!best && idx === -1) {
       // The pose model skipped the person under the dot for a frame. The burst below must see them
@@ -549,12 +630,12 @@ export class VisionPipeline<C = unknown> {
     // farther player of a pan crossing gave instant wrong hits). Otherwise the burst decides.
     const stillUnder = idx >= 0 && !coasted && indexInSight(L.tracks.map((t, i) => moved(L.dets[i].box, t)), crosshair, L.tracks.map((t) => moved(t.hit, t))) === idx;
     const r = coasted || staleStart || !stillUnder ? null : resolveHit(best, eligible, hitThreshold, hitMargin, now);
-    if (r) return { kind: 'instant', settlement: { track: best, resolution: r, elapsedMs: 0, zoomed: false, context } };
+    if (r) return { kind: 'instant', settlement: { track: best, resolution: r, refusal: null, elapsedMs: 0, zoomed: false, context } };
     // A burst opened from an old frame is still waiting for the slow frame in flight, so it gets that
     // much longer before it gives up.
     const burstMs = this.burstMs() + (staleStart ? allowanceMs : 0);
     const believed = bestBelief(best, eligible, now);
-    const shot: PendingShot<C> = { trackId: best.id, startedAt: now, deadline: now + burstMs, framesLeft: BURST_FRAMES, zoom: false, track: best, context, expectedId: believed && believed.score >= hitThreshold ? believed.id : null };
+    const shot: PendingShot<C> = { trackId: best.id, startedAt: now, deadline: now + burstMs, framesLeft: BURST_FRAMES, zoom: false, track: best, context, expectedId: believed && believed.score >= hitThreshold ? believed.id : null, lastRefusal: 'no-frame' };
     this.pending = shot;
     return { kind: 'pending', token: shot, deadline: shot.deadline, burstMs };
   }
@@ -564,6 +645,6 @@ export class VisionPipeline<C = unknown> {
     const p = this.pending;
     if (!p || p !== token) return null;
     this.pending = null;
-    return { track: p.track, resolution: null, elapsedMs: Math.round(this.clock() - p.startedAt), zoomed: p.zoom, context: p.context };
+    return { track: p.track, resolution: null, refusal: p.lastRefusal, elapsedMs: Math.round(this.clock() - p.startedAt), zoomed: p.zoom, context: p.context };
   }
 }

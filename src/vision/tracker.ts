@@ -43,10 +43,21 @@ export interface Track {
   lastOutfitReadAt?: number;
   /**
    * Players whose own outfit corroborated a face on this body, with when: a readable sample over top
-   * and trousers matched them while the body overlapped nobody (scoring.ts outfitSupports). Reset by
-   * every uncertain transition, so it never carries over to whoever the track lands on next.
+   * and trousers matched them at OUTFIT_BACK_MIN while the body overlapped nobody (scoring.ts
+   * outfitSupports). Reset by every uncertain transition, so it never carries over to whoever the track
+   * lands on next.
    */
   outfitSupport?: Record<string, number>;
+  /**
+   * Each player's outfit similarity summed over the readable samples (top and trousers) taken on this
+   * body outside any overlap since its last uncertain transition: whose outfit the body wears, read
+   * over time rather than from one sample (scoring.ts updateOutfitVeto, OUTFIT_RIVAL_LEAD); `fitSum`
+   * and `fit` the same over the samples that did not contradict the player (OUTFIT_VETO.maxSim), how
+   * much like their scan the outfit reads (OUTFIT_BACK_MIN). Reset with `outfitSupport`.
+   */
+  outfitReads?: Record<string, { sum: number; n: number; fitSum: number; fit: number }>;
+  /** Players the last readable outfit sample on this track agreed with (OUTFIT_BACK_MIN over what it compared, top at least, and no rival ahead by OUTFIT_RIVAL_LEAD), and when. */
+  outfitAgrees?: { at: number; ids: string[] };
   /**
    * When this track last went through an uncertain transition (crossing, reclaim after a gap, a jump,
    * an ambiguous face assignment): 0 when none is pending. Until fresh evidence is gathered after it
@@ -58,19 +69,34 @@ export interface Track {
    * (`reacquireAt` is cleared then): a burst opened before it never lands on this track (pipeline.ts).
    */
   transitionAt?: number;
-  /** Clothing evidence samples taken since `reacquireAt` (back views re-earn the identity this way). */
+  /**
+   * Clothing evidence samples taken since `reacquireAt` (back views re-earn the identity this way),
+   * counting only samples at least CLOTHING_INTERVAL_MS apart: a hiding body's outfit is read on every
+   * frame, and on a fast phone two reads 66 ms apart are one moment seen twice (pipeline.ts).
+   */
   clothingSince?: number;
+  /** When the last sample counted in `clothingSince` was taken; reset with it. */
+  clothingCountedAt?: number;
   /** The last single-frame face read on this track: whom it named, by how much, and when (overlap rule). */
   lastRead?: { at: number; id: string; margin: number };
   /** Whether the previous frame had this track overlapping another or ambiguously associated (onset detection). */
   overlapping?: boolean;
   ambiguous?: boolean;
   /**
-   * Tracks this body was last seen overlapping, with when (HIDDEN_PARTNER_MS). While such a partner is
-   * not detected they may be hidden behind or in front of this body, and the detector may hand this
-   * track their body in any frame; the entry ends once the partner is seen apart from it again.
+   * Tracks this body was last seen overlapping, with when (HIDDEN_PARTNER_MS): both seen, or this body
+   * over the last box of a confirmed neighbour lost a moment ago. While such a partner is not detected they may
+   * be hidden behind or in front of this body, and the detector may hand this track their body in any
+   * frame; the entry ends once the partner is seen apart from it again.
    */
   partners?: Record<number, number>;
+  /**
+   * A partner (see `partners`) is not detected this frame: this frame's body may be theirs. The
+   * identity then stands only on reads of this frame's body (pipeline.ts applyFace and the outfit
+   * check, scoring.ts outfitSupports), never on a running face mean or an outfit read before it, and
+   * a face only when it sits on this body's own head (faceOnOwnHead). The outfit read alone confirms
+   * nothing: the partner may fill its pixels when they stand in front.
+   */
+  hiding?: boolean;
   /** Whether the frame this track was last seen in returned the detector's full BODY_CAP bodies (crowd rule). */
   crowded?: boolean;
   via: 'face' | 'clothing' | 'none';
@@ -142,12 +168,38 @@ function faceAssociationScore(faceBox: NBox, d: Detection): number {
   // Weak fallback for backs/partial poses. It can only win when ownership is unique.
   const [x, y, w, h] = d.box;
   if (cx < x - w * 0.1 || cx > x + w * 1.1 || cy < y - h * 0.1 || cy > y + h * 0.45) return 0;
+  // With both shoulders observed, this body's head can only be above them and between them: a face
+  // anywhere else in the box belongs to somebody standing behind or beside this person.
+  const shoulders = d.body.keypoints.filter((p) => (p.part === 'leftShoulder' || p.part === 'rightShoulder') && p.score >= 0.4 && p.positionRaw.slice(0, 2).every(Number.isFinite));
+  if (shoulders.length === 2) {
+    const [a, b] = shoulders.map((p) => p.positionRaw);
+    if (cy >= (a[1] + b[1]) / 2 || cx < Math.min(a[0], b[0]) || cx > Math.max(a[0], b[0])) return 0;
+  }
   return 0.35 + 0.1 * Math.max(0, 1 - Math.abs(cx - x - w / 2) / (w / 2));
 }
 
 function faceCandidates(faceBox: NBox, dets: Detection[]): { index: number; score: number }[] {
   return dets.map((d, index) => ({ index, score: faceAssociationScore(faceBox, d) }))
     .filter((c) => c.score > 0).sort((a, b) => b.score - a.score);
+}
+
+/**
+ * Whether a face sits on this detection's own head: its box contains the body's nose, or the middle
+ * of its other head landmarks when the nose is missing. A body without head landmarks cannot show
+ * that any face is its own; a face-only detection is its face. faceOwner accepts a face up to most of
+ * a face width off the nose, which is right while nobody else can be there; while somebody may be
+ * hidden at this body (Track.hiding) a face beside its head may be theirs (the face of the person in
+ * front, read on the sliver of the person behind them).
+ */
+export function faceOnOwnHead(faceBox: NBox, d: Detection): boolean {
+  if (!d.body) return true;
+  if (!validBox(faceBox)) return false;
+  const head = d.body.keypoints.filter((p) => HEAD_PARTS.includes(p.part) && p.score >= 0.4 && p.positionRaw.slice(0, 2).every(Number.isFinite));
+  if (!head.length) return false;
+  const nose = head.find((p) => p.part === 'nose');
+  const x = nose ? nose.positionRaw[0] : head.reduce((s, p) => s + p.positionRaw[0], 0) / head.length;
+  const y = nose ? nose.positionRaw[1] : head.reduce((s, p) => s + p.positionRaw[1], 0) / head.length;
+  return containsPoint(faceBox, x, y);
 }
 
 /** Unique owner of a full-frame or zoom face; -1 means missing or ambiguous ownership. */
@@ -267,9 +319,11 @@ export function markUncertain(track: Track, now: number): void {
   track.lastClothingAt = 0;
   track.lastOutfitReadAt = 0;
   track.outfitSupport = undefined;
+  track.outfitReads = undefined;
   track.reacquireAt = now;
   track.transitionAt = now;
   track.clothingSince = 0;
+  track.clothingCountedAt = undefined;
 }
 
 export function resetIdentity(track: Track): void {
@@ -347,7 +401,7 @@ export class Tracker {
     // Every track within its time-to-live is a candidate; beyond the gap the gates are strict and the
     // identity comes back unconfirmed.
     const candidates = this.tracks;
-    this.match(dets, candidates, now, gapMs, assigned);
+    const contested = this.match(dets, candidates, now, gapMs, assigned);
     const out = dets.map((d, i) => {
       let t = assigned.get(i);
       if (!t) {
@@ -365,6 +419,8 @@ export class Tracker {
         // Reclaimed after more than the continuity gap: the body is where it was expected, but the
         // identity must be confirmed by fresh evidence before it can lock or take a hit.
         if (dt > gapMs) markUncertain(t, now);
+        // Another track not seen this frame explains this body about as well: it may be theirs.
+        if (contested.has(t)) markUncertain(t, now);
         const [oldX, oldY] = center(t.box);
         const [newX, newY] = center(d.box);
         const alpha = m.samples === 1 ? 1 : 0.7;
@@ -426,9 +482,23 @@ export class Tracker {
       // A neighbour lost here a moment ago (within the lost-track window, not just the coasting gap)
       // may be standing right behind: the detector alternates between two people in one spot, and the
       // surviving track then hops between them with no jump to notice (crossing-lookalike-faces seed 4).
+      // The neighbour becomes a partner (below), so the presumption outlives their lost track: a person
+      // can vanish behind another before their two boxes ever reach CROSSING_IOU, and stay there after
+      // the lost track retires (crossing-lookalike-faces seed 716: Bob, last seen at IoU 0.23 beside
+      // Alice, was forgotten 1.5 s later while still behind her; a frame then gave her track his body).
+      // Only a confirmed neighbour becomes a partner this way: a track seen once is too often a
+      // duplicate or a ghost (the contested rule's reason below), and on real group photos the
+      // one-frame tracks of a flickering bystander kept restarting the clock (review of 2026-10-01:
+      // 232 of 261 track-frames of one still photo presumed somebody hidden behind the body). The
+      // lost track's box still flags the overlap above while it lives.
       for (const c of this.tracks) {
         if (c.lastSeen === now || now - c.lastSeen > ttlMs) continue;
-        if (iou(out[i].box, c.box) >= CROSSING_IOU) overlap.add(out[i]);
+        if (iou(out[i].box, c.box) >= CROSSING_IOU) {
+          overlap.add(out[i]);
+          if (!isConfirmed(c)) continue;
+          out[i].partners = { ...out[i].partners, [c.id]: now };
+          c.partners = { ...c.partners, [out[i].id]: now };
+        }
       }
     }
     // A partner who stopped being detected while overlapping this body is hidden behind or in front
@@ -460,17 +530,18 @@ export class Tracker {
         else t.unconfirmed = true;
       } else if (hiding.has(t)) {
         // Not a new transition (the overlap that started it already was one): the identity is kept,
-        // and this frame's own face or outfit read confirms it (scoring.ts updateBelief).
+        // and this frame's own face read on this body's head confirms it (scoring.ts updateBelief).
         t.unconfirmed = true;
       }
       t.overlapping = overlap.has(t);
+      t.hiding = hiding.has(t);
     }
     this.lastUpdate = now;
     return out;
   }
 
-  /** Mutual-best matching of detections against live and briefly skipped tracks. */
-  private match(dets: Detection[], candidates: Track[], now: number, gapMs: number, assigned: Map<number, Track>): void {
+  /** Mutual-best matching of detections against live and briefly skipped tracks; returns the tracks whose match is contested. */
+  private match(dets: Detection[], candidates: Track[], now: number, gapMs: number, assigned: Map<number, Track>): Set<Track> {
     const live = candidates.map((t) => t.lastSeen === this.lastUpdate);
     const scores = dets.map((d) => candidates.map((t, ti) => {
       const gapped = !live[ti];
@@ -559,6 +630,23 @@ export class Tracker {
       const ti = bestTrack[i];
       if (ti >= 0 && bestDetection[ti] === i) assigned.set(i, candidates[ti]);
     });
+    // Live tracks win a body over skipped ones, but that is a tie-break, not evidence: when a track
+    // left unmatched this frame fits the body about as well as the one that took it (no clear
+    // MATCH_WIN_MARGIN win), geometry cannot tell whose body it is, and the identity on it must be
+    // re-earned (pan-crossing seed 909 geometry: Alice was skipped for a frame during a pan, her body
+    // then landed where Bob's live track expected him if he stood still, and LOCK bob showed on her).
+    // Only confirmed tracks count: a track seen once is too often a duplicate or a ghost.
+    const taken = new Set(assigned.values());
+    const contested = new Set<Track>();
+    for (const [i, t] of assigned) {
+      const ti = candidates.indexOf(t);
+      for (let ci = 0; ci < candidates.length; ci++) {
+        const c = candidates[ci];
+        if (c === t || taken.has(c) || !confirmed[ci]) continue;
+        if (scores[i][ci] >= MATCH_MIN_SCORE && scores[i][ci] > scores[i][ti] - MATCH_WIN_MARGIN) contested.add(t);
+      }
+    }
+    return contested;
   }
 
   /** Every track still within its time-to-live, including ones not matched this frame. */

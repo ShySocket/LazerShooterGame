@@ -33,6 +33,14 @@ The question this session answers: when good face evidence disappears, does the 
 
 The sample records each body's box, so face and torso size in pixels can be read back per shot alongside the distance.
 
+**Reading the refusals.** Every refused shot names its rule: on the HUD, in Practice review, and in the report's "rejected player shots by rule". The ones that point at something to change:
+- `no-outfit-backing`, or `not-a-player` on a player who is in frame: their scan has no readable outfit with the hips. Rescan them with the hips in view.
+- `transition` or `reacquiring` piling up on one player: their face reads noisily at that distance. Try closer, or better light.
+- `hidden-partner` right after crossings: the hidden-partner rules working as designed. Note how often it costs a shot you think was clear.
+- `no-frame`: the phone is too slow for the burst. Note the phone.
+
+The rest are what they say. TRACKING_IMPROVEMENT_PLAN.md (2026-10-02) has the real-photo baseline.
+
 **Reading it back.**
 
 ```bash
@@ -48,6 +56,11 @@ npm run session:report -- --eval 2026-10-08
 ```
 
 (the date of the held-out session; a round key or key prefix works too). Give the tuning tools the same argument, `npm run feedback:pull -- --eval 2026-10-08` and `npm run replay -- <export.json> --eval 2026-10-08`: they leave those rounds out of the triage and the calibration sweep and say how many they left out.
+
+**Scan where you play.** A player's outfit backs their face only when it reads like their scan (0.75 or more). A scan in other light, for example outdoors before an indoor round, can leave everybody judged by face alone, and front-facing hits then drop sharply (TRACKING_IMPROVEMENT_PLAN.md, 2026-10-02). Make this the first cell of the session:
+1. Scan two players in the venue's light, and two in other light (another room, or by a window).
+2. Shoot all four at 3 m face-on.
+3. Compare their legit success and their `no-outfit-backing` refusals in the report.
 
 **Acceptance targets** (proposed by the review, not claims about today's build):
 

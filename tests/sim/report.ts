@@ -1,16 +1,20 @@
 import { aggregate, SCENARIOS, simulate } from './engine';
 
 /**
- * Prints the laser-tag simulation table: npm run sim [scenario-name-substring] [--seeds N] [--strict].
- * With --strict the process exits 1 on any wrong hit or wrong-lock frame and prints the trace around
- * each one, so a wide seed sweep is an acceptance gate rather than a report.
+ * Prints the laser-tag simulation table: npm run sim [scenario-name-substring] [--seeds N] [--from S] [--strict].
+ * Seeds run from S (default 1) to S + N - 1, so a sweep beyond the gate's 100 seeds can be split up
+ * (npm run sim -- crossing --from 101 --seeds 900). With --strict the process exits 1 on any wrong
+ * hit or wrong-lock frame and prints the trace around each one, so a wide seed sweep is an
+ * acceptance gate rather than a report.
  */
 const args = process.argv.slice(2);
-const seedsArg = args.indexOf('--seeds');
-const seedCount = seedsArg >= 0 ? Number(args[seedsArg + 1]) : 3;
+const valueOf = (flag: string): number | null => (args.indexOf(flag) >= 0 ? Number(args[args.indexOf(flag) + 1]) : null);
+const seedCount = valueOf('--seeds') ?? 3;
+const firstSeed = valueOf('--from') ?? 1;
 const strict = args.includes('--strict');
-const filter = args.filter((a, i) => !a.startsWith('--') && (seedsArg < 0 || i !== seedsArg + 1));
-const seeds = Array.from({ length: seedCount }, (_, i) => i + 1);
+const valueIndexes = new Set(['--seeds', '--from'].map((f) => args.indexOf(f)).filter((i) => i >= 0).map((i) => i + 1));
+const filter = args.filter((a, i) => !a.startsWith('--') && !valueIndexes.has(i));
+const seeds = Array.from({ length: seedCount }, (_, i) => i + firstSeed);
 
 const pct = (n: number, d: number) => (d ? `${Math.round((100 * n) / d)}%` : '-');
 const rows: Record<string, string | number>[] = [];

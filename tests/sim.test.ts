@@ -62,6 +62,20 @@ test('a crossing during a camera pan never swaps identities', async () => {
   assert.ok(hitRate(a) >= 0.35, describe(a));
 });
 
+test('aiming at the visible sliver of a half-hidden player never hits or locks the player in front', async () => {
+  // 1000 seeds on 2026-10-01, the clothing sampler reading whoever fills a torso: before the rules for
+  // a body somebody may be hidden at, crossing-sliver 1 wrong-lock frame, pan-crossing-far-sliver 24
+  // wrong hits (the burst rule) and 1 wrong-lock frame (a face beside the body's own head),
+  // crossing-backs-sliver 20 wrong-lock frames (an outfit read confirming the name); after, none,
+  // and 87%, 69% and 76% of shots land.
+  for (const name of ['crossing-sliver', 'pan-crossing-far-sliver', 'crossing-backs-sliver']) {
+    const a = await run(name);
+    assert.equal(a.wrong, 0, describe(a));
+    assert.equal(a.wrongLockFrames, 0, describe(a));
+    assert.ok(hitRate(a) >= 0.4, describe(a));
+  }
+});
+
 test('same-hue tops of a different shade are still told apart from behind', async () => {
   const a = await run('lookalike-tops');
   assert.equal(a.wrong, 0, describe(a));
@@ -109,14 +123,22 @@ test('a crossing with both players facing away never swaps their identities', as
   const a = await run('crossing-backs');
   assert.equal(a.wrong, 0, describe(a));
   assert.equal(a.wrongLockFrames, 0, describe(a));
-  assert.ok(hitRate(a) >= 0.75, describe(a));
+  // 1000 seeds: 81.6% before 2026-10-01.8, 58.6% after. A back view with somebody possibly hidden
+  // behind it cannot be confirmed by its outfit, whose pixels may be theirs (crossing-backs-sliver:
+  // 20 wrong-lock frames in 1000 seeds before), so it waits until they are seen apart or 4 s pass.
+  assert.ok(hitRate(a) >= 0.45, describe(a));
 });
 
 test('a player walking in front of the target does not become the target', async () => {
   const a = await run('occlusion');
   assert.equal(a.wrong, 0, describe(a));
   assert.equal(a.wrongLockFrames, 0, describe(a));
-  assert.ok(hitRate(a) >= 0.8, describe(a));
+  // Seeds 1-3 are hard ones: 26 hits of 32 possible shots (81%) at 2026-10-01.7, 26 of 33 (79%) once
+  // a neighbour seen in one frame no longer counts as hidden behind the target: the same hits, with
+  // fewer crops shifting the timing so one more refused shot had the target under the dot. A face is
+  // also shown to be the body's own only with a head landmark under it (tracker.ts faceOnOwnHead), which
+  // cost one burst on frames whose pose had no nose. 1000 seeds: 96.3% before, 96.0-96.5% after.
+  assert.ok(hitRate(a) >= 0.75, describe(a));
 });
 
 test('a target who turns their back and then faces the shooter again stays hittable throughout', async () => {
@@ -157,6 +179,53 @@ const REGRESSION_SEEDS: [string, number][] = [
   // took it and showed LOCK alice with the dot on him (tracker.ts Track.partners, HIDDEN_PARTNER_MS).
   ['pan-crossing-far', 85],
   ['crossing-lookalike-faces', 63],
+  // 2026-10-01, seeds beyond the 100-seed gate: a track slid onto the body of somebody hidden behind
+  // it with nothing geometric to notice, and carried the identity across. 716: Bob vanished beside
+  // Alice before their boxes reached the crossing overlap, so he was forgotten once his lost track
+  // retired (tracker.ts, a lost neighbour is a partner too); his look-alike face then read as her
+  // on her own earlier outfit read. 643: the same with a look-alike stranger. 748 and 740: the
+  // running face mean confirmed the believed player on a frame whose own face named nobody
+  // (pipeline.ts, while a partner may be hidden each frame stands on its own reads). 690: a body
+  // without head landmarks took the face of the person behind it and its hit region stretched over
+  // her (tracker.ts, a face goes with a headless body only above and between its shoulders).
+  // 2146: the detector skipped Alice during a pan; her last box ended short of the dot but she had
+  // moved over it, in front of Bob (pipeline.ts coveredByOther, where the motion carried her).
+  // The two "this frame's own reads" rules (scoring.ts outfitSupports' same-frame agreement, and
+  // applyFace confirming by the frame's own read rather than the running mean) are guarded by their
+  // unit tests in tests/pipeline.test.ts (seeds 716 and 748 named there), not by these pins: with
+  // either rule reverted alone every seed here stays clean, because the other fixes cover them too.
+  ['crossing-lookalike-faces', 716],
+  ['crossing-lookalike-stranger', 643],
+  ['pan-crossing', 748],
+  ['pan-crossing-far', 740],
+  ['occlusion', 690],
+  ['pan-crossing-far', 2146],
+  // 2026-10-01, aiming at the sliver of the farther player beside the nearer one: a tap on Bob's sliver
+  // nominated Alice's track from its motion; the next frame saw her with the dot off her torso, on
+  // him; the burst waited until he had gone behind her and the dot with him onto her, and landed on
+  // her 670 ms after the tap (pipeline.ts, with somebody maybe hidden behind the target, a frame
+  // showing the dot off their torso ends the burst).
+  ['pan-crossing-far-sliver', 28],
+  // The same scenario with the clothing sampler reading whoever fills the torso (world.ts frontPixels):
+  // a frame found only Bob's body, the sliver beside Alice, and her track took it; the crop over his
+  // body found her face beside his head, faceOwner gave it to him, his torso read her clothes, and the
+  // two together showed LOCK alice with the dot on him (tracker.ts faceOnOwnHead).
+  ['pan-crossing-far-sliver', 844],
+  // Back views (2026-10-01): the outfit is all there is, and on the frame that handed Alice's track
+  // Bob's body her clothes over his torso confirmed her name there. 180: the same in the face-on
+  // crossing, on a frame with no face read on his body (pipeline.ts, an outfit read cannot confirm
+  // while somebody may be hidden at the body).
+  ['crossing-backs-sliver', 65],
+  ['crossing-sliver', 180],
+  // 2026-10-02 (realcheck shoot, antony-blinken/08): Bob in a suit like Alice's; poor crops of his face
+  // read like her at the normal bar because her suit, which his only resembles, backed her face on his
+  // body (scoring.ts updateOutfitVeto, OUTFIT_RIVAL_LEAD, OUTFIT_BACK_MIN). Pinned while cropFaces drew
+  // its random numbers in another order (seed 1: 2 wrong hits and 14 wrong-lock frames; seed 167, his
+  // trousers and hair nearly hers, one sample within 0.1 backing her for 3 s: 2 and 7). Re-measured in
+  // the restored order with both rules off: seed 1 6 wrong-lock frames, seed 167 4; with the backing bar
+  // alone, seed 167 still 3 (his suit is close enough to hers that only the rival rule refuses it).
+  ['dark-suits', 1],
+  ['dark-suits', 167],
 ];
 for (const [name, seed] of REGRESSION_SEEDS) {
   test(`regression: ${name} seed ${seed} has no wrong hit and no wrong lock`, async () => {
@@ -217,6 +286,30 @@ test('identity does not ride across a crossing, and a wrongly vetoed player cost
   assert.ok(hitRate(await run('vetoed-player')) >= 0.6, 'a wrongly vetoed player is still hit most of the time');
   const { OUTFIT_VETO, CLOTHING_AUDIT_MS } = await import('../src/vision/calibration');
   assert.ok(OUTFIT_VETO.holdMs >= 2 * CLOTHING_AUDIT_MS, 'a veto must outlast the clothing audit, or it lapses between samples');
+});
+
+test('a player in a suit like another player\'s is never taken for him, even when crops of his face read like him', async () => {
+  // Realcheck shoot, 2026-10-02 (antony-blinken/08): LOCK P1 and a hit on P1 with P2 under the dot.
+  // 100 seeds: before a suit had to be the player's own to back his face, 75 wrong hits, 677 wrong-lock
+  // frames, 59% of shots landing; after, none, and 64%. 1000 seeds: none, 65% (with the rival rule
+  // judged on each sample alone, wrong hits beyond seed 100). Counted in the restored random order
+  // (world.ts cropFaces); the first count, in the order the rule's commit had changed, was 59 and 570.
+  const a = await run('dark-suits');
+  assert.equal(a.wrong, 0, describe(a));
+  assert.equal(a.wrongLockFrames, 0, describe(a));
+  assert.ok(hitRate(a) >= 0.5, describe(a));
+});
+
+test('a suit that only resembles a player\'s backs nobody, whoever wears it: a bystander or a face-only target', async () => {
+  // Review of the rival-suit rule, 2026-10-02: with nobody enrolled in the suit there is no rival, and
+  // a resemblance above OUTFIT_VETO.clearSim backed her face on his body. 100 seeds before
+  // OUTFIT_BACK_MIN: bystander-suit 221 wrong hits and 1415 wrong-lock frames, faceonly-suit 419 and 2582.
+  const a = await run('bystander-suit');
+  assert.equal(a.correct + a.wrong, 0, describe(a));
+  assert.equal(a.wrongLockFrames, 0, describe(a));
+  const b = await run('faceonly-suit');
+  assert.equal(b.wrong, 0, describe(b));
+  assert.equal(b.wrongLockFrames, 0, describe(b));
 });
 
 test('a crowd past the detector body cap never produces a wrong hit or lock', async () => {

@@ -229,6 +229,115 @@ test('a contradicting outfit rules a player out on that body whatever the face s
   assert.ok(!outfitVetoed(t, 'alice', 2000), 'a matching outfit lifts it');
 });
 
+test('an outfit backs a face only when it is that player\'s, not a rival suit it merely resembles (realcheck antony-blinken/08, 2026-10-02)', async () => {
+  const { outfitSupports, outfitVetoed, updateOutfitVeto } = await import('../src/vision/scoring');
+  const { OUTFIT_BACK_MIN } = await import('../src/vision/calibration');
+  // Two dark suits sharing four fifths of every region: each matches the other's scan at 0.8 and its
+  // own at 1, a lead of 0.2. P1's and P2's matched at 0.61 to 0.69 on the bench (own 0.91 to 0.95),
+  // which OUTFIT_BACK_MIN alone now refuses; suits this close clear that bar, so only the rival rule
+  // (OUTFIT_RIVAL_LEAD) tells them apart here.
+  const suit = (own: number) => {
+    const region = (shared: number) => { const h = new Array(51).fill(0); h[shared] = 0.8; h[shared + own] = 0.2; return h; };
+    return { top: region(0), thighs: region(4), shins: region(4), hair: region(8) };
+  };
+  const p1 = suit(20);
+  const p2 = suit(30);
+  const profile = (o: ReturnType<typeof suit>) => ({ outfit: { front: o, back: o } }) as Profile;
+  const cands = [{ id: 'p1', profile: profile(p1) }, { id: 'p2', profile: profile(p2) }];
+  assert.ok(0.8 >= OUTFIT_BACK_MIN, 'the suits clear the backing bar: the rival rule is what is tested here');
+  const onP2 = track();
+  updateOutfitVeto(onP2, p2, cands, 1000);
+  assert.ok(outfitSupports(onP2, 'p2', 1000), 'his own suit backs his face');
+  assert.ok(!outfitSupports(onP2, 'p1', 1000), 'a suit that only resembles P1\'s, and is P2\'s, backs nobody else\'s face');
+  assert.ok(!outfitVetoed(onP2, 'p1', 1000), 'nor does it rule P1 out: it does not contradict him');
+  assert.deepEqual(onP2.outfitAgrees?.ids, ['p2'], 'on a hiding body\'s frame it agrees with its owner only');
+  // Twins in one outfit: nothing tells them apart by clothes, so both stay backed and the face must.
+  const twins = [{ id: 'p1', profile: profile(p2) }, { id: 'p2', profile: profile(p2) }];
+  const onTwin = track();
+  updateOutfitVeto(onTwin, p2, twins, 1000);
+  assert.ok(outfitSupports(onTwin, 'p1', 1000) && outfitSupports(onTwin, 'p2', 1000));
+  // A veto on P1 is still lifted by a sample that clearly matches him, even if P2's scan matches it better.
+  const vetoed = track();
+  vetoed.outfitVeto = { p1: { at: 900, eased: false } };
+  updateOutfitVeto(vetoed, p2, cands, 1000);
+  assert.ok(!outfitVetoed(vetoed, 'p1', 1000), 'a clear match is no contradiction');
+  // One sample within the noise of the two suits (his own read at 0.88, P1's at 0.82: within
+  // OUTFIT_RIVAL_LEAD) backs both on a body nothing else is known about...
+  const blur = (shared: number) => { const h = new Array(51).fill(0); h[shared] = 0.8; h[shared + 30] = 0.08; h[shared + 20] = 0.02; h[50] = 0.1; return h; };
+  const near = { top: blur(0), thighs: blur(4), shins: blur(4), hair: blur(8) };
+  const fresh = track();
+  updateOutfitVeto(fresh, near, cands, 1000);
+  assert.ok(outfitSupports(fresh, 'p1', 1000) && outfitSupports(fresh, 'p2', 1000), 'one sample this close cannot tell the suits apart');
+  // ...but not once this body's samples have shown whose suit it is (dark-suits, 1000-seed sweep of
+  // 2026-10-02: one such sample backed the other player for 3 s while every other read said otherwise)...
+  const known = track();
+  for (let i = 0; i < 3; i++) updateOutfitVeto(known, p2, cands, 1000 + i * 200);
+  updateOutfitVeto(known, near, cands, 1600);
+  assert.ok(!outfitSupports(known, 'p1', 1600) && outfitSupports(known, 'p2', 1600), 'his samples so far are his suit, not P1\'s');
+  // ...and the next sample that is plainly his own takes back what that one sample gave P1.
+  updateOutfitVeto(fresh, p2, cands, 1200);
+  assert.ok(!outfitSupports(fresh, 'p1', 1200) && outfitSupports(fresh, 'p2', 1200), 'the freshest read of his suit decides');
+});
+
+test('an outfit that only resembles a player\'s backs nobody, even with no rival to explain it: a bystander in a suit like hers (2026-10-02)', async () => {
+  const { outfitSupports, outfitVetoed, updateOutfitVeto } = await import('../src/vision/scoring');
+  const { OUTFIT_BACK_MIN, OUTFIT_VETO } = await import('../src/vision/calibration');
+  // Her dark suit, and one like it on somebody nobody enrolled: two thirds of every region shared, so it
+  // matches her scan at 0.65, above OUTFIT_VETO.clearSim, as P2's suit matched P1's, P4's and P6's
+  // scans on the bench (0.65 to 0.69). Only she is a candidate: no rival scan explains his suit better.
+  const region = (shared: number, rest: [number, number][]) => { const h = new Array(51).fill(0); h[shared] = 0.65; for (const [i, v] of rest) h[shared + i] = v; return h; };
+  const dress = (rest: [number, number][]) => ({ top: region(0, rest), thighs: region(4, rest), shins: region(4, rest), hair: region(8, rest) });
+  const hers = dress([[20, 0.35]]);
+  const his = dress([[30, 0.35]]);
+  // One read of his suit that the noise brings within 0.81 of hers.
+  const lucky = dress([[20, 0.16], [30, 0.19]]);
+  const cands = [{ id: 'p1', profile: { outfit: { front: hers, back: hers } } as Profile }];
+  assert.ok(0.65 >= OUTFIT_VETO.clearSim && 0.65 < OUTFIT_BACK_MIN && 0.81 >= OUTFIT_BACK_MIN, 'the resemblance is above the veto-lifting bar and below the backing bar; the lucky read above it');
+  const bystander = track();
+  updateOutfitVeto(bystander, his, cands, 1000);
+  assert.ok(!outfitSupports(bystander, 'p1', 1000), 'a suit that only resembles hers does not back her face on his body');
+  assert.ok(!outfitVetoed(bystander, 'p1', 1000), 'nor does it rule her out: it does not contradict her');
+  assert.deepEqual(bystander.outfitAgrees?.ids, [], 'on a hiding body\'s frame it agrees with nobody');
+  // Her own suit backs her.
+  const her = track();
+  updateOutfitVeto(her, hers, cands, 1000);
+  assert.ok(outfitSupports(her, 'p1', 1000), 'her own suit backs her face');
+  // The legitimate side of the bar: her own suit read a little off, as after a light change the camera
+  // corrects (real photos: p5 0.78 in the light of the scan, p10 0.74 after a corrected change), still
+  // backs her at 0.78. Raising OUTFIT_BACK_MIN to 0.80 would leave about 10% of players unbacked in the
+  // light of the scan and 16% after such a change (verifier of 2026-10-02): this assertion fails first.
+  const offLight = track();
+  updateOutfitVeto(offLight, dress([[20, 0.13], [30, 0.22]]), cands, 1000);
+  assert.ok(outfitSupports(offLight, 'p1', 1000), 'her own suit read at 0.78 still backs her face');
+  // The resemblance still lifts a veto on her: lifting needs only a sample that does not contradict her.
+  const vetoed = track();
+  vetoed.outfitVeto = { p1: { at: 900, eased: false } };
+  updateOutfitVeto(vetoed, his, cands, 1000);
+  assert.ok(!outfitVetoed(vetoed, 'p1', 1000), 'a clear match is no contradiction');
+  assert.ok(!outfitSupports(vetoed, 'p1', 1000), 'but it backs nothing');
+  // One lucky read does not back her on a body whose reads have resembled hers all along...
+  const known = track();
+  for (let i = 0; i < 3; i++) updateOutfitVeto(known, his, cands, 1000 + i * 200);
+  updateOutfitVeto(known, lucky, cands, 1600);
+  assert.ok(!outfitSupports(known, 'p1', 1600), 'his reads so far average 0.69 like hers');
+  // ...and on a fresh body the reads that follow take back what a first lucky read gave.
+  const fresh = track();
+  updateOutfitVeto(fresh, lucky, cands, 1000);
+  assert.ok(outfitSupports(fresh, 'p1', 1000), 'a first read this close backs her');
+  updateOutfitVeto(fresh, his, cands, 1200);
+  assert.ok(!outfitSupports(fresh, 'p1', 1200), 'his next read brings the average to 0.73: no longer');
+  // A glitched read of her own suit (another colour entirely: a contradiction, so a veto of its own)
+  // does not count against her average: the next good read lifts the veto and backs her face again.
+  const hot = (i: number) => { const h = new Array(51).fill(0); h[i] = 1; return h; };
+  const glitch = { top: hot(40), thighs: hot(44), shins: hot(44), hair: hot(46) };
+  const glitched = track();
+  updateOutfitVeto(glitched, hers, cands, 1000);
+  updateOutfitVeto(glitched, glitch, cands, 1200);
+  assert.ok(outfitVetoed(glitched, 'p1', 1200), 'the glitched read rules her out for now');
+  updateOutfitVeto(glitched, hers, cands, 1400);
+  assert.ok(!outfitVetoed(glitched, 'p1', 1400) && outfitSupports(glitched, 'p1', 1400), 'her next good read lifts it and backs her (averaged with the glitch: 0.67)');
+});
+
 test('an empty signal map is absent, not a zero vote', () => {
   const faceOnly = combineEvidence({ face: { alice: 1, [UNKNOWN_ID]: 0 }, cloth: null, body: null })!;
   const withEmptyCloth = combineEvidence({ face: { alice: 1, [UNKNOWN_ID]: 0 }, cloth: {}, body: {} })!;
@@ -262,4 +371,30 @@ test('a wrongly vetoed real player still claims her name, so a look-alike elsewh
   assert.equal(lookalike.identityConflict, true, 'the weaker claim on her name is a conflict');
   assert.equal(resolveHit(lookalike, eligible, 0.5, 0.2, 1000), null);
   assert.equal(resolveHit(realAlice, eligible, 0.5, 0.2, 1000), null, 'the misread veto only costs her a refusal');
+});
+
+test('explainHit names the rule behind every refusal, in resolveHit\'s order, and agrees with resolveHit', async () => {
+  const { explainHit } = await import('../src/vision/scoring');
+  const eligible2 = new Set(['alice', 'bob']);
+  const why = (t: ReturnType<typeof track>, now = 150) => {
+    const e = explainHit(t, eligible2, 0.5, 0.2, now);
+    assert.deepEqual(e.hit, resolveHit(t, eligible2, 0.5, 0.2, now), 'explainHit.hit is resolveHit');
+    return e.refusal;
+  };
+  // A clear, backed belief is a hit.
+  const clear = track({ alice: 0.95, [UNKNOWN_ID]: 0.02 });
+  clear.outfitSupport = { alice: 140 };
+  assert.equal(why(clear), null);
+  assert.equal(why(clear, 100 + 5000), 'no-evidence', 'evidence older than IDENTITY_TTL_MS');
+  assert.equal(why({ ...clear, unconfirmed: true }), 'unconfirmed');
+  assert.equal(why({ ...clear, unconfirmed: true, hiding: true }), 'hidden-partner');
+  assert.equal(why({ ...clear, reacquireAt: 120, faceSamples: 0, clothingSince: 0 }), 'reacquiring');
+  assert.equal(why({ ...clear, identityConflict: true }), 'conflict');
+  assert.equal(why({ ...clear, belief: { me: 0.95, alice: 0.02 } }), 'not-a-player');
+  assert.equal(why({ ...clear, outfitVeto: { alice: { at: 120, eased: false } } }), 'vetoed');
+  assert.equal(why({ ...clear, belief: { alice: 0.45, [UNKNOWN_ID]: 0.1 } }), 'low-confidence', 'backed by the outfit, just not confident');
+  assert.equal(why({ ...clear, outfitSupport: undefined, belief: { alice: 0.45, [UNKNOWN_ID]: 0.1 } }), 'no-outfit-backing', 'no outfit backing: the face met the strict bar');
+  assert.equal(why({ ...clear, belief: { alice: 0.62, bob: 0.5 } }), 'margin');
+  assert.equal(why({ ...clear, overlapping: true }), 'no-fresh-read', 'an overlap without a read of this body');
+  assert.equal(why({ ...clear, crowded: true, lastSeen: 140, lastRead: { at: 140, id: 'alice', margin: 0.5 } }), null, 'a crowd with this frame\'s own clear read');
 });

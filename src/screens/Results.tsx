@@ -76,6 +76,7 @@ export function Results({ room, pid, onLeave }: Props) {
                 {s.targetName && <span className="name">{s.targetName}</span>}
                 {s.via && <span className="tag">via {s.via}</span>}
                 {s.resolveMs !== undefined && <span className="tag">{s.resolveMs}ms{s.zoom ? ' zoom' : ''}</span>}
+                {s.refusal && <span className="tag">refused: {s.refusal}</span>}
               </div>
               {s.beliefs.length > 0 && (
                 <div className="shot-beliefs">

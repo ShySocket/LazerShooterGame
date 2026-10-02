@@ -1,11 +1,11 @@
-import { buildDetections, type Detection } from '../../src/vision/tracker';
-import { VisionPipeline, type LockState } from '../../src/vision/pipeline';
+import { buildDetections, faceOwner, type Detection } from '../../src/vision/tracker';
+import { VisionPipeline, type FireResult, type FrameOutcome, type LockState } from '../../src/vision/pipeline';
 import { UNKNOWN_ID } from '../../src/types';
 import type { Candidate } from '../../src/vision/scoring';
 import type { NBox } from '../../src/vision/geometry';
 import { Rng } from './rng';
 import type { Recorder } from '../../src/debug/recorder';
-import { buildScene, cropFaces, DEFAULT_DETECTOR, detect, FRAME_H, FRAME_W, hitBox, personBox, sampleOutfit, step, type DetectorModel, type Pan, type Person, type PersonSpec } from './world';
+import { buildScene, cropFaces, DEFAULT_DETECTOR, detect, faceBox, FRAME_H, FRAME_W, hitBox, personBox, sampleOutfit, step, torsoPixelsOf, type DetectorModel, type Pan, type Person, type PersonSpec, type Scene } from './world';
 
 export interface SimOptions {
   seed: number;
@@ -20,6 +20,12 @@ export interface SimOptions {
   fireEveryMs: number;
   /** Hand shake, as a fraction of the frame. */
   aimSd: number;
+  /**
+   * Where on the target the shooter aims: the middle of their box ('centre'), or the middle of the
+   * widest part of their torso that nobody nearer covers ('visible'), the way a player aims at the
+   * sliver of a half-hidden opponent. With nothing visible, 'visible' aims at the middle too.
+   */
+  aimAt?: 'centre' | 'visible';
   detector: DetectorModel;
   /** Who the shooter is aiming at throughout. */
   target: string;
@@ -31,6 +37,34 @@ export interface SimOptions {
   pan?: Pan;
   /** Capture the round as a replayable recording (src/debug/recorder.ts). */
   recorder?: Recorder;
+  /**
+   * Frame-by-frame diagnosis: called after every frame with what the detector saw, who each
+   * detection and face crop really belonged to, and the pipeline's outcome. Never changes the round.
+   */
+  probe?: (event: ProbeFrame | ProbeFire) => void;
+}
+
+/** A tap as the probe sees it: where the dot was, who was really visible under it, and what the pipeline did. */
+export interface ProbeFire {
+  kind: 'fire';
+  t: number;
+  aim: NBox;
+  visible: Person | null;
+  result: FireResult<{ t: number }>;
+}
+
+export interface ProbeFrame {
+  kind: 'frame';
+  capturedAt: number;
+  completedAt: number;
+  scene: Scene;
+  dets: Detection[];
+  /** The person each detection's body (or face, for a face-only detection) came from; null for a ghost. */
+  owners: (Person | null)[];
+  /** Every face a crop returned this frame, with the person it really was and the detection the pipeline gave it to (-1: nobody). */
+  faces: { box: NBox; person: Person | null; det: number }[];
+  outcome: FrameOutcome<{ t: number }>;
+  crosshair: NBox;
 }
 
 export const DEFAULT_OPTIONS: Omit<SimOptions, 'target'> = {
@@ -202,11 +236,39 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
     }
   };
 
+  /** Middle of the widest stretch of the target's torso (world.ts hitBox) at height y that no nearer person's silhouette covers. */
+  const visibleMiddle = (y: number): number | null => {
+    const [hx, , hw] = hitBox(target);
+    let open: [number, number][] = [[hx, hx + hw]];
+    for (const q of scene.people) {
+      if (q === target || q.distance >= target.distance) continue;
+      const [qx, qy, qw, qh] = personBox(q);
+      if (y < qy || y > qy + qh) continue;
+      open = open.flatMap(([a, b]): [number, number][] => [[a, Math.min(b, qx)], [Math.max(a, qx + qw), b]]).filter(([a, b]) => b > a);
+    }
+    if (!open.length) return null;
+    const [a, b] = open.reduce((best, s) => (s[1] - s[0] > best[1] - best[0] ? s : best));
+    return (a + b) / 2;
+  };
   const aim = (): NBox => {
     const [x, y, w, h] = personBox(target);
-    const cx = x + w / 2 + rng.gauss(0, opts.aimSd);
-    const cy = y + h * 0.45 + rng.gauss(0, opts.aimSd);
+    const ty = y + h * 0.45;
+    const tx = (opts.aimAt === 'visible' ? visibleMiddle(ty) : null) ?? x + w / 2;
+    const cx = tx + rng.gauss(0, opts.aimSd);
+    const cy = ty + rng.gauss(0, opts.aimSd);
     return [cx - 0.21, cy - 0.15, 0.42, 0.3];
+  };
+
+  /** The person whose face a crop's box is (the crop returns a jittered copy of their face box). */
+  const nearestFace = (b: NBox): Person | null => {
+    let best: Person | null = null;
+    let bestD = Infinity;
+    for (const p of scene.people) {
+      const f = faceBox(p);
+      const d = Math.hypot(f[0] - b[0], f[1] - b[1]);
+      if (d < bestD) [best, bestD] = [p, d];
+    }
+    return best;
   };
 
   let pending: { token: object; deadline: number } | null = null;
@@ -262,6 +324,7 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
       if (truth.visible?.id === target.id && truth.hittable(truth.visible) && truth.visibleHittable) result.possibleShots++;
       opts.recorder?.fire(now, tapAim, target.player ? target.id : null);
       const fire = pipeline.fire({ t: now, under: truth }, tapAim);
+      opts.probe?.({ kind: 'fire', t: now, aim: tapAim, visible: truth.visible, result: fire });
       if (fire.kind === 'pending') pending = { token: fire.token, deadline: fire.deadline };
       else if (fire.kind === 'instant') settle(fire.settlement);
       else {
@@ -272,9 +335,23 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
 
     now = completeAt;
     let cropsThisFrame = 0;
+    const probeFaces: ProbeFrame['faces'] = [];
     const baseOps = {
-      sampleOutfit: (d: Detection) => (d.body ? sampleOutfit(rng, raw.owner.get(d.body) ?? null) : null),
-      cropFaces: async (region: NBox) => { cropsThisFrame++; return cropFaces(rng, scene, region, opts.detector); },
+      sampleOutfit: (d: Detection) => {
+        if (!d.body) return null;
+        const owner = raw.owner.get(d.body) ?? null;
+        // The clothes of whoever fills the torso; body ratios come from this body's landmarks, which a
+        // read of somebody else's pixels does not have.
+        const pixels = owner && opts.detector.frontPixels ? torsoPixelsOf(scene, owner) : owner;
+        const obs = sampleOutfit(rng, pixels);
+        return obs && pixels !== owner ? { ...obs, props: null } : obs;
+      },
+      cropFaces: async (region: NBox) => {
+        cropsThisFrame++;
+        const found = cropFaces(rng, scene, region, opts.detector);
+        if (opts.probe) for (const f of found) probeFaces.push({ box: f.box, person: nearestFace(f.box), det: faceOwner(f.box, dets) });
+        return found;
+      },
       isCurrent: () => true,
     };
     const outcome = await pipeline.processFrame(dets, capturedAt, FRAME_W, FRAME_H, crosshair, opts.recorder ? opts.recorder.frame(capturedAt, crosshair, dets, baseOps) : baseOps);
@@ -283,6 +360,7 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
     result.frames++;
     result.periodMs = outcome.periodMs;
     noteFrame(`${capturedAt}@${Math.round(now)} ` + dets.map((d, i) => { const o = raw.owner.get(d.body ?? d.face!); const tr = outcome.tracks[i]; const top = Object.entries(tr.belief).sort((a, b) => b[1] - a[1])[0]; return `#${tr.id}=${o ? o.id : 'ghost'}[${d.box.map((v) => v.toFixed(2)).join(',')}]${d.associationAmbiguous ? 'A' : ''}${d.face ? 'F' : ''}${top ? `{${top[0]} ${top[1].toFixed(2)} ${tr.via}}` : ''}`; }).join(' ') + ` aim=${(crosshair[0] + 0.21).toFixed(2)},${(crosshair[1] + 0.15).toFixed(2)}`);
+    opts.probe?.({ kind: 'frame', capturedAt, completedAt: now, scene, dets, owners: dets.map((d) => raw.owner.get(d.body ?? d.face!) ?? null), faces: probeFaces, outcome, crosshair });
     if (outcome.settled) {
       pending = null;
       settle(outcome.settled);
@@ -316,6 +394,8 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
 /** Shooter profile that is never in frame, so a mirror or twin can be tested against it. */
 const ME: PersonSpec = { id: 'me', player: true, x: -5, distance: 3, facing: 'front', topHue: 9 };
 const front = (id: string, x: number, distance: number, topHue: number, extra: Partial<PersonSpec> = {}): PersonSpec => ({ id, player: true, x, distance, facing: 'front', topHue, ...extra });
+/** Shades, trousers and hair of a player and of someone in a suit like hers that differ wherever the suit lets them (bystander-suit). */
+const SUIT_COLOURS = { alice: { topShade: 1, bottomHue: 3, hairBin: 0 }, other: { topShade: 2, bottomHue: 9, hairBin: 2 } };
 /** Seven people in view (two players, five strangers milling about), one more than the pose model returns. */
 const CROWD_SEVEN: PersonSpec[] = [
   ME,
@@ -372,6 +452,30 @@ export const SCENARIOS: Scenario[] = [
     expect: 'the pan crossing aimed at the farther player: never the nearer one',
     people: [ME, front('alice', 0.2, 4, 0, { vx: 0.04 }), front('bob', 0.8, 4.4, 6, { vx: -0.04 })],
     options: { target: 'bob', durationMs: 15000, pan: { amplitude: 0.15, periodS: 3 } },
+  },
+  {
+    // 2026-10-01: the farther player of a crossing aimed at where they can still be seen, the sliver
+    // of torso beside the nearer player, so the oracle judges what a lock or hit on that sliver says.
+    // The clothing sampler reads whoever fills a torso (frontPixels): a body found mostly behind the
+    // nearer player reads the nearer player's clothes, as the game's sampler would.
+    name: 'crossing-sliver',
+    expect: 'the crossing aimed at the visible part of the farther player: never the nearer one',
+    people: [ME, front('alice', 0.2, 4, 0, { vx: 0.04 }), front('bob', 0.8, 4.4, 6, { vx: -0.04 })],
+    options: { target: 'bob', durationMs: 15000, aimAt: 'visible', detector: { ...DEFAULT_DETECTOR, frontPixels: true } },
+  },
+  {
+    name: 'pan-crossing-far-sliver',
+    expect: 'the pan crossing aimed at the visible part of the farther player: never the nearer one',
+    people: [ME, front('alice', 0.2, 4, 0, { vx: 0.04 }), front('bob', 0.8, 4.4, 6, { vx: -0.04 })],
+    options: { target: 'bob', durationMs: 15000, pan: { amplitude: 0.15, periodS: 3 }, aimAt: 'visible', detector: { ...DEFAULT_DETECTOR, frontPixels: true } },
+  },
+  {
+    // The crossing with both facing away, aimed at the sliver of the farther one: the outfit is all
+    // there is, and a body found mostly behind the nearer one reads the nearer one's clothes.
+    name: 'crossing-backs-sliver',
+    expect: 'the back-view crossing aimed at the visible part of the farther player: never the nearer one',
+    people: [ME, front('alice', 0.2, 4, 0, { vx: 0.04, facing: 'back' }), front('bob', 0.8, 4.4, 6, { vx: -0.04, facing: 'back' })],
+    options: { target: 'bob', durationMs: 15000, aimAt: 'visible', detector: { ...DEFAULT_DETECTOR, frontPixels: true } },
   },
   {
     name: 'crossing-backs',
@@ -474,6 +578,40 @@ export const SCENARIOS: Scenario[] = [
     expect: 'a player whose outfit is misread on a quarter of samples: refusals at worst, never a wrong hit',
     people: [ME, front('alice', 0.5, 3, 0, { outfitGlitch: 0.25 }), front('bob', 0.15, 4, 6)],
     options: { target: 'alice' },
+  },
+  {
+    // Realcheck shoot, 2026-10-02 (antony-blinken/08, aiming at P2): two players in similar dark suits,
+    // each matching the other's scan at about 0.65 and their own at about 0.9, and poor crops of the
+    // target that read more like the other player than like him (28% of crops here, 30% on the bench).
+    // Every suit backed every suited face, so those crops named the other player at the normal bar,
+    // and LOCK and a hit landed on him with the target under the dot. He is out of view, as P1 was in
+    // the frames that locked him: nobody else claims his name.
+    name: 'dark-suits',
+    expect: 'the target in a dark suit like another player\'s, some crops of his face reading like that player: never the other player',
+    people: [ME, front('alice', -0.4, 3.5, 0), front('bob', 0.5, 3.5, 6, { suitOf: { id: 'alice', share: 0.65 }, misreadAs: { id: 'alice', share: 0.3 } })],
+    options: { target: 'bob' },
+  },
+  {
+    // The same kind of suit on somebody nobody enrolled (review of the rival-suit rule, 2026-10-02): no
+    // other player's scan explains it better, so it backed the player it only resembles (0.60 to 0.70
+    // like her scan, above OUTFIT_VETO.clearSim) until a sample had to reach OUTFIT_BACK_MIN, and crops
+    // of the bystander's face that read a little like her were judged at the normal bar. On the real
+    // photo (bench &stranger=1: antony-blinken/08 with P2 left out of the candidates) LOCK and hits on
+    // P1. The colours of both outfits are fixed so that every seed is a resemblance: left to chance,
+    // some seeds draw his trousers and hair in hers and the suits come out near-identical (0.73 to 0.77
+    // against his own 0.89), the two-players-in-one-outfit case of TRACKING_IMPROVEMENT_PLAN.md.
+    name: 'bystander-suit',
+    expect: 'a non-player in a suit like a player\'s, some crops of his face reading like hers: never her',
+    people: [ME, front('alice', -0.4, 3.5, 0, SUIT_COLOURS.alice), { id: 'stranger', player: false, x: 0.5, distance: 3.5, facing: 'front', topHue: 6, ...SUIT_COLOURS.other, suitOf: { id: 'alice', share: 0.65 }, misreadAs: { id: 'alice', share: 0.3 } }],
+    options: { target: 'stranger' },
+  },
+  {
+    // The same suit on a practice target enrolled without the hips (no outfit on file): his own face is
+    // judged at FACE_ONLY_CALIB, and the suit must not back the player it resembles.
+    name: 'faceonly-suit',
+    expect: 'a face-only target in a suit like another player\'s, some crops of his face reading like hers: never her',
+    people: [ME, front('alice', -0.4, 3.5, 0, SUIT_COLOURS.alice), front('bob', 0.5, 3.5, 6, { ...SUIT_COLOURS.other, faceOnlyProfile: true, suitOf: { id: 'alice', share: 0.65 }, misreadAs: { id: 'alice', share: 0.3 } })],
+    options: { target: 'bob' },
   },
   {
     // Review of 2026-10-01: a practice target captured without the hips has no outfit, so the

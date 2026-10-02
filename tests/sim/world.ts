@@ -55,6 +55,18 @@ export interface PersonSpec {
   faceLike?: { id: string; cos: number };
   /** Optional: this person wears exactly the same outfit (top, trousers, hair) as another id. */
   outfitOf?: string;
+  /**
+   * Optional: this person's outfit is like another id's without being theirs, `share` of every region in
+   * their colours and the rest this person's own: two dark suits with different shirts and ties, each
+   * matching the other's scan at about 0.65 and its own at about 0.9 (realcheck antony-blinken/08).
+   */
+  suitOf?: { id: string; share: number };
+  /**
+   * Optional: on `share` of this person's face crops the model reads them more like another id than like
+   * themselves, as the real model did on poor crops of a player at the edge of a group photo (bench,
+   * antony-blinken/08, 2026-10-02: 0.38 to 0.58 like the other player's scan, 0.16 to 0.40 like his own).
+   */
+  misreadAs?: { id: string; share: number };
   /** Optional: enrolled with the face only (a practice target captured without the hips in view). */
   faceOnlyProfile?: boolean;
   /** Optional: share of clothing samples that read a wrong garment colour (a bad crop, a light change). */
@@ -88,6 +100,13 @@ export interface DetectorModel {
   faceSimShift: number;
   /** Probability of a spurious body somewhere in the frame. */
   ghostRate: number;
+  /**
+   * Whether a torso mostly covered by somebody nearer is read as that person's clothes (torsoPixelsOf).
+   * The game's sampler reads whatever fills the region between a body's shoulders and hips
+   * (clothing.ts), so a body found mostly behind somebody samples the clothes of the person in front.
+   * Off: every body is read as its own clothes, as the gate measured before 2026-10-01.
+   */
+  frontPixels?: boolean;
 }
 
 export const DEFAULT_DETECTOR: DetectorModel = { bodyDropout: 0, faceAvailability: 1, faceSimShift: 0, ghostRate: 0.01 };
@@ -171,6 +190,24 @@ function withCosine(rng: Rng, u: number[], cos: number): number[] {
   return u.map((x, i) => c * x + s * perp[i]);
 }
 
+/** A unit vector with cosine `ca` to `a` and, as nearly as the angle between them allows, `cb` to `b`. */
+function twoCosines(rng: Rng, a: number[], ca: number, b: number[], cb: number): number[] {
+  const dot = (x: number[], y: number[]) => x.reduce((s, v, i) => s + v * y[i], 0);
+  const c = dot(a, b);
+  const eb = unit(b.map((v, i) => v - c * a[i]));
+  const y = (cb - c * ca) / Math.sqrt(Math.max(1e-9, 1 - c * c));
+  const scale = Math.min(1, Math.sqrt(Math.max(0, 1 - ca * ca)) / Math.max(1e-9, Math.abs(y)));
+  let n = randomUnit(rng);
+  for (const e of [a, eb]) {
+    const d = dot(n, e);
+    n = n.map((v, i) => v - d * e[i]);
+  }
+  n = unit(n);
+  const yy = y * scale;
+  const z = Math.sqrt(Math.max(0, 1 - ca * ca - yy * yy));
+  return unit(a.map((v, i) => ca * v + yy * eb[i] + z * n[i]));
+}
+
 const SIG_LEN = 51;
 function topHistogram(hue: number, shade: number): number[] {
   const h = new Array(SIG_LEN).fill(0);
@@ -221,12 +258,16 @@ export function buildScene(rng: Rng, specs: PersonSpec[], selfId = 'me'): Scene 
     const top = src ? src.top : twin ? twin.top : topHistogram(spec.topHue, shade);
     const bottom = src ? src.bottom : twin ? twin.bottom : topHistogram(spec.bottomHue ?? Math.floor(rng.next() * 12), Math.floor(rng.next() * 4));
     const hair = src ? src.hair : twin ? twin.hair : topHistogram(spec.hairBin ?? Math.floor(rng.next() * 3), Math.floor(rng.next() * 2));
+    // A suit like another person's: a share of every region in their colours, the rest this person's own.
+    const suit = spec.suitOf ? byId.get(spec.suitOf.id) : undefined;
+    const mix = (theirs: number[], own: number[]) => theirs.map((v, i) => spec.suitOf!.share * v + (1 - spec.suitOf!.share) * own[i]);
+    const [topWorn, bottomWorn, hairWorn] = suit ? [mix(suit.top, top), mix(suit.bottom, bottom), mix(suit.hair, hair)] : [top, bottom, hair];
     const props: BodyProps = src
       ? src.props
       : { shoulderTorso: 0.75 + rng.gauss(0, 0.12), hipShoulder: 0.85 + rng.gauss(0, 0.1), legTorso: 1.8 + rng.gauss(0, 0.25), headShoulder: 0.42 + rng.gauss(0, 0.06) };
     const faceSamples = src ? src.faceSamples : Array.from({ length: 8 }, () => withCosine(rng, face, 0.78 + rng.gauss(0, 0.04)));
-    const sides = (): OutfitSig => ({ top: perturb(rng, top, 0.12), thighs: perturb(rng, bottom, 0.12), shins: perturb(rng, bottom, 0.15), hair: perturb(rng, hair, 0.15) });
-    const person: Person = { ...spec, face, top, bottom, hair, props, faceSamples, outfitFront: src ? src.outfitFront : sides(), outfitBack: src ? src.outfitBack : sides() };
+    const sides = (): OutfitSig => ({ top: perturb(rng, topWorn, 0.12), thighs: perturb(rng, bottomWorn, 0.12), shins: perturb(rng, bottomWorn, 0.15), hair: perturb(rng, hairWorn, 0.15) });
+    const person: Person = { ...spec, face, top: topWorn, bottom: bottomWorn, hair: hairWorn, props, faceSamples, outfitFront: src ? src.outfitFront : sides(), outfitBack: src ? src.outfitBack : sides() };
     byId.set(spec.id, person);
     return person;
   };
@@ -401,7 +442,14 @@ export function cropFaces(rng: Rng, scene: Scene, region: NBox, model: DetectorM
     const target = (simOwn(p.distance) + model.faceSimShift) / 0.78;
     const cos = Math.max(0.1, Math.min(0.98, target + rng.gauss(0, 0.07)));
     const jitter = () => rng.gauss(0, 0.01) * fb[3];
-    out.push({ box: [fb[0] + jitter(), fb[1] + jitter(), fb[2], fb[3]], embedding: withCosine(rng, p.face, cos), quality: faceQuality(facePx(p)) });
+    // The box is drawn before the embedding, as it always was: every seed of every scenario without a
+    // misread replays the same round it did before misreadAs existed (REGRESSION_SEEDS rely on it).
+    const box: NBox = [fb[0] + jitter(), fb[1] + jitter(), fb[2], fb[3]];
+    const like = p.misreadAs && rng.chance(p.misreadAs.share) ? scene.people.find((q) => q.id === p.misreadAs!.id) : undefined;
+    // A poor crop read more like somebody else: about 0.5 like their scan, 0.25 like this person's own
+    // (enrolled samples sit at 0.78 to the true face, world.ts buildScene).
+    const embedding = like ? twoCosines(rng, like.face, Math.min(0.9, 0.66 + rng.gauss(0, 0.06)), p.face, Math.max(0, 0.32 + rng.gauss(0, 0.08))) : withCosine(rng, p.face, cos);
+    out.push({ box, embedding, quality: faceQuality(facePx(p)) });
   }
   return out;
 }
@@ -443,4 +491,21 @@ export function step(scene: Scene, dtSec: number): void {
     if (p.vx) p.x += p.vx * dtSec;
     if (p.vd) p.distance = Math.max(1.2, p.distance + p.vd * dtSec);
   }
+}
+
+/**
+ * Whose clothes the sampler reads on this person's torso, shoulders to hips (trueKeypoints): the nearer
+ * person covering most of it, or the person themselves.
+ */
+export function torsoPixelsOf(scene: Scene, p: Person): Person {
+  const [x, y, w, h] = personBox(p);
+  const torso: NBox = [x + w * 0.3, y + h * 0.22, w * 0.4, h * 0.3];
+  let front = p;
+  let most = 0.5;
+  for (const q of scene.people) {
+    if (q === p || q.distance >= p.distance) continue;
+    const c = covered(torso, personBox(q));
+    if (c > most) [front, most] = [q, c];
+  }
+  return front;
 }
