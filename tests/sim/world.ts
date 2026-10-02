@@ -88,6 +88,13 @@ export interface DetectorModel {
   faceSimShift: number;
   /** Probability of a spurious body somewhere in the frame. */
   ghostRate: number;
+  /**
+   * Whether a torso mostly covered by somebody nearer is read as that person's clothes (torsoPixelsOf).
+   * The game's sampler reads whatever fills the region between a body's shoulders and hips
+   * (clothing.ts), so a body found mostly behind somebody samples the clothes of the person in front.
+   * Off: every body is read as its own clothes, as the gate measured before 2026-10-01.
+   */
+  frontPixels?: boolean;
 }
 
 export const DEFAULT_DETECTOR: DetectorModel = { bodyDropout: 0, faceAvailability: 1, faceSimShift: 0, ghostRate: 0.01 };
@@ -443,4 +450,21 @@ export function step(scene: Scene, dtSec: number): void {
     if (p.vx) p.x += p.vx * dtSec;
     if (p.vd) p.distance = Math.max(1.2, p.distance + p.vd * dtSec);
   }
+}
+
+/**
+ * Whose clothes the sampler reads on this person's torso, shoulders to hips (trueKeypoints): the nearer
+ * person covering most of it, or the person themselves.
+ */
+export function torsoPixelsOf(scene: Scene, p: Person): Person {
+  const [x, y, w, h] = personBox(p);
+  const torso: NBox = [x + w * 0.3, y + h * 0.22, w * 0.4, h * 0.3];
+  let front = p;
+  let most = 0.5;
+  for (const q of scene.people) {
+    if (q === p || q.distance >= p.distance) continue;
+    const c = covered(torso, personBox(q));
+    if (c > most) [front, most] = [q, c];
+  }
+  return front;
 }

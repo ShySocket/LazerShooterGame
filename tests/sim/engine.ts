@@ -5,7 +5,7 @@ import type { Candidate } from '../../src/vision/scoring';
 import type { NBox } from '../../src/vision/geometry';
 import { Rng } from './rng';
 import type { Recorder } from '../../src/debug/recorder';
-import { buildScene, cropFaces, DEFAULT_DETECTOR, detect, faceBox, FRAME_H, FRAME_W, hitBox, personBox, sampleOutfit, step, type DetectorModel, type Pan, type Person, type PersonSpec, type Scene } from './world';
+import { buildScene, cropFaces, DEFAULT_DETECTOR, detect, faceBox, FRAME_H, FRAME_W, hitBox, personBox, sampleOutfit, step, torsoPixelsOf, type DetectorModel, type Pan, type Person, type PersonSpec, type Scene } from './world';
 
 export interface SimOptions {
   seed: number;
@@ -337,7 +337,15 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
     let cropsThisFrame = 0;
     const probeFaces: ProbeFrame['faces'] = [];
     const baseOps = {
-      sampleOutfit: (d: Detection) => (d.body ? sampleOutfit(rng, raw.owner.get(d.body) ?? null) : null),
+      sampleOutfit: (d: Detection) => {
+        if (!d.body) return null;
+        const owner = raw.owner.get(d.body) ?? null;
+        // The clothes of whoever fills the torso; body ratios come from this body's landmarks, which a
+        // read of somebody else's pixels does not have.
+        const pixels = owner && opts.detector.frontPixels ? torsoPixelsOf(scene, owner) : owner;
+        const obs = sampleOutfit(rng, pixels);
+        return obs && pixels !== owner ? { ...obs, props: null } : obs;
+      },
       cropFaces: async (region: NBox) => {
         cropsThisFrame++;
         const found = cropFaces(rng, scene, region, opts.detector);
@@ -446,16 +454,18 @@ export const SCENARIOS: Scenario[] = [
   {
     // 2026-10-01: the farther player of a crossing aimed at where they can still be seen, the sliver
     // of torso beside the nearer player, so the oracle judges what a lock or hit on that sliver says.
+    // The clothing sampler reads whoever fills a torso (frontPixels): a body found mostly behind the
+    // nearer player reads the nearer player's clothes, as the game's sampler would.
     name: 'crossing-sliver',
     expect: 'the crossing aimed at the visible part of the farther player: never the nearer one',
     people: [ME, front('alice', 0.2, 4, 0, { vx: 0.04 }), front('bob', 0.8, 4.4, 6, { vx: -0.04 })],
-    options: { target: 'bob', durationMs: 15000, aimAt: 'visible' },
+    options: { target: 'bob', durationMs: 15000, aimAt: 'visible', detector: { ...DEFAULT_DETECTOR, frontPixels: true } },
   },
   {
     name: 'pan-crossing-far-sliver',
     expect: 'the pan crossing aimed at the visible part of the farther player: never the nearer one',
     people: [ME, front('alice', 0.2, 4, 0, { vx: 0.04 }), front('bob', 0.8, 4.4, 6, { vx: -0.04 })],
-    options: { target: 'bob', durationMs: 15000, pan: { amplitude: 0.15, periodS: 3 }, aimAt: 'visible' },
+    options: { target: 'bob', durationMs: 15000, pan: { amplitude: 0.15, periodS: 3 }, aimAt: 'visible', detector: { ...DEFAULT_DETECTOR, frontPixels: true } },
   },
   {
     name: 'crossing-backs',

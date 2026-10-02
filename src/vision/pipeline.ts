@@ -1,7 +1,7 @@
 import { UNKNOWN_ID, type BodyProps, type OutfitSig } from '../types';
 import { clothingDue, cropBudget } from './schedule';
 import { CLOTHING_AUDIT_MS, CLOTHING_BELIEF_ALPHA, CLOTHING_INTERVAL_MS, CLOTHING_CONTRADICTION, FACE_BELIEF_ALPHA, FACE_FRESH_MIN_MARGIN, FACE_FRESH_MS, FACE_REFRESH_MIN_LEAD, FACE_REFRESH_MS, FACE_VIA_TIMEOUT_MS, MATURE_TRACK_OBSERVATIONS, TORSO_COVER_FRACTION, LIVE_FACE_ENROLLED_MIN, LIVE_FACE_MIN, LIVE_FACE_MIN_BELIEF, LIVE_FACE_MIN_QUALITY, LIVE_FACE_MIN_TRACK_SAMPLES, LIVE_FACE_NOVELTY, LIVE_FACE_RUNNER_UP, LIVE_FACES_PER_PLAYER, HOP_READ_MARGIN, BODY_CAP } from './calibration';
-import { containsPoint, faceOwner, markUncertain, resetIdentity, trackGapMs, Tracker, type Detection, type Track } from './tracker';
+import { containsPoint, faceOnOwnHead, faceOwner, markUncertain, resetIdentity, trackGapMs, Tracker, type Detection, type Track } from './tracker';
 import { crosshairCentre, indexInSight, intersectArea, type NBox } from './geometry';
 import {
   assignIdentities,
@@ -437,6 +437,10 @@ export class VisionPipeline<C = unknown> {
       const owned = new Map<number, FaceObservation[]>();
       for (const zf of faces) {
         const owner = faceOwner(zf.box, dets);
+        // While somebody may be hidden at that body (Track.hiding), a face that is not on its own head
+        // may be theirs: the face of the person in front, read on the sliver of the person behind,
+        // would otherwise name the front person on the hidden person's body. It says nothing here.
+        if (owner >= 0 && tracks[owner].hiding && !faceOnOwnHead(zf.box, dets[owner])) continue;
         if (owner >= 0 && !faced.has(owner)) owned.set(owner, [...(owned.get(owner) ?? []), zf]);
       }
       for (const [owner, matched] of owned) {

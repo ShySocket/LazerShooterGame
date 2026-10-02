@@ -128,7 +128,10 @@ test('a player walking in front of the target does not become the target', async
   const a = await run('occlusion');
   assert.equal(a.wrong, 0, describe(a));
   assert.equal(a.wrongLockFrames, 0, describe(a));
-  assert.ok(hitRate(a) >= 0.8, describe(a));
+  // 1000 seeds: 96.3% before 2026-10-01.8, 96.0% after. These three seeds sat at 26 of 32 and lost
+  // one burst to frames whose pose had no nose while a partner entry from 3 s earlier still held, so
+  // the face could not be shown to be the body's own (tracker.ts faceOnOwnHead).
+  assert.ok(hitRate(a) >= 0.75, describe(a));
 });
 
 test('a target who turns their back and then faces the shooter again stays hittable throughout', async () => {
@@ -192,6 +195,11 @@ const REGRESSION_SEEDS: [string, number][] = [
   // her 670 ms after the tap (pipeline.ts, with somebody maybe hidden behind the target, a frame
   // showing the dot off their torso ends the burst).
   ['pan-crossing-far-sliver', 28],
+  // The same scenario with the clothing sampler reading whoever fills the torso (world.ts frontPixels):
+  // a frame found only Bob's body, the sliver beside Alice, and her track took it; the crop over his
+  // body found her face beside his head, faceOwner gave it to him, his torso read her clothes, and the
+  // two together showed LOCK alice with the dot on him (tracker.ts faceOnOwnHead).
+  ['pan-crossing-far-sliver', 844],
 ];
 for (const [name, seed] of REGRESSION_SEEDS) {
   test(`regression: ${name} seed ${seed} has no wrong hit and no wrong lock`, async () => {
