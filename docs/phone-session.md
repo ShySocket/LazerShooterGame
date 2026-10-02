@@ -33,6 +33,14 @@ The question this session answers: when good face evidence disappears, does the 
 
 The sample records each body's box, so face and torso size in pixels can be read back per shot alongside the distance.
 
+**Reading the refusals.** Every refused shot names its rule: on the HUD, in Practice review, and in the report's "rejected player shots by rule". The ones that point at something to change:
+- `no-outfit-backing`, or `not-a-player` on a player who is in frame: their scan has no readable outfit with the hips. Rescan them with the hips in view.
+- `transition` or `reacquiring` piling up on one player: their face reads noisily at that distance. Try closer, or better light.
+- `hidden-partner` right after crossings: the hidden-partner rules working as designed. Note how often it costs a shot you think was clear.
+- `no-frame`: the phone is too slow for the burst. Note the phone.
+
+The rest are what they say. TRACKING_IMPROVEMENT_PLAN.md (2026-10-02) has the real-photo baseline.
+
 **Reading it back.**
 
 ```bash
