@@ -47,6 +47,13 @@ export interface Track {
    * every uncertain transition, so it never carries over to whoever the track lands on next.
    */
   outfitSupport?: Record<string, number>;
+  /**
+   * Each player's outfit similarity summed over the readable samples (top and trousers) taken on this
+   * body outside any overlap since its last uncertain transition: whose outfit the body wears, read
+   * over time rather than from one sample (scoring.ts updateOutfitVeto, OUTFIT_RIVAL_LEAD). Reset with
+   * `outfitSupport`.
+   */
+  outfitReads?: Record<string, { sum: number; n: number }>;
   /** Players the last readable outfit sample on this track agreed with (OUTFIT_VETO.clearSim over what it compared, top at least), and when. */
   outfitAgrees?: { at: number; ids: string[] };
   /**
@@ -310,6 +317,7 @@ export function markUncertain(track: Track, now: number): void {
   track.lastClothingAt = 0;
   track.lastOutfitReadAt = 0;
   track.outfitSupport = undefined;
+  track.outfitReads = undefined;
   track.reacquireAt = now;
   track.transitionAt = now;
   track.clothingSince = 0;

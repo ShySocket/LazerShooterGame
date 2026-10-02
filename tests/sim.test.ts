@@ -217,6 +217,14 @@ const REGRESSION_SEEDS: [string, number][] = [
   // while somebody may be hidden at the body).
   ['crossing-backs-sliver', 65],
   ['crossing-sliver', 180],
+  // 2026-10-02 (realcheck shoot, antony-blinken/08): Bob in a suit like Alice's; poor crops of his face
+  // read like her at the normal bar because her suit, which his only resembles, backed her face on his
+  // body (scoring.ts updateOutfitVeto, OUTFIT_RIVAL_LEAD). Seed 1: 2 wrong hits and 14 wrong-lock frames.
+  // Seed 167: his trousers and hair nearly hers (his own suit led hers by only 0.14 on most reads); with
+  // the rule judged on each sample alone, one sample within 0.1 backed her for 3 s while every other
+  // read said otherwise: 2 wrong hits, 7 wrong-lock frames (Track.outfitReads, the read over time).
+  ['dark-suits', 1],
+  ['dark-suits', 167],
 ];
 for (const [name, seed] of REGRESSION_SEEDS) {
   test(`regression: ${name} seed ${seed} has no wrong hit and no wrong lock`, async () => {
@@ -277,6 +285,17 @@ test('identity does not ride across a crossing, and a wrongly vetoed player cost
   assert.ok(hitRate(await run('vetoed-player')) >= 0.6, 'a wrongly vetoed player is still hit most of the time');
   const { OUTFIT_VETO, CLOTHING_AUDIT_MS } = await import('../src/vision/calibration');
   assert.ok(OUTFIT_VETO.holdMs >= 2 * CLOTHING_AUDIT_MS, 'a veto must outlast the clothing audit, or it lapses between samples');
+});
+
+test('a player in a suit like another player\'s is never taken for him, even when crops of his face read like him', async () => {
+  // Realcheck shoot, 2026-10-02 (antony-blinken/08): LOCK P1 and a hit on P1 with P2 under the dot.
+  // 100 seeds: before a suit had to be the player's own to back his face, 59 wrong hits, 570 wrong-lock
+  // frames, 60% of shots landing; after, none, and 67%. 1000 seeds: none, 65% (with the rule judged on
+  // each sample alone, 2 wrong hits and 21 wrong-lock frames in seeds 101-1000).
+  const a = await run('dark-suits');
+  assert.equal(a.wrong, 0, describe(a));
+  assert.equal(a.wrongLockFrames, 0, describe(a));
+  assert.ok(hitRate(a) >= 0.5, describe(a));
 });
 
 test('a crowd past the detector body cap never produces a wrong hit or lock', async () => {

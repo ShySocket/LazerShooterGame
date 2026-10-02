@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-10-01.9';
+export const CALIBRATION_VERSION = '2026-10-01.10';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /**
@@ -294,10 +294,25 @@ export const REACQUIRE = { faceSamples: 2, clothingSamples: 2 };
  * A face names a player at the normal bar (FACE_CALIB) only while their own outfit corroborates it: a
  * readable sample covering at least `OUTFIT_VETO.clearCoverage` (top and trousers) matched them at
  * `clearSim` or better on this body this recently, since its last uncertain transition, and not while
- * it overlaps someone. Otherwise (torso hidden, legs out of view, an overlap, a different outfit) the
+ * it overlaps someone, and it was their outfit rather than one like it (OUTFIT_RIVAL_LEAD). Otherwise
+ * (torso hidden, legs out of view, an overlap, a different outfit, another player's similar outfit) the
  * face must clear FACE_ONLY_CALIB, the bar a candidate enrolled without an outfit gets.
  */
 export const OUTFIT_RECENT_MS = 3000;
+/**
+ * A sample backs a player's face (and agrees with them, for a hiding body's frame) only when no other
+ * player's scanned outfit matches it better by more than this, nor this body's samples on average since
+ * its last uncertain transition (Track.outfitReads); a sample that a rival explains that much better
+ * takes back what earlier samples gave. Two reads of the same clothes differ by about this much (0.86
+ * to 0.97 from 2 to 8 m, clothing.ts REGION_CONTRADICTION), so a rival ahead by more is wearing it.
+ * Players in similar dark suits match each other's scans at 0.61 to 0.69 and their own at 0.91 to 0.95
+ * (realcheck antony-blinken/08, 2026-10-02), above clearSim either way: before this rule every suit
+ * backed every suited face, so poor crops of one player (0.38 to 0.55 like another's scan, 0.16 to
+ * 0.40 like his own) were judged at the normal bar for the other, who was locked and hit on the first
+ * player's body. Judged on each sample alone, one sample within the noise of two near-identical suits
+ * still backed the other player for OUTFIT_RECENT_MS (sim dark-suits seed 167, 1000-seed sweep).
+ */
+export const OUTFIT_RIVAL_LEAD = 0.1;
 /**
  * While a body overlaps someone (or its face association is ambiguous) the track may hop between
  * them without any transition, carrying the belief across; a hit then needs this body's latest face

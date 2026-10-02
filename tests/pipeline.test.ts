@@ -859,3 +859,67 @@ test('a settled shot says which rule refused it: the burst rules and the decisio
   assert.equal(shot.kind, 'instant');
   assert.equal(shot.kind === 'instant' ? shot.settlement.refusal : 'x', null);
 });
+
+// ---- Real-photo wrong hit, 2026-10-02 (realcheck shoot, antony-blinken/08.jpg, aiming at P2) ------
+
+/**
+ * Two players in similar dark suits: each one's outfit read matches the other's scan at 0.65 (both
+ * regions two-thirds shared, nothing contradicting) and their own at 1, as P1's and P2's did on the
+ * bench (0.61 to 0.69 against 0.91 to 0.95).
+ */
+const suit = (own: number): Wardrobe => ({
+  top: Array.from({ length: 8 }, (_, i) => (i === 0 ? 0.65 : i === own ? 0.35 : 0)),
+  thighs: Array.from({ length: 8 }, (_, i) => (i === 1 ? 0.65 : i === own + 1 ? 0.35 : 0)),
+});
+const SUIT_ALICE = suit(3);
+const SUIT_BOB = suit(5);
+const SUITED: Candidate[] = [
+  { id: 'me', profile: dressed(ME_FACE, { top: hot(7), thighs: hot(7) }) },
+  { id: 'alice', profile: dressed(ALICE_FACE, SUIT_ALICE) },
+  { id: 'bob', profile: dressed(BOB_FACE, SUIT_BOB) },
+];
+/** A face read whose similarity to Alice's scan is `a` and to Bob's is `b` (64-d: plain cosine). */
+function faceRead(a: number, b: number, seed: number): number[] {
+  const c = BOB_FACE.reduce((s, x, i) => s + x * ALICE_FACE[i], 0);
+  const eb = unit(BOB_FACE.map((x, i) => x - c * ALICE_FACE[i]));
+  const y = (b - c * a) / Math.sqrt(1 - c * c);
+  let n = embedding(seed);
+  for (const e of [ALICE_FACE, eb]) {
+    const d = n.reduce((acc, x, i) => acc + x * e[i], 0);
+    n = n.map((x, i) => x - d * e[i]);
+  }
+  n = unit(n);
+  const z = Math.sqrt(Math.max(0, 1 - a * a - y * y));
+  return ALICE_FACE.map((x, i) => a * x + y * eb[i] + z * n[i]);
+}
+const cos = (u: number[], v: number[]) => u.reduce((s, x, i) => s + x * v[i], 0);
+
+test('a poor read of a player in a suit like another player\'s never names that player on his body (realcheck antony-blinken/08, 2026-10-02)', async () => {
+  const h = hopHarness(110);
+  h.pipeline.configure({ candidates: SUITED, exclusiveIds: new Set(SUITED.map((c) => c.id)), eligible: new Set(['alice', 'bob']), hitThreshold: 0.5, hitMargin: 0.2 });
+  const probe = faceRead(0.57, 0.25, 40);
+  assert.ok(Math.abs(cos(probe, ALICE_FACE) - 0.57) < 1e-9 && Math.abs(cos(probe, BOB_FACE) - 0.25) < 1e-9, 'the scripted reads have the measured similarities');
+  let seed = 100;
+  const bob = (a: number, b: number): Person => ({ face: faceRead(a, b, seed++), outfit: SUIT_BOB });
+  // Bob alone, read well: his face (0.72 like his scan, 0.35 like Alice's) and his suit.
+  let first;
+  for (let i = 0; i < 10; i++) first = await h.frame([[HOP_BOB, HOP_BOB_HIT, bob(0.35, 0.72)]]);
+  assert.deepEqual(first!.lock, { kind: 'lock', id: 'bob' }, 'Bob, read well in his own suit, locks');
+  // Then the reads the bench recorded on P2's body (2026-10-02, frames 4945 to 5472 of one run): one
+  // that names nobody, then poor crops of him that read a little more like P1 than like him.
+  const reads: [number, number][] = [[0.26, 0.02], [0.57, 0.25], [0.44, 0.42], [0.58, 0.5], [0.55, 0.3], [0.52, 0.35], [0.56, 0.4], [0.5, 0.33]];
+  const wrong: string[] = [];
+  for (const [a, b] of reads) {
+    const out = await h.frame([[HOP_BOB, HOP_BOB_HIT, bob(a, b)]]);
+    if (out.lock?.kind === 'lock' && out.lock.id === 'alice') wrong.push(`LOCK alice at ${out.capturedAt}`);
+    h.clock.now = out.capturedAt + 120;
+    const shot = h.pipeline.fire({ tap: h.clock.now }, CROSSHAIR);
+    if (shot.kind === 'instant' && shot.settlement.resolution?.id === 'alice') wrong.push(`hit alice at ${out.capturedAt}`);
+    if (shot.kind === 'pending') h.pipeline.expirePending(shot.token);
+  }
+  assert.deepEqual(wrong, [], 'Bob\'s body under the dot must never lock or hit Alice');
+  // Read well again, Bob is locked again: his own suit still backs his face.
+  let locked = 0;
+  for (let i = 0; i < 10; i++) if ((await h.frame([[HOP_BOB, HOP_BOB_HIT, bob(0.35, 0.72)]])).lock?.kind === 'lock') locked++;
+  assert.ok(locked >= 5, `Bob re-earns his lock (${locked}/10)`);
+});

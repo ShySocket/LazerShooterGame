@@ -229,6 +229,52 @@ test('a contradicting outfit rules a player out on that body whatever the face s
   assert.ok(!outfitVetoed(t, 'alice', 2000), 'a matching outfit lifts it');
 });
 
+test('an outfit backs a face only when it is that player\'s, not a rival suit it merely resembles (realcheck antony-blinken/08, 2026-10-02)', async () => {
+  const { outfitSupports, outfitVetoed, updateOutfitVeto } = await import('../src/vision/scoring');
+  // Two dark suits sharing two thirds of every region: each matches the other's scan at 0.65, above
+  // OUTFIT_VETO.clearSim, as P1's and P2's did on the bench (0.61 to 0.69, own 0.91 to 0.95).
+  const suit = (own: number) => {
+    const region = (shared: number) => { const h = new Array(51).fill(0); h[shared] = 0.65; h[shared + own] = 0.35; return h; };
+    return { top: region(0), thighs: region(4), shins: region(4), hair: region(8) };
+  };
+  const p1 = suit(20);
+  const p2 = suit(30);
+  const profile = (o: ReturnType<typeof suit>) => ({ outfit: { front: o, back: o } }) as Profile;
+  const cands = [{ id: 'p1', profile: profile(p1) }, { id: 'p2', profile: profile(p2) }];
+  const onP2 = track();
+  updateOutfitVeto(onP2, p2, cands, 1000);
+  assert.ok(outfitSupports(onP2, 'p2', 1000), 'his own suit backs his face');
+  assert.ok(!outfitSupports(onP2, 'p1', 1000), 'a suit that only resembles P1\'s, and is P2\'s, backs nobody else\'s face');
+  assert.ok(!outfitVetoed(onP2, 'p1', 1000), 'nor does it rule P1 out: it does not contradict him');
+  assert.deepEqual(onP2.outfitAgrees?.ids, ['p2'], 'on a hiding body\'s frame it agrees with its owner only');
+  // Twins in one outfit: nothing tells them apart by clothes, so both stay backed and the face must.
+  const twins = [{ id: 'p1', profile: profile(p2) }, { id: 'p2', profile: profile(p2) }];
+  const onTwin = track();
+  updateOutfitVeto(onTwin, p2, twins, 1000);
+  assert.ok(outfitSupports(onTwin, 'p1', 1000) && outfitSupports(onTwin, 'p2', 1000));
+  // A veto on P1 is still lifted by a sample that clearly matches him, even if P2's scan matches it better.
+  const vetoed = track();
+  vetoed.outfitVeto = { p1: { at: 900, eased: false } };
+  updateOutfitVeto(vetoed, p2, cands, 1000);
+  assert.ok(!outfitVetoed(vetoed, 'p1', 1000), 'a clear match is no contradiction');
+  // One sample within the noise of the two suits (his own read at 0.86, P1's at 0.78: within
+  // OUTFIT_RIVAL_LEAD) backs both on a body nothing else is known about...
+  const blur = (shared: number) => { const h = new Array(51).fill(0); h[shared] = 0.65; h[shared + 30] = 0.21; h[shared + 20] = 0.13; h[50] = 0.01; return h; };
+  const near = { top: blur(0), thighs: blur(4), shins: blur(4), hair: blur(8) };
+  const fresh = track();
+  updateOutfitVeto(fresh, near, cands, 1000);
+  assert.ok(outfitSupports(fresh, 'p1', 1000) && outfitSupports(fresh, 'p2', 1000), 'one sample this close cannot tell the suits apart');
+  // ...but not once this body's samples have shown whose suit it is (dark-suits seeds 167 and 207: one
+  // such sample backed the other player for 3 s while every other read said otherwise)...
+  const known = track();
+  for (let i = 0; i < 3; i++) updateOutfitVeto(known, p2, cands, 1000 + i * 200);
+  updateOutfitVeto(known, near, cands, 1600);
+  assert.ok(!outfitSupports(known, 'p1', 1600) && outfitSupports(known, 'p2', 1600), 'his samples so far are his suit, not P1\'s');
+  // ...and the next sample that is plainly his own takes back what that one sample gave P1.
+  updateOutfitVeto(fresh, p2, cands, 1200);
+  assert.ok(!outfitSupports(fresh, 'p1', 1200) && outfitSupports(fresh, 'p2', 1200), 'the freshest read of his suit decides');
+});
+
 test('an empty signal map is absent, not a zero vote', () => {
   const faceOnly = combineEvidence({ face: { alice: 1, [UNKNOWN_ID]: 0 }, cloth: null, body: null })!;
   const withEmptyCloth = combineEvidence({ face: { alice: 1, [UNKNOWN_ID]: 0 }, cloth: {}, body: {} })!;

@@ -578,6 +578,18 @@ export const SCENARIOS: Scenario[] = [
     options: { target: 'alice' },
   },
   {
+    // Realcheck shoot, 2026-10-02 (antony-blinken/08, aiming at P2): two players in similar dark suits,
+    // each matching the other's scan at about 0.65 and their own at about 0.9, and poor crops of the
+    // target that read more like the other player than like him (28% of crops here, 30% on the bench).
+    // Every suit backed every suited face, so those crops named the other player at the normal bar,
+    // and LOCK and a hit landed on him with the target under the dot. He is out of view, as P1 was in
+    // the frames that locked him: nobody else claims his name.
+    name: 'dark-suits',
+    expect: 'the target in a dark suit like another player\'s, some crops of his face reading like that player: never the other player',
+    people: [ME, front('alice', -0.4, 3.5, 0), front('bob', 0.5, 3.5, 6, { suitOf: { id: 'alice', share: 0.65 }, misreadAs: { id: 'alice', share: 0.3 } })],
+    options: { target: 'bob' },
+  },
+  {
     // Review of 2026-10-01: a practice target captured without the hips has no outfit, so the
     // outfit veto cannot protect it; a look-alike stranger must still be refused.
     name: 'lookalike-stranger-faceonly',

@@ -16,7 +16,9 @@ import { SCENARIOS, simulate } from './engine';
  * writes .rubric/sim-wide.json for `npm run rubric`. Exits 1 when a wrong outcome appears that is
  * not one of the documented residuals below, so a new one cannot hide behind a known one.
  */
-export const WIDE_FAMILY = ['crossing', 'pan-crossing', 'pan-crossing-far', 'crossing-backs', 'occlusion', 'crossing-lookalike-faces', 'crossing-lookalike-stranger', 'crowd-seven', 'crossing-sliver', 'pan-crossing-far-sliver', 'crossing-backs-sliver'];
+// dark-suits (2026-10-02): two players in similar suits, as on a real group photo. With the outfit rule
+// judged on each sample alone seeds 1-100 were clean and seeds 101-1000 held 2 wrong hits (Track.outfitReads).
+export const WIDE_FAMILY = ['crossing', 'pan-crossing', 'pan-crossing-far', 'crossing-backs', 'occlusion', 'crossing-lookalike-faces', 'crossing-lookalike-stranger', 'crowd-seven', 'crossing-sliver', 'pan-crossing-far-sliver', 'crossing-backs-sliver', 'dark-suits'];
 
 /**
  * Wrong outcomes known and documented, by scenario and seed. crossing-lookalike-faces 282, 2032 and

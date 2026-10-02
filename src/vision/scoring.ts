@@ -1,5 +1,5 @@
 import type { BodyProps, OutfitSig, Profile } from '../types';
-import { BELIEF_MAX_STEPS, BELIEF_REF_PERIOD_MS, CLOTHING_EVIDENCE, EVIDENCE_WEIGHTS, IDENTITY_TTL_MS, LIVE_FACE_SAMPLE_SPACING_MS, MEAN_ALPHA, MEAN_RESET_SIM, FACE_ONLY_CALIB, OUTFIT_RECENT_MS, OUTFIT_VETO, OVERLAP_FACE_FRESH_MS, REACQUIRE, STRANGER_BASELINE } from './calibration';
+import { BELIEF_MAX_STEPS, BELIEF_REF_PERIOD_MS, CLOTHING_EVIDENCE, EVIDENCE_WEIGHTS, IDENTITY_TTL_MS, LIVE_FACE_SAMPLE_SPACING_MS, MEAN_ALPHA, MEAN_RESET_SIM, FACE_ONLY_CALIB, OUTFIT_RECENT_MS, OUTFIT_RIVAL_LEAD, OUTFIT_VETO, OVERLAP_FACE_FRESH_MS, REACQUIRE, STRANGER_BASELINE } from './calibration';
 import { BODY_MODEL, UNKNOWN_ID } from '../types';
 import { hasOutfit, profileOutfitMatch, propsSimilarity } from './clothing';
 import { resetIdentity, type Track } from './tracker';
@@ -246,29 +246,68 @@ export function outfitReversals(track: Track, sig: OutfitSig, cands: Candidate[]
  * Rule players out on this body when a well-covered outfit sample contradicts their scanned outfit,
  * and lift the veto when a later sample matches it again. See OUTFIT_VETO. Also records whom this
  * sample agrees with over what it compared (Track.outfitAgrees, for outfitSupports).
+ *
+ * A sample backs a player's face, or agrees with them, only when it is their outfit rather than
+ * merely like it: no other player's scan, compared over as much of the outfit, matches it better by
+ * more than OUTFIT_RIVAL_LEAD, in this sample and on average over this body's samples since its last
+ * uncertain transition (Track.outfitReads); a sample a rival explains that much better takes back the
+ * backing an earlier sample gave. Two players in similar suits each clear `clearSim` on the other's
+ * body; without this, every suit backed every suited face there, and a poor crop of one player that
+ * read a little like the other was judged at the normal bar for the other (realcheck
+ * antony-blinken/08, 2026-10-02: LOCK and a hit on P1 with P2 under the dot).
  */
 export function updateOutfitVeto(track: Track, sig: OutfitSig, cands: Candidate[], now: number, mayCorroborate = true): void {
   const agrees: string[] = [];
-  for (const c of cands) {
-    if (!c.profile.outfit || c.id === UNKNOWN_ID) continue;
-    const m = profileOutfitMatch(sig, c.profile.outfit);
+  const matches = cands.filter((c) => c.profile.outfit && c.id !== UNKNOWN_ID).map((c) => ({ id: c.id, m: profileOutfitMatch(sig, c.profile.outfit!) }));
+  /** The best match among the players compared over at least `coverage` of the outfit. */
+  const best = (coverage: number) => Math.max(0, ...matches.filter(({ m }) => m.coverage >= coverage).map(({ m }) => m.sim));
+  const bestTop = best(OUTFIT_VETO.minCoverage);
+  const bestClear = best(OUTFIT_VETO.clearCoverage);
+  // Whose outfit this body wears, over every readable sample since its last uncertain transition: a
+  // single sample within the noise of two similar suits does not decide it. A sample that may hold
+  // somebody else's pixels (an overlap) is not this body's.
+  if (mayCorroborate) {
+    for (const { id, m } of matches) {
+      if (m.coverage < OUTFIT_VETO.clearCoverage) continue;
+      const r = track.outfitReads?.[id] ?? { sum: 0, n: 0 };
+      track.outfitReads = { ...track.outfitReads, [id]: { sum: r.sum + m.sim, n: r.n + 1 } };
+    }
+  }
+  const meanOf = (id: string): number | null => {
+    const r = track.outfitReads?.[id];
+    return r && r.n > 0 ? r.sum / r.n : null;
+  };
+  const bestMean = Math.max(0, ...matches.map(({ id }) => meanOf(id) ?? 0));
+  for (const { id, m } of matches) {
     if (m.coverage < OUTFIT_VETO.minCoverage) continue;
-    if (m.sim >= OUTFIT_VETO.clearSim) agrees.push(c.id);
-    const v = track.outfitVeto?.[c.id];
+    if (m.sim >= OUTFIT_VETO.clearSim && bestTop - m.sim <= OUTFIT_RIVAL_LEAD) agrees.push(id);
+    const v = track.outfitVeto?.[id];
     if (m.sim <= OUTFIT_VETO.maxSim) {
-      track.outfitVeto = { ...track.outfitVeto, [c.id]: { at: now, eased: false } };
+      track.outfitVeto = { ...track.outfitVeto, [id]: { at: now, eased: false } };
       continue;
     }
     // Only a sample that covers more than the shirt can lift, ease or back up anything: a shirt alone
     // never compared the trousers that may have caused a veto, nor told a look-alike in the same top apart.
     if (m.coverage < OUTFIT_VETO.clearCoverage) continue;
+    // Another player's scan explains this sample, or this body's samples so far, clearly better: it is
+    // their outfit. It backs this player's face no longer, whatever an earlier sample said (one sample
+    // within the noise of two similar suits would otherwise back them for OUTFIT_RECENT_MS while every
+    // read since said otherwise).
+    const mean = meanOf(id);
+    const rivalled = bestClear - m.sim > OUTFIT_RIVAL_LEAD || (mean !== null && bestMean - mean > OUTFIT_RIVAL_LEAD);
+    if (mayCorroborate && rivalled && track.outfitSupport?.[id] !== undefined) {
+      const { [id]: _revoked, ...others } = track.outfitSupport;
+      track.outfitSupport = others;
+    }
     if (clearOutfitMatch(m)) {
       if (v) {
-        const { [c.id]: _gone, ...rest } = track.outfitVeto!;
+        const { [id]: _gone, ...rest } = track.outfitVeto!;
         track.outfitVeto = rest;
       }
-      if (mayCorroborate) track.outfitSupport = { ...track.outfitSupport, [c.id]: now };
-    } else if (v && !v.eased) track.outfitVeto = { ...track.outfitVeto, [c.id]: { at: now, eased: true } };
+      // Lifting a veto needs only a clear match: the sample does not contradict this player. Backing
+      // their face needs it to be their outfit, not a rival's that it matches clearly better.
+      if (mayCorroborate && !rivalled) track.outfitSupport = { ...track.outfitSupport, [id]: now };
+    } else if (v && !v.eased) track.outfitVeto = { ...track.outfitVeto, [id]: { at: now, eased: true } };
   }
   track.outfitAgrees = { at: now, ids: agrees };
 }
