@@ -161,8 +161,10 @@ function combine(face: Record<Pid, number> | null, cloth: Record<Pid, number> | 
  */
 function update(state: BeliefState, ev: Record<Pid, number>, alpha: number, t: number, confirm?: Record<Pid, number>): void {
   if (confirm) {
+    // As scoring.ts updateBelief: an empty confirm confirms nothing, whatever the belief.
+    const seen = top(confirm)?.id;
     const believed = top(state.belief)?.id;
-    if (believed === undefined || top(confirm)?.id === believed) state.unconfirmed = false;
+    if (seen !== undefined && (believed === undefined || seen === believed)) state.unconfirmed = false;
   }
   for (const id of new Set([...Object.keys(state.belief), ...Object.keys(ev)])) {
     const v = Number.isFinite(ev[id]) ? clamp01(ev[id]) : 0;
@@ -227,7 +229,9 @@ export function replayShot(sample: ShotSample, overrides: Partial<ReplayParams> 
         if (!faceFresh || audit) {
           // An unconfirmed identity is not propped up by its own old belief (pipeline.ts).
           const ev = audit ? null : combine(null, clothingEvidence(t.outfit.match, derived && s.unconfirmed ? {} : s.belief, p), t.outfit.body ?? null, p);
-          if (ev) update(s, ev, p.clothAlpha, frame.t, derived ? ev : undefined);
+          // As pipeline.ts: on a body somebody may be hidden behind, the torso's pixels may be the partner's,
+          // so an outfit read moves the belief but confirms nothing.
+          if (ev) update(s, ev, p.clothAlpha, frame.t, derived ? (t.hiding ? {} : ev) : undefined);
         }
       }
       if (t.face && Object.keys(t.face.meanSims ?? {}).length) {

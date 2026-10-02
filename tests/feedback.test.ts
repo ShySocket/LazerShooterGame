@@ -584,3 +584,28 @@ test('range-test photos never outlive ROUND_TTL_MS: the store drops expired roun
     Date.now = realNow;
   }
 });
+
+test('the replay, like the game, never lets an outfit read confirm a body somebody may be hidden behind', () => {
+  // Bob's own outfit read three times on his body while a partner may be hidden behind it, no face:
+  // the game moves the belief but confirms nothing (pipeline.ts, the sliver rules), so it refuses.
+  const track = (t: number) => ({
+    id: 1, box: [0.3, 0.2, 0.3, 0.6] as NBox, hit: [0.36, 0.25, 0.18, 0.35] as NBox, belief: { p2: 0.9, unknown: 0.05 }, via: 'clothing', conflict: false, ambiguous: false,
+    faceSamples: 0, faceAgeMs: null, evidenceAgeMs: 0, inSight: true, unconfirmed: true, reacquiring: false, overlapping: false, crowded: false, hiding: true, freshFace: false,
+    outfit: { match: { p1: { sim: 0.1, cov: 1, thighs: true }, p2: { sim: 0.97, cov: 1, thighs: true } } },
+    t,
+  });
+  const frames = [-400, -200, 0].map((t) => ({ t, tracks: [track(t)], lock: null }));
+  const s: ShotSample = {
+    v: 3,
+    app: { commit: 'x', faceModel: 'x', bodyModel: 'x', ua: 'x' },
+    round: { key: 'K', code: 'ABCD', startAt: 0, settings: DEFAULT_SETTINGS, players: 3, shooter: 'p0', eligible: ['p1', 'p2'] },
+    device: { periodMs: 200, staleMs: 520, burstMs: 500, width: 1280, height: 720 },
+    shot: { id: 's', roundMs: 0, outcome: 'unclear', kind: 'pending', resolvedTo: null, via: null, resolveMs: 0, zoom: false, frameAgeMs: 0, allowanceMs: 0, crosshair: [0.29, 0.35, 0.42, 0.3], trackId: 1, decidedAtFrame: 2, settledBy: 'frame', decisionTrackId: 1, decisionBelief: null },
+    frames: frames as unknown as ShotSample['frames'],
+    target: null,
+  };
+  assert.equal(replayShot(s).resolved, null, 'an outfit read on a hiding body confirms nothing in the replay either');
+  // The same reads on a body nobody may be hidden behind do confirm, and the replay hits.
+  const clear = { ...s, frames: frames.map((f) => ({ ...f, tracks: f.tracks.map((x) => ({ ...x, hiding: false, unconfirmed: false })) })) as unknown as ShotSample['frames'] };
+  assert.equal(replayShot(clear).resolved, 'p2');
+});
