@@ -373,7 +373,11 @@ export class VisionPipeline<C = unknown> {
           }
           return;
         }
-        updateBelief(t, ev, CLOTHING_BELIEF_ALPHA, now);
+        // While somebody may be hidden at this body, the pixels of its torso may be theirs: a person in
+        // front covering the torso of the body the detector found fills its outfit sample with their
+        // own clothes, which then agree with their name. Such a read moves the belief and may still
+        // rule a player out (above), but it cannot confirm the identity on this frame.
+        updateBelief(t, ev, CLOTHING_BELIEF_ALPHA, now, t.hiding ? {} : ev);
         t.clothingSince = (t.clothingSince ?? 0) + 1;
         if (t.via !== 'face' || now - t.lastFaceAt > FACE_VIA_TIMEOUT_MS) t.via = 'clothing';
       }

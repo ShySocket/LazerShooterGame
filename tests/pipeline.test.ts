@@ -757,6 +757,21 @@ test('while somebody may be hidden at a body, a face beside its own head is not 
   assert.equal(hop.tracks[0].unconfirmed, true);
 });
 
+test('while somebody may be hidden at a body, an outfit read alone confirms nothing: the pixels may be theirs (crossing-backs-sliver seed 65)', async () => {
+  // The same hop with no face found on the frame: only the outfit is read, and it reads the clothes
+  // of the person in front, who agrees with the track's name.
+  const h = hopHarness();
+  const bobTrack = await bobWithHiddenPartner(h, { face: ALICE_FACE, outfit: WARDROBE.alice });
+  // His face was last read more than FACE_FRESH_MS ago, so the outfit sample counts as evidence.
+  for (let i = 0; i < 8; i++) await h.frame([[HOP_BOB, HOP_BOB_HIT, { face: null, outfit: WARDROBE.bob }]]);
+  const hop = await h.frame([[HOP_PARTNER, HOP_PARTNER_HIT, { face: null, outfit: WARDROBE.bob }]]);
+  assert.equal(hop.tracks[0].id, bobTrack);
+  assert.ok(hop.tracks[0].hiding);
+  assert.equal(hop.inSight?.id, bobTrack);
+  assert.notDeepEqual(hop.lock, { kind: 'lock', id: 'bob' }, 'clothes that may be the front person\'s confirm no name on this body');
+  assert.equal(hop.tracks[0].unconfirmed, true);
+});
+
 test('a settled shot says which rule refused it: the burst rules and the decision rules alike', async () => {
   // A burst that the timer ends before any post-tap frame confirmed it: no frame.
   const a = harness();

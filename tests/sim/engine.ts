@@ -468,6 +468,14 @@ export const SCENARIOS: Scenario[] = [
     options: { target: 'bob', durationMs: 15000, pan: { amplitude: 0.15, periodS: 3 }, aimAt: 'visible', detector: { ...DEFAULT_DETECTOR, frontPixels: true } },
   },
   {
+    // The crossing with both facing away, aimed at the sliver of the farther one: the outfit is all
+    // there is, and a body found mostly behind the nearer one reads the nearer one's clothes.
+    name: 'crossing-backs-sliver',
+    expect: 'the back-view crossing aimed at the visible part of the farther player: never the nearer one',
+    people: [ME, front('alice', 0.2, 4, 0, { vx: 0.04, facing: 'back' }), front('bob', 0.8, 4.4, 6, { vx: -0.04, facing: 'back' })],
+    options: { target: 'bob', durationMs: 15000, aimAt: 'visible', detector: { ...DEFAULT_DETECTOR, frontPixels: true } },
+  },
+  {
     name: 'crossing-backs',
     expect: 'the same crossing with both players facing away: only the outfit can re-identify them',
     people: [ME, front('alice', 0.2, 4, 0, { vx: 0.04, facing: 'back' }), front('bob', 0.8, 4.4, 6, { vx: -0.04, facing: 'back' })],

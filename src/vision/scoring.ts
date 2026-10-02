@@ -190,7 +190,9 @@ export function elapsedAlpha(alpha: number, dtMs: number): number {
  * wall-clock rate on a 100 ms phone and a 400 ms phone, and a burst of near-duplicate frames is not
  * a burst of independent proof. The first evidence on a track takes the full step. `confirm` is the
  * evidence that may confirm a suspended identity, when that must be narrower than what moves the
- * belief (this frame's own face read rather than the running mean, pipeline.ts applyFace).
+ * belief (this frame's own face read rather than the running mean, pipeline.ts applyFace), or empty
+ * when the evidence may move the belief but confirm nothing (an outfit read whose pixels may be a
+ * hidden partner's).
  */
 export function updateBelief(track: Track, ev: Record<string, number>, alpha = 0.35, now = performance.now(), confirm: Record<string, number> = ev): void {
   const a = elapsedAlpha(alpha, track.lastEvidenceAt > 0 && now > track.lastEvidenceAt ? now - track.lastEvidenceAt : BELIEF_REF_PERIOD_MS);
@@ -198,7 +200,8 @@ export function updateBelief(track: Track, ev: Record<string, number>, alpha = 0
   // else keeps the track unconfirmed until the belief itself has followed the evidence.
   const believed = Object.entries(track.belief).sort((x, y) => y[1] - x[1])[0]?.[0];
   const seen = Object.entries(confirm).sort((x, y) => y[1] - x[1])[0]?.[0];
-  const agrees = believed === undefined || seen === believed;
+  // Nothing to confirm with (an empty `confirm`) confirms nothing, whatever the belief.
+  const agrees = seen !== undefined && (believed === undefined || seen === believed);
   for (const id of new Set([...Object.keys(track.belief), ...Object.keys(ev)])) {
     const v = Number.isFinite(ev[id]) ? clamp01(ev[id]) : 0;
     track.belief[id] = (1 - a) * (track.belief[id] ?? 0) + a * v;

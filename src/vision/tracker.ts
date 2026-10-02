@@ -78,7 +78,8 @@ export interface Track {
    * A partner (see `partners`) is not detected this frame: this frame's body may be theirs. The
    * identity then stands only on reads of this frame's body (pipeline.ts applyFace and the outfit
    * check, scoring.ts outfitSupports), never on a running face mean or an outfit read before it, and
-   * a face only when it sits on this body's own head (faceOnOwnHead).
+   * a face only when it sits on this body's own head (faceOnOwnHead). The outfit read alone confirms
+   * nothing: the partner may fill its pixels when they stand in front.
    */
   hiding?: boolean;
   /** Whether the frame this track was last seen in returned the detector's full BODY_CAP bodies (crowd rule). */
@@ -506,7 +507,7 @@ export class Tracker {
         else t.unconfirmed = true;
       } else if (hiding.has(t)) {
         // Not a new transition (the overlap that started it already was one): the identity is kept,
-        // and this frame's own face or outfit read confirms it (scoring.ts updateBelief).
+        // and this frame's own face read on this body's head confirms it (scoring.ts updateBelief).
         t.unconfirmed = true;
       }
       t.overlapping = overlap.has(t);

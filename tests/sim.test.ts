@@ -63,10 +63,12 @@ test('a crossing during a camera pan never swaps identities', async () => {
 });
 
 test('aiming at the visible sliver of a half-hidden player never hits or locks the player in front', async () => {
-  // 1000 seeds on 2026-10-01: crossing-sliver 0 wrong, 0 wrong-lock frames, 88% of shots land;
-  // pan-crossing-far-sliver 24 wrong hits before the burst rule for a target with somebody maybe
-  // hidden behind them, none after, 70% land.
-  for (const name of ['crossing-sliver', 'pan-crossing-far-sliver']) {
+  // 1000 seeds on 2026-10-01, the clothing sampler reading whoever fills a torso: before the rules for
+  // a body somebody may be hidden at, crossing-sliver 1 wrong-lock frame, pan-crossing-far-sliver 24
+  // wrong hits (the burst rule) and 1 wrong-lock frame (a face beside the body's own head),
+  // crossing-backs-sliver 20 wrong-lock frames (an outfit read confirming the name); after, none,
+  // and 87%, 69% and 76% of shots land.
+  for (const name of ['crossing-sliver', 'pan-crossing-far-sliver', 'crossing-backs-sliver']) {
     const a = await run(name);
     assert.equal(a.wrong, 0, describe(a));
     assert.equal(a.wrongLockFrames, 0, describe(a));
@@ -121,7 +123,10 @@ test('a crossing with both players facing away never swaps their identities', as
   const a = await run('crossing-backs');
   assert.equal(a.wrong, 0, describe(a));
   assert.equal(a.wrongLockFrames, 0, describe(a));
-  assert.ok(hitRate(a) >= 0.75, describe(a));
+  // 1000 seeds: 81.6% before 2026-10-01.8, 58.6% after. A back view with somebody possibly hidden
+  // behind it cannot be confirmed by its outfit, whose pixels may be theirs (crossing-backs-sliver:
+  // 20 wrong-lock frames in 1000 seeds before), so it waits until they are seen apart or 4 s pass.
+  assert.ok(hitRate(a) >= 0.45, describe(a));
 });
 
 test('a player walking in front of the target does not become the target', async () => {
@@ -200,6 +205,12 @@ const REGRESSION_SEEDS: [string, number][] = [
   // body found her face beside his head, faceOwner gave it to him, his torso read her clothes, and the
   // two together showed LOCK alice with the dot on him (tracker.ts faceOnOwnHead).
   ['pan-crossing-far-sliver', 844],
+  // Back views (2026-10-01): the outfit is all there is, and on the frame that handed Alice's track
+  // Bob's body her clothes over his torso confirmed her name there. 180: the same in the face-on
+  // crossing, on a frame with no face read on his body (pipeline.ts, an outfit read cannot confirm
+  // while somebody may be hidden at the body).
+  ['crossing-backs-sliver', 65],
+  ['crossing-sliver', 180],
 ];
 for (const [name, seed] of REGRESSION_SEEDS) {
   test(`regression: ${name} seed ${seed} has no wrong hit and no wrong lock`, async () => {
