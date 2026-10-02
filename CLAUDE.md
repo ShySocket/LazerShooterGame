@@ -25,6 +25,7 @@ Other useful commands:
 ```bash
 npm run sim                                    # 3-seed table, prints per-scenario hit/wrong/lock stats
 npm run sim -- occlusion --seeds 100           # filter scenarios by name substring
+npm run sim -- crossing --from 101 --seeds 900 --strict   # seeds 101..1000: sweeps beyond the 100-seed gate
 npm run sim:full                               # 100 seeds, --strict: exit 1 on any wrong hit / wrong lock, prints traces
 node --import ./tests/register.mjs --test tests/tracker.test.ts   # one test file
 node --import ./tests/register.mjs --test --test-name-pattern "crossing" tests/sim.test.ts   # one test by name

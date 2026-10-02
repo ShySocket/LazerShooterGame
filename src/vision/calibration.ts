@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-10-01.6';
+export const CALIBRATION_VERSION = '2026-10-01.7';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /**
@@ -206,9 +206,11 @@ export const CROSSING_IOU = 0.25;
  * in front of) that body, not gone: in any frame the detector may find only them and hand the track
  * their body. Until they are seen apart from it again, or this long after the two were last seen
  * overlapping, the track needs evidence read on each frame's own body to lock or hit (tracker.ts
- * Track.partners). Measured on the sim (2026-10-01): a partner stayed hidden 2.4 s before the
- * detector handed the track their body (pan-crossing-far seed 85); the hit-rate cost on the crossing
- * scenarios is the same from 2.5 s to 6 s.
+ * Track.partners, Track.hiding). Measured on the sim (2026-10-01): a partner stayed hidden 2.4 s before
+ * the detector handed the track their body (pan-crossing-far seed 85); the hit-rate cost on the
+ * crossing scenarios is the same from 2.5 s to 6 s. Since 2026-10-01.7 the clock also runs from a
+ * track's box overlapping the last box of a neighbour lost a moment ago (crossing-lookalike-faces
+ * seed 716: Bob vanished beside Alice before their boxes reached CROSSING_IOU).
  */
 export const HIDDEN_PARTNER_MS = 4000;
 /** Below this height ratio a detection cannot continue a track at all. */

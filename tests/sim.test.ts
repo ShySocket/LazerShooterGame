@@ -157,6 +157,23 @@ const REGRESSION_SEEDS: [string, number][] = [
   // took it and showed LOCK alice with the dot on him (tracker.ts Track.partners, HIDDEN_PARTNER_MS).
   ['pan-crossing-far', 85],
   ['crossing-lookalike-faces', 63],
+  // 2026-10-01, seeds beyond the 100-seed gate: a track slid onto the body of somebody hidden behind
+  // it with nothing geometric to notice, and carried the identity across. 716: Bob vanished beside
+  // Alice before their boxes reached the crossing overlap, so he was forgotten once his lost track
+  // retired (tracker.ts, a lost neighbour is a partner too); his look-alike face then read as her
+  // on her own earlier outfit read. 643: the same with a look-alike stranger. 748 and 740: the
+  // running face mean confirmed the believed player on a frame whose own face named nobody
+  // (pipeline.ts, while a partner may be hidden each frame stands on its own reads). 690: a body
+  // without head landmarks took the face of the person behind it and its hit region stretched over
+  // her (tracker.ts, a face goes with a headless body only above and between its shoulders).
+  // 2146: the detector skipped Alice during a pan; her last box ended short of the dot but she had
+  // moved over it, in front of Bob (pipeline.ts coveredByOther, where the motion carried her).
+  ['crossing-lookalike-faces', 716],
+  ['crossing-lookalike-stranger', 643],
+  ['pan-crossing', 748],
+  ['pan-crossing-far', 740],
+  ['occlusion', 690],
+  ['pan-crossing-far', 2146],
 ];
 for (const [name, seed] of REGRESSION_SEEDS) {
   test(`regression: ${name} seed ${seed} has no wrong hit and no wrong lock`, async () => {

@@ -465,3 +465,189 @@ test('a track whose body\'s outfit flips from ruling a player out to clearly mat
   const shot = h.pipeline.fire({ tap: h.clock.now }, CROSSHAIR);
   assert.equal(shot.kind === 'instant' ? shot.settlement.resolution?.id : shot.kind, 'bob');
 });
+
+/**
+ * Silent hops while a partner may be hidden (review of 2026-10-01, seeds beyond the 100-seed gate):
+ * Bob and somebody else overlap, the other person is then hidden behind Bob, and the detector may
+ * hand Bob's track their body in any frame with nothing geometric to notice. Each frame's identity
+ * must then stand on evidence read on that frame's own body.
+ *
+ *   Bob [0.30,0.24,0.30,0.61]   partner [0.40,0.25,0.28,0.58] (IoU 0.5)   dot (0.50, 0.50) on both torsos
+ */
+const hot = (i: number): number[] => Array.from({ length: 8 }, (_, k) => (k === i ? 1 : 0));
+type Wardrobe = { top: number[]; thighs: number[] };
+const WARDROBE: Record<'alice' | 'bob' | 'stranger', Wardrobe> = {
+  alice: { top: hot(0), thighs: hot(1) },
+  bob: { top: hot(2), thighs: hot(3) },
+  stranger: { top: hot(4), thighs: hot(5) },
+};
+const dressed = (face: number[], w: Wardrobe) => ({ faceModel: 'test', face: [face], outfit: { front: w, back: w } });
+const DRESSED: Candidate[] = [
+  { id: 'me', profile: dressed(ME_FACE, { top: hot(6), thighs: hot(7) }) },
+  { id: 'alice', profile: dressed(ALICE_FACE, WARDROBE.alice) },
+  { id: 'bob', profile: dressed(BOB_FACE, WARDROBE.bob) },
+];
+const HOP_BOB: NBox = [0.30, 0.24, 0.30, 0.61];
+const HOP_BOB_HIT: NBox = [0.36, 0.25, 0.18, 0.35];
+const HOP_PARTNER: NBox = [0.40, 0.25, 0.28, 0.58];
+const HOP_PARTNER_HIT: NBox = [0.45, 0.26, 0.17, 0.33];
+
+/** Where the face of a person standing in `box` is, in full-frame coordinates. */
+const faceOf = (box: NBox): NBox => [box[0] + box[2] * 0.35, box[1] + 0.02, box[2] * 0.3, 0.08];
+/** Who stands in a detection: their face (when a crop finds one) and their outfit (null: the torso cannot be read). */
+interface Person { face: number[] | null; quality?: number; outfit: Wardrobe | null }
+function hopHarness(period = PERIOD) {
+  const clock = { now: 0 };
+  const pipeline = new VisionPipeline<{ tap: number }>(
+    { candidates: DRESSED, exclusiveIds: new Set(DRESSED.map((c) => c.id)), eligible: new Set(['alice', 'bob']), hitThreshold: 0.5, hitMargin: 0.2 },
+    () => clock.now,
+  );
+  const who = new WeakMap<Detection, Person>();
+  const outfitReads: number[] = [];
+  const ops: FrameOps = {
+    sampleOutfit: (d) => {
+      outfitReads.push(clock.now);
+      const p = who.get(d);
+      return p ? { sig: p.outfit ? { ...p.outfit } : null, props: null } : null;
+    },
+    cropFaces: async (_region, d) => {
+      const p = who.get(d);
+      return p?.face ? [{ box: faceOf(d.box), embedding: p.face, quality: p.quality ?? 1 }] : [];
+    },
+    isCurrent: () => true,
+  };
+  let t = 0;
+  /** One frame: each entry is a box, its hit region, who it is, and whether only their face was found. */
+  const frame = async (people: [NBox, NBox, Person, boolean?][]) => {
+    const dets = people.map(([box, hit, p, faceOnly]) => {
+      const d: Detection = faceOnly ? { box, hit, face: { boxRaw: faceOf(box), boxScore: 0.9 } as unknown as Detection['face'] } : body(box, hit);
+      who.set(d, p);
+      return d;
+    });
+    clock.now = t + period;
+    const out = await pipeline.processFrame(dets, t, 1280, 720, CROSSHAIR, ops);
+    assert.ok(out, 'frame abandoned');
+    const capturedAt = t;
+    t += period;
+    return { ...out, capturedAt };
+  };
+  return { pipeline, clock, frame, outfitReads, get t() { return t; } };
+}
+
+/**
+ * Bob alone and recognised; a partner overlaps him for a frame; then Bob alone again until the
+ * partner's lost track has retired (LOST_TRACK_MS): no overlap with anybody any more, but the partner
+ * is presumed hidden behind him, and his lock is re-earned on reads of his own body.
+ */
+async function bobWithHiddenPartner(h: ReturnType<typeof hopHarness>, partner: Person) {
+  const bob: Person = { face: BOB_FACE, outfit: WARDROBE.bob };
+  for (let i = 0; i < 6; i++) await h.frame([[HOP_BOB, HOP_BOB_HIT, bob]]);
+  const met = await h.frame([[HOP_BOB, HOP_BOB_HIT, bob], [HOP_PARTNER, HOP_PARTNER_HIT, partner]]);
+  assert.ok(met.tracks.every((tr) => tr.overlapping), 'the two overlap: a crossing');
+  let last;
+  for (let i = 0; i < 8; i++) last = await h.frame([[HOP_BOB, HOP_BOB_HIT, bob]]);
+  const tr = last!.tracks[0];
+  assert.ok(!tr.overlapping && tr.hiding, 'overlapping nobody, but the partner may be hidden behind Bob');
+  assert.deepEqual(last!.lock, { kind: 'lock', id: 'bob' }, 'Bob re-earns his lock on evidence read on his own body each frame');
+  return tr.id;
+}
+
+test('while a partner may be hidden, the running face mean cannot confirm a frame whose own face names nobody (pan-crossing seed 748)', async () => {
+  // The hop frame: the detector hands Bob's track the hidden stranger's body, the crop reads the
+  // stranger's blurred face (0.4 like Bob's: it names nobody), and the torso cannot be read. Bob's
+  // running mean, built on his earlier frames, still named him and showed LOCK bob on the stranger.
+  const h = hopHarness();
+  const strangerFace = withCosine(BOB_FACE, 0.4, 11);
+  const bobTrack = await bobWithHiddenPartner(h, { face: strangerFace, outfit: WARDROBE.stranger });
+  const hop = await h.frame([[HOP_BOB, HOP_BOB_HIT, { face: strangerFace, quality: 0.3, outfit: null }]]);
+  assert.equal(hop.tracks[0].id, bobTrack, 'the same track: nothing geometric marks the hop');
+  assert.equal(hop.tracks[0].unconfirmed, true, 'this frame\'s own read did not name Bob');
+  assert.notDeepEqual(hop.lock, { kind: 'lock', id: 'bob' });
+});
+
+test('while a partner may be hidden, an outfit read on an earlier frame does not let a look-alike face name the player (crossing-lookalike-faces seed 716)', async () => {
+  // The hop frame finds only a face, so no outfit can be read on it. Alice, a look-alike (0.75 like
+  // Bob: above FACE_CALIB.accept, below FACE_ONLY_CALIB.accept), read as Bob at the normal bar while
+  // the outfit corroboration from Bob's own earlier frame still counted.
+  const h = hopHarness();
+  const lookalike: Person = { face: withCosine(BOB_FACE, 0.75, 12), outfit: WARDROBE.alice };
+  const bobTrack = await bobWithHiddenPartner(h, lookalike);
+  const hop = await h.frame([[HOP_BOB, HOP_BOB_HIT, lookalike, true]]);
+  assert.equal(hop.tracks[0].id, bobTrack);
+  assert.notDeepEqual(hop.lock, { kind: 'lock', id: 'bob' }, 'no LOCK bob on a face-only body that nothing else could check');
+});
+
+test('while a partner may be hidden, the outfit is read on every frame, so a hop onto a body in other clothes is flagged at once (crossing-lookalike-faces seed 716)', async () => {
+  // Bob's face was fresh, so his outfit was audited only once a second; the frame that handed his
+  // track Alice's body (no face found on it) went unchecked. Read, her outfit is one Bob's own reads
+  // had ruled out on this track, and a body does not change clothes: a hop (outfitReversals).
+  const h = hopHarness();
+  await bobWithHiddenPartner(h, { face: withCosine(BOB_FACE, 0.75, 12), outfit: WARDROBE.alice });
+  const bob: Person = { face: BOB_FACE, outfit: WARDROBE.bob };
+  for (let i = 0; i < 2; i++) {
+    const reads = h.outfitReads.length;
+    await h.frame([[HOP_BOB, HOP_BOB_HIT, bob]]);
+    assert.equal(h.outfitReads.length, reads + 1, 'his outfit is read on every frame, fresh face or not');
+  }
+  const hop = await h.frame([[HOP_BOB, HOP_BOB_HIT, { face: null, outfit: WARDROBE.alice }]]);
+  assert.equal(hop.tracks[0].transitionAt, hop.capturedAt, 'the hop is an uncertain transition: a burst opened before it cannot land after it');
+  assert.notDeepEqual(hop.lock, { kind: 'lock', id: 'bob' });
+});
+
+test('a person the detector skipped still covers the dot where the pan carried them, not only where they were last seen (pan-crossing-far seed 2146)', async () => {
+  // Alice walks in front of Bob while the phone pans: everybody shifts 0.04 of the frame a frame. In
+  // the last frame the detector skips her; her last box ends left of the dot, but her motion has
+  // carried her over it, in front of Bob. The stale box let LOCK bob show with the dot on her.
+  const h = hopHarness();
+  const alice: Person = { face: ALICE_FACE, outfit: WARDROBE.alice };
+  const bob: Person = { face: BOB_FACE, outfit: WARDROBE.bob };
+  const aliceAt = (x: number): [NBox, NBox, Person] => [[x, 0.24, 0.25, 0.61], [x + 0.05, 0.25, 0.15, 0.35], alice];
+  const bobAt = (x: number): [NBox, NBox, Person] => [[x, 0.27, 0.22, 0.55], [x + 0.01, 0.28, 0.18, 0.30], bob];
+  let last;
+  for (let i = 0; i < 7; i++) last = await h.frame([aliceAt(0.04 * i), bobAt(0.20 + 0.04 * i)]);
+  const her = last!.tracks[0];
+  assert.ok(her.vx > 0, 'her track carries the pan');
+  assert.ok(her.box[0] + her.box[2] < 0.5, 'her last box ends left of the dot');
+  assert.ok(last!.tracks[1].belief.bob > 0.9, 'Bob is recognised');
+  const skipped = await h.frame([bobAt(0.48)]);
+  assert.equal(skipped.inSight, null, 'the dot may be on her: nobody is selected');
+  assert.equal(skipped.lock, null);
+  h.pipeline.fire({ tap: 0 }, CROSSHAIR);
+  assert.equal(h.pipeline.hasPending(), false, 'and a tap on that frame nominates nobody');
+});
+
+test('a burst never lands across an uncertain transition, even with a name accepted at the tap (slow-phone pan crossing, seed 858)', async () => {
+  // On a 400 ms phone a stale tap gets a burst of almost 2 s. Seed 858: at the tap Alice's track sat
+  // on Bob's body (the pan had swapped them), so the burst expected "alice"; 550 ms later the track
+  // went through a transition back onto Alice's body, re-earned her there, and the burst landed on
+  // her 1.8 s after a tap on him. Holding the burst to the name is not holding it to the body.
+  const slow = 400;
+  const h = hopHarness(slow);
+  const bob: Person = { face: BOB_FACE, outfit: WARDROBE.bob };
+  let last;
+  for (let i = 0; i < 8; i++) last = await h.frame([[HOP_BOB, HOP_BOB_HIT, bob]]);
+  assert.deepEqual(last!.lock, { kind: 'lock', id: 'bob' });
+  h.clock.now = h.t - slow + 300;
+  const tap = h.pipeline.fire({ tap: h.clock.now }, CROSSHAIR);
+  assert.equal(tap.kind, 'pending', 'a tap on a 300 ms old frame opens a burst');
+  // Somebody crosses behind Bob's left side (IoU 0.31, clear of the dot): an uncertain transition on
+  // his track, after the tap, while he stays under the dot.
+  const crossed = await h.frame([[HOP_BOB, HOP_BOB_HIT, bob], [[0.16, 0.25, 0.28, 0.58], [0.21, 0.26, 0.17, 0.33], { face: ALICE_FACE, outfit: WARDROBE.alice }]]);
+  assert.equal(crossed.settled, null, 'the burst keeps waiting');
+  assert.ok((crossed.tracks[0].transitionAt ?? 0) > crossed.capturedAt - slow);
+  const reads: number[] = [];
+  let settled = null;
+  let relocked = false;
+  while (h.pipeline.hasPending()) {
+    const before = h.outfitReads.length;
+    const out = await h.frame([[HOP_BOB, HOP_BOB_HIT, bob]]);
+    reads.push(h.outfitReads.length - before);
+    relocked ||= out.lock?.kind === 'lock';
+    settled = out.settled ?? settled;
+  }
+  assert.ok(relocked, 'the identity is re-earned on his body while the burst is still open');
+  assert.equal(settled?.resolution ?? null, null, `the burst must not land after the transition: ${JSON.stringify(settled?.resolution)}`);
+  // Work shedding reads clothing every other frame on a slow phone; a body somebody may be hidden
+  // behind keeps its outfit read on every frame, because that read is what each frame stands on.
+  assert.ok(reads.every((n) => n === 1), `outfit reads per frame while the partner may be hidden: ${reads}`);
+});

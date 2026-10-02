@@ -1,6 +1,6 @@
 import { UNKNOWN_ID, type BodyProps, type OutfitSig } from '../types';
 import { clothingDue, cropBudget } from './schedule';
-import { CLOTHING_AUDIT_MS, CLOTHING_BELIEF_ALPHA, CLOTHING_CONTRADICTION, FACE_BELIEF_ALPHA, FACE_FRESH_MIN_MARGIN, FACE_FRESH_MS, FACE_REFRESH_MIN_LEAD, FACE_REFRESH_MS, FACE_VIA_TIMEOUT_MS, MATURE_TRACK_OBSERVATIONS, TORSO_COVER_FRACTION, LIVE_FACE_ENROLLED_MIN, LIVE_FACE_MIN, LIVE_FACE_MIN_BELIEF, LIVE_FACE_MIN_QUALITY, LIVE_FACE_MIN_TRACK_SAMPLES, LIVE_FACE_NOVELTY, LIVE_FACE_RUNNER_UP, LIVE_FACES_PER_PLAYER, HOP_READ_MARGIN, BODY_CAP } from './calibration';
+import { CLOTHING_AUDIT_MS, CLOTHING_BELIEF_ALPHA, CLOTHING_INTERVAL_MS, CLOTHING_CONTRADICTION, FACE_BELIEF_ALPHA, FACE_FRESH_MIN_MARGIN, FACE_FRESH_MS, FACE_REFRESH_MIN_LEAD, FACE_REFRESH_MS, FACE_VIA_TIMEOUT_MS, MATURE_TRACK_OBSERVATIONS, TORSO_COVER_FRACTION, LIVE_FACE_ENROLLED_MIN, LIVE_FACE_MIN, LIVE_FACE_MIN_BELIEF, LIVE_FACE_MIN_QUALITY, LIVE_FACE_MIN_TRACK_SAMPLES, LIVE_FACE_NOVELTY, LIVE_FACE_RUNNER_UP, LIVE_FACES_PER_PLAYER, HOP_READ_MARGIN, BODY_CAP } from './calibration';
 import { containsPoint, faceOwner, markUncertain, resetIdentity, trackGapMs, Tracker, type Detection, type Track } from './tracker';
 import { crosshairCentre, indexInSight, intersectArea, type NBox } from './geometry';
 import {
@@ -122,8 +122,19 @@ const EXTRA_CROPS = 1;
 /** The live-enrolment log kept for the shot log and the bench; older entries roll off. */
 const LEARNED_LOG_MAX = 200;
 
-/** Whether a track other than `id` in the list still covers the point. */
-const coveredByOther = (tracks: Track[], id: number, x: number, y: number): boolean => tracks.some((c) => c.id !== id && containsPoint(c.box, x, y));
+/** Where a box seen on track `t` is expected at `at`: its velocity plus bounded acceleration, as the tracker predicts. */
+function movedTo(b: NBox, t: Track, at: number): NBox {
+  const age = at - t.lastSeen;
+  const ax = Math.max(-b[2] * 0.5, Math.min(b[2] * 0.5, 0.5 * t.ax * age * age));
+  const ay = Math.max(-b[3] * 0.5, Math.min(b[3] * 0.5, 0.5 * t.ay * age * age));
+  return [b[0] + t.vx * age + ax, b[1] + t.vy * age + ay, b[2], b[3]];
+}
+
+/**
+ * Whether a track other than `id` in the list still covers the point at `at`: where it was last seen,
+ * or where its motion has carried it since. A pan carries a skipped person away from their last box.
+ */
+const coveredByOther = (tracks: Track[], id: number, x: number, y: number, at: number): boolean => tracks.some((c) => c.id !== id && (containsPoint(c.box, x, y) || containsPoint(movedTo(c.box, c, at), x, y)));
 
 /**
  * Everything between detector output and a shot verdict: tracking, evidence fusion, identity
@@ -262,8 +273,11 @@ export class VisionPipeline<C = unknown> {
     const mean = updateFaceMean(t, emb, now);
     const fe = faceEvidence(mean, candidates, centredSimilarity, FACE_CALIB, quality, corroborated);
     const ev = combineEvidence({ face: fe, cloth: null, body: null });
-    // The running mean already smooths frame noise, so the belief may follow it quickly.
-    if (ev) updateBelief(t, ev, FACE_BELIEF_ALPHA, now);
+    // The running mean already smooths frame noise, so the belief may follow it quickly. While a
+    // partner may be hidden behind this body, only this frame's own read confirms the identity: the
+    // mean is mostly earlier frames, which may have been another body (pan-crossing seed 748: Bob's
+    // mean named him on a frame whose own face, the hidden partner's, named nobody).
+    if (ev) updateBelief(t, ev, FACE_BELIEF_ALPHA, now, t.hiding ? raw : ev);
     t.via = 'face';
     t.lastFaceAt = now;
   }
@@ -294,8 +308,16 @@ export class VisionPipeline<C = unknown> {
       // Clothing and body ratios only matter while the face is not carrying the identity, except for
       // an occasional audit: a wardrobe that strongly contradicts the face is a reason to re-verify.
       const faceFresh = t.lastFaceAt > 0 && now - t.lastFaceAt < FACE_FRESH_MS && (topBelief(t)?.margin ?? 0) >= FACE_FRESH_MIN_MARGIN;
-      const audit = faceFresh && now - t.lastClothingAt >= CLOTHING_AUDIT_MS;
-      if (sampleClothing && d.body && (!faceFresh || audit)) {
+      // While a partner may be hidden behind this body (tracker.ts Track.hiding) the detector may hand
+      // the track their body in any frame, so the outfit, the cue that tells two bodies apart when
+      // their faces are alike, is checked on every frame the clothing schedule allows rather than
+      // once a second (crossing-lookalike-faces seed 716: the frame that gave Alice's track Bob's
+      // body went unread; read, his outfit is one her own reads had ruled out, a reversal below).
+      const audit = faceFresh && (now - t.lastClothingAt >= CLOTHING_AUDIT_MS || Boolean(t.hiding));
+      // Work shedding (schedule.ts) never sheds that read: it is what such a frame's identity stands
+      // on (scoring.ts outfitSupports), as the target's crop is what a shot stands on.
+      const readOutfit = sampleClothing || (ops.sampleOutfit && t.hiding && now - t.lastClothingAt >= CLOTHING_INTERVAL_MS);
+      if (readOutfit && d.body && (!faceFresh || audit)) {
         // Another person's box over this torso means the pixels may be theirs: abstain.
         const torso = t.hit;
         const covered = dets.some((o, j) => j !== i && intersectArea(o.box, torso) > TORSO_COVER_FRACTION * torso[2] * torso[3]);
@@ -351,9 +373,12 @@ export class VisionPipeline<C = unknown> {
       crosshair,
       tracks.map((t) => t.hit),
     );
-    // A person seen a moment ago whose box still covers the dot has not vanished: aiming there is ambiguous.
+    // A person seen a moment ago whose box still covers the dot has not vanished: aiming there is
+    // ambiguous. Their box is where they were or where their motion has carried them since: a pan
+    // carries a skipped person off their last box (pan-crossing-far seed 2146: Alice's last box ended
+    // short of the dot, she had moved over it in front of Bob, and LOCK bob showed).
     const [dotX, dotY] = crosshairCentre(crosshair);
-    const blocked = idx >= 0 && coveredByOther(coasting, tracks[idx].id, dotX, dotY);
+    const blocked = idx >= 0 && coveredByOther(coasting, tracks[idx].id, dotX, dotY, now);
     const inSight: Track | null = idx >= 0 && !blocked && !dets[idx].associationAmbiguous ? tracks[idx] : null;
     let zoomed = false;
     const order: number[] = [];
@@ -424,13 +449,15 @@ export class VisionPipeline<C = unknown> {
       let r = canConfirmShot(p, t, now, decisionAt, stale) && t ? resolveHit(t, eligible, hitThreshold, hitMargin, decisionAt) : null;
       // A burst that started on one accepted identity must not quietly land on another.
       if (r && p.expectedId && r.id !== p.expectedId) r = null;
-      // A burst that started on no accepted identity must not land on whoever an uncertain transition
-      // after the tap put on the track: it may now be somebody else's body. This stays true after the
-      // new body re-earns an identity, which is why it reads transitionAt and not reacquireAt (cleared
-      // on re-earning, so the old check could never refuse anything resolveHit had not already
-      // refused; crossing-lookalike-faces seed 63, 2026-10-01: a 1.1 s burst on her settled on him).
-      // With an accepted identity at the tap, the rule above already holds the burst to it.
-      if (r && t && !p.expectedId && (t.transitionAt ?? 0) > p.startedAt) r = null;
+      // A burst must not land on whatever body an uncertain transition after the tap put the track on:
+      // it may be somebody else's. This stays true after the new body re-earns an identity, which is
+      // why it reads transitionAt and not reacquireAt (cleared on re-earning, so the old check could
+      // never refuse anything resolveHit had not already refused; crossing-lookalike-faces seed 63,
+      // 2026-10-01: a 1.1 s burst on her settled on him). An accepted identity at the tap does not
+      // exempt the burst: the rule above holds it to that name, not to that body (slow-phone pan
+      // crossing, seed 858: the track sat on Bob's body believed to be Alice at the tap, hopped back
+      // onto Alice 550 ms later, and the burst landed on her 1.8 s after a tap on him).
+      if (r && t && (t.transitionAt ?? 0) > p.startedAt) r = null;
       p.framesLeft--;
       p.zoom ||= zoomed;
       // A frame in which the detector skipped the target is not the target leaving: the burst keeps
@@ -492,15 +519,10 @@ export class VisionPipeline<C = unknown> {
     const [cx, cy] = crosshairCentre(crosshair);
     let best = idx >= 0 && !L.dets[idx].associationAmbiguous ? L.tracks[idx] : null;
     // Somebody seen a moment ago still covering the dot makes the aim ambiguous, whoever is detected now.
-    if (best && coveredByOther(L.coasting, best.id, cx, cy)) best = null;
+    if (best && coveredByOther(L.coasting, best.id, cx, cy, L.t)) best = null;
     let coasted = false;
-    const moved = (b: NBox, t: Track): NBox => {
-      const age = now - t.lastSeen;
-      // Velocity plus bounded acceleration, the same shift the tracker predicts with.
-      const ax = Math.max(-b[2] * 0.5, Math.min(b[2] * 0.5, 0.5 * t.ax * age * age));
-      const ay = Math.max(-b[3] * 0.5, Math.min(b[3] * 0.5, 0.5 * t.ay * age * age));
-      return [b[0] + t.vx * age + ax, b[1] + t.vy * age + ay, b[2], b[3]];
-    };
+    // Velocity plus bounded acceleration, the same shift the tracker predicts with.
+    const moved = (b: NBox, t: Track): NBox => movedTo(b, t, now);
     const moving = (t: Track) => t.vx !== 0 || t.vy !== 0;
     if (!best && idx === -1) {
       // The pose model skipped the person under the dot for a frame. The burst below must see them
