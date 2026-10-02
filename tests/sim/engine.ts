@@ -1,11 +1,11 @@
-import { buildDetections, type Detection } from '../../src/vision/tracker';
-import { VisionPipeline, type LockState } from '../../src/vision/pipeline';
+import { buildDetections, faceOwner, type Detection } from '../../src/vision/tracker';
+import { VisionPipeline, type FireResult, type FrameOutcome, type LockState } from '../../src/vision/pipeline';
 import { UNKNOWN_ID } from '../../src/types';
 import type { Candidate } from '../../src/vision/scoring';
 import type { NBox } from '../../src/vision/geometry';
 import { Rng } from './rng';
 import type { Recorder } from '../../src/debug/recorder';
-import { buildScene, cropFaces, DEFAULT_DETECTOR, detect, FRAME_H, FRAME_W, hitBox, personBox, sampleOutfit, step, type DetectorModel, type Pan, type Person, type PersonSpec } from './world';
+import { buildScene, cropFaces, DEFAULT_DETECTOR, detect, faceBox, FRAME_H, FRAME_W, hitBox, personBox, sampleOutfit, step, type DetectorModel, type Pan, type Person, type PersonSpec, type Scene } from './world';
 
 export interface SimOptions {
   seed: number;
@@ -20,6 +20,12 @@ export interface SimOptions {
   fireEveryMs: number;
   /** Hand shake, as a fraction of the frame. */
   aimSd: number;
+  /**
+   * Where on the target the shooter aims: the middle of their box ('centre'), or the middle of the
+   * widest part of their torso that nobody nearer covers ('visible'), the way a player aims at the
+   * sliver of a half-hidden opponent. With nothing visible, 'visible' aims at the middle too.
+   */
+  aimAt?: 'centre' | 'visible';
   detector: DetectorModel;
   /** Who the shooter is aiming at throughout. */
   target: string;
@@ -31,6 +37,34 @@ export interface SimOptions {
   pan?: Pan;
   /** Capture the round as a replayable recording (src/debug/recorder.ts). */
   recorder?: Recorder;
+  /**
+   * Frame-by-frame diagnosis: called after every frame with what the detector saw, who each
+   * detection and face crop really belonged to, and the pipeline's outcome. Never changes the round.
+   */
+  probe?: (event: ProbeFrame | ProbeFire) => void;
+}
+
+/** A tap as the probe sees it: where the dot was, who was really visible under it, and what the pipeline did. */
+export interface ProbeFire {
+  kind: 'fire';
+  t: number;
+  aim: NBox;
+  visible: Person | null;
+  result: FireResult<{ t: number }>;
+}
+
+export interface ProbeFrame {
+  kind: 'frame';
+  capturedAt: number;
+  completedAt: number;
+  scene: Scene;
+  dets: Detection[];
+  /** The person each detection's body (or face, for a face-only detection) came from; null for a ghost. */
+  owners: (Person | null)[];
+  /** Every face a crop returned this frame, with the person it really was and the detection the pipeline gave it to (-1: nobody). */
+  faces: { box: NBox; person: Person | null; det: number }[];
+  outcome: FrameOutcome<{ t: number }>;
+  crosshair: NBox;
 }
 
 export const DEFAULT_OPTIONS: Omit<SimOptions, 'target'> = {
@@ -202,11 +236,39 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
     }
   };
 
+  /** Middle of the widest stretch of the target's torso (world.ts hitBox) at height y that no nearer person's silhouette covers. */
+  const visibleMiddle = (y: number): number | null => {
+    const [hx, , hw] = hitBox(target);
+    let open: [number, number][] = [[hx, hx + hw]];
+    for (const q of scene.people) {
+      if (q === target || q.distance >= target.distance) continue;
+      const [qx, qy, qw, qh] = personBox(q);
+      if (y < qy || y > qy + qh) continue;
+      open = open.flatMap(([a, b]): [number, number][] => [[a, Math.min(b, qx)], [Math.max(a, qx + qw), b]]).filter(([a, b]) => b > a);
+    }
+    if (!open.length) return null;
+    const [a, b] = open.reduce((best, s) => (s[1] - s[0] > best[1] - best[0] ? s : best));
+    return (a + b) / 2;
+  };
   const aim = (): NBox => {
     const [x, y, w, h] = personBox(target);
-    const cx = x + w / 2 + rng.gauss(0, opts.aimSd);
-    const cy = y + h * 0.45 + rng.gauss(0, opts.aimSd);
+    const ty = y + h * 0.45;
+    const tx = (opts.aimAt === 'visible' ? visibleMiddle(ty) : null) ?? x + w / 2;
+    const cx = tx + rng.gauss(0, opts.aimSd);
+    const cy = ty + rng.gauss(0, opts.aimSd);
     return [cx - 0.21, cy - 0.15, 0.42, 0.3];
+  };
+
+  /** The person whose face a crop's box is (the crop returns a jittered copy of their face box). */
+  const nearestFace = (b: NBox): Person | null => {
+    let best: Person | null = null;
+    let bestD = Infinity;
+    for (const p of scene.people) {
+      const f = faceBox(p);
+      const d = Math.hypot(f[0] - b[0], f[1] - b[1]);
+      if (d < bestD) [best, bestD] = [p, d];
+    }
+    return best;
   };
 
   let pending: { token: object; deadline: number } | null = null;
@@ -262,6 +324,7 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
       if (truth.visible?.id === target.id && truth.hittable(truth.visible) && truth.visibleHittable) result.possibleShots++;
       opts.recorder?.fire(now, tapAim, target.player ? target.id : null);
       const fire = pipeline.fire({ t: now, under: truth }, tapAim);
+      opts.probe?.({ kind: 'fire', t: now, aim: tapAim, visible: truth.visible, result: fire });
       if (fire.kind === 'pending') pending = { token: fire.token, deadline: fire.deadline };
       else if (fire.kind === 'instant') settle(fire.settlement);
       else {
@@ -272,9 +335,15 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
 
     now = completeAt;
     let cropsThisFrame = 0;
+    const probeFaces: ProbeFrame['faces'] = [];
     const baseOps = {
       sampleOutfit: (d: Detection) => (d.body ? sampleOutfit(rng, raw.owner.get(d.body) ?? null) : null),
-      cropFaces: async (region: NBox) => { cropsThisFrame++; return cropFaces(rng, scene, region, opts.detector); },
+      cropFaces: async (region: NBox) => {
+        cropsThisFrame++;
+        const found = cropFaces(rng, scene, region, opts.detector);
+        if (opts.probe) for (const f of found) probeFaces.push({ box: f.box, person: nearestFace(f.box), det: faceOwner(f.box, dets) });
+        return found;
+      },
       isCurrent: () => true,
     };
     const outcome = await pipeline.processFrame(dets, capturedAt, FRAME_W, FRAME_H, crosshair, opts.recorder ? opts.recorder.frame(capturedAt, crosshair, dets, baseOps) : baseOps);
@@ -283,6 +352,7 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
     result.frames++;
     result.periodMs = outcome.periodMs;
     noteFrame(`${capturedAt}@${Math.round(now)} ` + dets.map((d, i) => { const o = raw.owner.get(d.body ?? d.face!); const tr = outcome.tracks[i]; const top = Object.entries(tr.belief).sort((a, b) => b[1] - a[1])[0]; return `#${tr.id}=${o ? o.id : 'ghost'}[${d.box.map((v) => v.toFixed(2)).join(',')}]${d.associationAmbiguous ? 'A' : ''}${d.face ? 'F' : ''}${top ? `{${top[0]} ${top[1].toFixed(2)} ${tr.via}}` : ''}`; }).join(' ') + ` aim=${(crosshair[0] + 0.21).toFixed(2)},${(crosshair[1] + 0.15).toFixed(2)}`);
+    opts.probe?.({ kind: 'frame', capturedAt, completedAt: now, scene, dets, owners: dets.map((d) => raw.owner.get(d.body ?? d.face!) ?? null), faces: probeFaces, outcome, crosshair });
     if (outcome.settled) {
       pending = null;
       settle(outcome.settled);
@@ -372,6 +442,20 @@ export const SCENARIOS: Scenario[] = [
     expect: 'the pan crossing aimed at the farther player: never the nearer one',
     people: [ME, front('alice', 0.2, 4, 0, { vx: 0.04 }), front('bob', 0.8, 4.4, 6, { vx: -0.04 })],
     options: { target: 'bob', durationMs: 15000, pan: { amplitude: 0.15, periodS: 3 } },
+  },
+  {
+    // 2026-10-01: the farther player of a crossing aimed at where they can still be seen, the sliver
+    // of torso beside the nearer player, so the oracle judges what a lock or hit on that sliver says.
+    name: 'crossing-sliver',
+    expect: 'the crossing aimed at the visible part of the farther player: never the nearer one',
+    people: [ME, front('alice', 0.2, 4, 0, { vx: 0.04 }), front('bob', 0.8, 4.4, 6, { vx: -0.04 })],
+    options: { target: 'bob', durationMs: 15000, aimAt: 'visible' },
+  },
+  {
+    name: 'pan-crossing-far-sliver',
+    expect: 'the pan crossing aimed at the visible part of the farther player: never the nearer one',
+    people: [ME, front('alice', 0.2, 4, 0, { vx: 0.04 }), front('bob', 0.8, 4.4, 6, { vx: -0.04 })],
+    options: { target: 'bob', durationMs: 15000, pan: { amplitude: 0.15, periodS: 3 }, aimAt: 'visible' },
   },
   {
     name: 'crossing-backs',
