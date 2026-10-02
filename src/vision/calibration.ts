@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-10-01.7';
+export const CALIBRATION_VERSION = '2026-10-01.8';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /**
@@ -210,7 +210,11 @@ export const CROSSING_IOU = 0.25;
  * the detector handed the track their body (pan-crossing-far seed 85); the hit-rate cost on the
  * crossing scenarios is the same from 2.5 s to 6 s. Since 2026-10-01.7 the clock also runs from a
  * track's box overlapping the last box of a neighbour lost a moment ago (crossing-lookalike-faces
- * seed 716: Bob vanished beside Alice before their boxes reached CROSSING_IOU).
+ * seed 716: Bob vanished beside Alice before their boxes reached CROSSING_IOU). Since 2026-10-01.8
+ * (no value changed) a face read counts on such a frame only on the body's own head (tracker.ts
+ * faceOnOwnHead), an outfit read alone confirms nothing there (its pixels may be the partner's), and a
+ * burst on such a body ends when a frame after the tap shows the dot off its torso (the sliver
+ * scenarios, tests/sim/engine.ts).
  */
 export const HIDDEN_PARTNER_MS = 4000;
 /** Below this height ratio a detection cannot continue a track at all. */

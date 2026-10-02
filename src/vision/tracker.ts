@@ -77,7 +77,9 @@ export interface Track {
   /**
    * A partner (see `partners`) is not detected this frame: this frame's body may be theirs. The
    * identity then stands only on reads of this frame's body (pipeline.ts applyFace and the outfit
-   * check, scoring.ts outfitSupports), never on a running face mean or an outfit read before it.
+   * check, scoring.ts outfitSupports), never on a running face mean or an outfit read before it, and
+   * a face only when it sits on this body's own head (faceOnOwnHead). The outfit read alone confirms
+   * nothing: the partner may fill its pixels when they stand in front.
    */
   hiding?: boolean;
   /** Whether the frame this track was last seen in returned the detector's full BODY_CAP bodies (crowd rule). */
@@ -164,6 +166,25 @@ function faceAssociationScore(faceBox: NBox, d: Detection): number {
 function faceCandidates(faceBox: NBox, dets: Detection[]): { index: number; score: number }[] {
   return dets.map((d, index) => ({ index, score: faceAssociationScore(faceBox, d) }))
     .filter((c) => c.score > 0).sort((a, b) => b.score - a.score);
+}
+
+/**
+ * Whether a face sits on this detection's own head: its box contains the body's nose, or the middle
+ * of its other head landmarks when the nose is missing. A body without head landmarks cannot show
+ * that any face is its own; a face-only detection is its face. faceOwner accepts a face up to most of
+ * a face width off the nose, which is right while nobody else can be there; while somebody may be
+ * hidden at this body (Track.hiding) a face beside its head may be theirs (the face of the person in
+ * front, read on the sliver of the person behind them).
+ */
+export function faceOnOwnHead(faceBox: NBox, d: Detection): boolean {
+  if (!d.body) return true;
+  if (!validBox(faceBox)) return false;
+  const head = d.body.keypoints.filter((p) => HEAD_PARTS.includes(p.part) && p.score >= 0.4 && p.positionRaw.slice(0, 2).every(Number.isFinite));
+  if (!head.length) return false;
+  const nose = head.find((p) => p.part === 'nose');
+  const x = nose ? nose.positionRaw[0] : head.reduce((s, p) => s + p.positionRaw[0], 0) / head.length;
+  const y = nose ? nose.positionRaw[1] : head.reduce((s, p) => s + p.positionRaw[1], 0) / head.length;
+  return containsPoint(faceBox, x, y);
 }
 
 /** Unique owner of a full-frame or zoom face; -1 means missing or ambiguous ownership. */
@@ -486,7 +507,7 @@ export class Tracker {
         else t.unconfirmed = true;
       } else if (hiding.has(t)) {
         // Not a new transition (the overlap that started it already was one): the identity is kept,
-        // and this frame's own face or outfit read confirms it (scoring.ts updateBelief).
+        // and this frame's own face read on this body's head confirms it (scoring.ts updateBelief).
         t.unconfirmed = true;
       }
       t.overlapping = overlap.has(t);
