@@ -62,6 +62,18 @@ test('a crossing during a camera pan never swaps identities', async () => {
   assert.ok(hitRate(a) >= 0.35, describe(a));
 });
 
+test('aiming at the visible sliver of a half-hidden player never hits or locks the player in front', async () => {
+  // 1000 seeds on 2026-10-01: crossing-sliver 0 wrong, 0 wrong-lock frames, 88% of shots land;
+  // pan-crossing-far-sliver 24 wrong hits before the burst rule for a target with somebody maybe
+  // hidden behind them, none after, 70% land.
+  for (const name of ['crossing-sliver', 'pan-crossing-far-sliver']) {
+    const a = await run(name);
+    assert.equal(a.wrong, 0, describe(a));
+    assert.equal(a.wrongLockFrames, 0, describe(a));
+    assert.ok(hitRate(a) >= 0.4, describe(a));
+  }
+});
+
 test('same-hue tops of a different shade are still told apart from behind', async () => {
   const a = await run('lookalike-tops');
   assert.equal(a.wrong, 0, describe(a));
@@ -174,6 +186,12 @@ const REGRESSION_SEEDS: [string, number][] = [
   ['pan-crossing-far', 740],
   ['occlusion', 690],
   ['pan-crossing-far', 2146],
+  // 2026-10-01, aiming at the sliver of the farther player beside the nearer one: a tap on Bob's sliver
+  // nominated Alice's track from its motion; the next frame saw her with the dot off her torso, on
+  // him; the burst waited until he had gone behind her and the dot with him onto her, and landed on
+  // her 670 ms after the tap (pipeline.ts, with somebody maybe hidden behind the target, a frame
+  // showing the dot off their torso ends the burst).
+  ['pan-crossing-far-sliver', 28],
 ];
 for (const [name, seed] of REGRESSION_SEEDS) {
   test(`regression: ${name} seed ${seed} has no wrong hit and no wrong lock`, async () => {

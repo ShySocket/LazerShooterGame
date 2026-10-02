@@ -690,6 +690,35 @@ test('a burst never lands across an uncertain transition, even with a name accep
   assert.ok(reads.every((n) => n === 1), `outfit reads per frame while the partner may be hidden: ${reads}`);
 });
 
+test('while someone may be hidden behind the target, a frame with the dot off the target\'s torso ends the burst (pan-crossing-far-sliver seed 28)', async () => {
+  // Seed 28: a tap on the sliver of Bob showing beside Alice, who walked in front of him, nominated
+  // her track from its motion. The next frame saw her with the dot off her torso, on him; the burst
+  // waited, he went fully behind her, the shooter's dot followed him onto her, and the burst landed
+  // on her 670 ms after a tap on him. Here Bob is the one in front and somebody is hidden behind him.
+  const h = hopHarness();
+  const bob: Person = { face: BOB_FACE, outfit: WARDROBE.bob };
+  const bobTrack = await bobWithHiddenPartner(h, { face: ALICE_FACE, outfit: WARDROBE.alice });
+  // The newest frame was captured a period ago: 260 ms is past the geometry budget, so a burst opens.
+  h.clock.now = h.t + 40;
+  const tap = h.pipeline.fire({ tap: h.clock.now }, CROSSHAIR);
+  assert.equal(tap.kind, 'pending', 'a stale tap on Bob opens a burst');
+  // The frame in flight at the tap was captured before it and cannot decide.
+  const inFlight = await h.frame([[HOP_BOB, HOP_BOB_HIT, bob]]);
+  assert.equal(inFlight.settled, null);
+  // Captured after the tap: Bob is seen, the partner may still be hidden behind him, and his torso
+  // ends left of the dot. What is under the dot may be the hidden partner.
+  const offTorso: NBox = [0.33, 0.25, 0.14, 0.35];
+  const off = await h.frame([[HOP_BOB, offTorso, bob]]);
+  assert.equal(off.tracks[0].id, bobTrack);
+  assert.ok(off.tracks[0].hiding, 'the partner may still be hidden behind Bob');
+  assert.ok(off.settled, 'the burst ends on that frame rather than waiting for the dot to drift onto Bob');
+  assert.equal(off.settled.resolution, null);
+  // Bob under the dot again later: the burst is over and lands on nobody.
+  const back = await h.frame([[HOP_BOB, HOP_BOB_HIT, bob]]);
+  assert.equal(back.settled, null);
+  assert.equal(h.pipeline.hasPending(), false);
+});
+
 test('a settled shot says which rule refused it: the burst rules and the decision rules alike', async () => {
   // A burst that the timer ends before any post-tap frame confirmed it: no frame.
   const a = harness();

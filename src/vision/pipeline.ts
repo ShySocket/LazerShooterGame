@@ -492,7 +492,15 @@ export class VisionPipeline<C = unknown> {
       // frame that cannot select them (ambiguous association, the dot off the observed torso, a
       // neighbour's edge within the band) is a reason to wait for the next frame, not a miss.
       const [cx, cy] = crosshairCentre(crosshair);
-      const someoneElse = !t && dets.some((d, j) => tracks[j].id !== p.trackId && containsPoint(d.box, cx, cy));
+      // While somebody may be hidden behind the target's body (Track.hiding), a frame that sees that
+      // body with the dot off its observed torso may have the dot on the hidden person: that is somebody
+      // else under the dot as much as a detected body is, and waiting would let the burst land on the
+      // target once the dot drifts onto them (pan-crossing-far-sliver seed 28, 2026-10-01: a tap on the
+      // sliver of Bob beside Alice nominated her track from its motion, the next frame saw her with the
+      // dot off her torso on him, and the burst landed on her 670 ms later once he had gone behind her).
+      const seenTarget = t ? null : tracks.find((x) => x.id === p.trackId);
+      const offHiddenTarget = Boolean(seenTarget?.hiding && !containsPoint(seenTarget.hit, cx, cy));
+      const someoneElse = !t && (offHiddenTarget || dets.some((d, j) => tracks[j].id !== p.trackId && containsPoint(d.box, cx, cy)));
       const targetCoasting = !t && !someoneElse && this.tracker.live().some((x) => x.id === p.trackId && now - x.lastSeen <= gapMs);
       if ((!t && !targetCoasting) || r || decisionAt >= p.deadline || p.framesLeft <= 0) {
         this.pending = null;
