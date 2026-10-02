@@ -188,14 +188,16 @@ export function elapsedAlpha(alpha: number, dtMs: number): number {
  * Blend one frame of evidence into the belief. `alpha` is the step for one reference frame period;
  * the actual step follows the time since the last evidence, so the belief moves at the same
  * wall-clock rate on a 100 ms phone and a 400 ms phone, and a burst of near-duplicate frames is not
- * a burst of independent proof. The first evidence on a track takes the full step.
+ * a burst of independent proof. The first evidence on a track takes the full step. `confirm` is the
+ * evidence that may confirm a suspended identity, when that must be narrower than what moves the
+ * belief (this frame's own face read rather than the running mean, pipeline.ts applyFace).
  */
-export function updateBelief(track: Track, ev: Record<string, number>, alpha = 0.35, now = performance.now()): void {
+export function updateBelief(track: Track, ev: Record<string, number>, alpha = 0.35, now = performance.now(), confirm: Record<string, number> = ev): void {
   const a = elapsedAlpha(alpha, track.lastEvidenceAt > 0 && now > track.lastEvidenceAt ? now - track.lastEvidenceAt : BELIEF_REF_PERIOD_MS);
   // Fresh evidence confirms a suspended identity only when it agrees with it; evidence for somebody
   // else keeps the track unconfirmed until the belief itself has followed the evidence.
   const believed = Object.entries(track.belief).sort((x, y) => y[1] - x[1])[0]?.[0];
-  const seen = Object.entries(ev).sort((x, y) => y[1] - x[1])[0]?.[0];
+  const seen = Object.entries(confirm).sort((x, y) => y[1] - x[1])[0]?.[0];
   const agrees = believed === undefined || seen === believed;
   for (const id of new Set([...Object.keys(track.belief), ...Object.keys(ev)])) {
     const v = Number.isFinite(ev[id]) ? clamp01(ev[id]) : 0;
@@ -239,13 +241,16 @@ export function outfitReversals(track: Track, sig: OutfitSig, cands: Candidate[]
 
 /**
  * Rule players out on this body when a well-covered outfit sample contradicts their scanned outfit,
- * and lift the veto when a later sample matches it again. See OUTFIT_VETO.
+ * and lift the veto when a later sample matches it again. See OUTFIT_VETO. Also records whom this
+ * sample agrees with over what it compared (Track.outfitAgrees, for outfitSupports).
  */
 export function updateOutfitVeto(track: Track, sig: OutfitSig, cands: Candidate[], now: number, mayCorroborate = true): void {
+  const agrees: string[] = [];
   for (const c of cands) {
     if (!c.profile.outfit || c.id === UNKNOWN_ID) continue;
     const m = profileOutfitMatch(sig, c.profile.outfit);
     if (m.coverage < OUTFIT_VETO.minCoverage) continue;
+    if (m.sim >= OUTFIT_VETO.clearSim) agrees.push(c.id);
     const v = track.outfitVeto?.[c.id];
     if (m.sim <= OUTFIT_VETO.maxSim) {
       track.outfitVeto = { ...track.outfitVeto, [c.id]: { at: now, eased: false } };
@@ -262,6 +267,7 @@ export function updateOutfitVeto(track: Track, sig: OutfitSig, cands: Candidate[
       if (mayCorroborate) track.outfitSupport = { ...track.outfitSupport, [c.id]: now };
     } else if (v && !v.eased) track.outfitVeto = { ...track.outfitVeto, [c.id]: { at: now, eased: true } };
   }
+  track.outfitAgrees = { at: now, ids: agrees };
 }
 
 /**
@@ -276,11 +282,19 @@ export function outfitVetoed(track: Track, id: string, now: number): boolean {
   return !v.eased || now - v.at <= OUTFIT_VETO.holdMs;
 }
 
-/** Whether `id`'s own outfit corroborates a face on this track now (OUTFIT_RECENT_MS), and the body overlaps nobody. */
-export function outfitSupports(track: Pick<Track, 'outfitSupport' | 'overlapping' | 'ambiguous'>, id: string, now: number): boolean {
+/**
+ * Whether `id`'s own outfit corroborates a face on this track now (OUTFIT_RECENT_MS), and the body
+ * overlaps nobody. While a partner may be hidden behind this body, the detector may have handed the
+ * track their body this frame, so a corroboration read on an earlier frame counts only when this
+ * frame's own outfit read still agrees with that player (crossing-lookalike-faces seed 716: Bob's
+ * look-alike face, on a frame where only his face was found, read as Alice on her outfit read from
+ * the frame before).
+ */
+export function outfitSupports(track: Pick<Track, 'outfitSupport' | 'overlapping' | 'ambiguous' | 'hiding' | 'outfitAgrees'>, id: string, now: number): boolean {
   if (track.overlapping || track.ambiguous) return false;
   const at = track.outfitSupport?.[id];
-  return at !== undefined && now >= at && now - at <= OUTFIT_RECENT_MS;
+  if (at === undefined || now < at || now - at > OUTFIT_RECENT_MS) return false;
+  return !track.hiding || (track.outfitAgrees?.at === now && track.outfitAgrees.ids.includes(id));
 }
 
 /** Best eligible player, for the live label. Null when the top belief is not a shootable player or their outfit is ruled out. */

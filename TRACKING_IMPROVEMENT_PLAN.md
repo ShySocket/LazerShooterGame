@@ -568,7 +568,47 @@ Measured at `8cf05bb` (CALIBRATION_VERSION 2026-10-01.7):
 
 Open after this pass:
 
-- **Silent hops beyond the gate.** Sweeps of seeds 101-1100 and scenario variants by the verifiers found a class the 100-seed gate never sees, identical before and after the day's fixes: a track slides onto the partner's body with no jump, overlap or ambiguity flag and carries the name across (crossing-lookalike-faces 716 and 282, pan-crossing 748, pan-crossing-far 285/740/1010; variants with a 400 ms phone or a sloppy aim). Being root-caused on `astra-fix-silent-hop`.
+- **Silent hops beyond the gate.** Sweeps of seeds 101-1100 and scenario variants by the verifiers found a class the 100-seed gate never sees, identical before and after the day's fixes: a track slides onto the partner's body with no jump, overlap or ambiguity flag and carries the name across (crossing-lookalike-faces 716 and 282, pan-crossing 748, pan-crossing-far 285/740/1010; variants with a 400 ms phone or a sloppy aim). Fixed in the next section (seeds 1-3000 of the crossing family: no wrong-lock frames; three instant wrong hits at a neighbour's edge remain, crossing-lookalike-faces 282, 2032, 2528).
 - The front person's face can be read on a half-hidden person's body and clear the hidden-partner flag (pan-crossing-far seed 22); every case found had the dot on the front person.
 - The unexplained wrong hit of the 2026-09-26 real-photo runs stays open; it has not recurred in any traced run since.
 - Everything that needs phones (rubric section 11 and R1.18).
+
+### 2026-10-01: silent hops beyond the 100-seed gate (branch `astra-fix-silent-hop`)
+
+Adversarial verifiers found wrong locks and hits past the 100 seeds `sim:full` runs: a track slid onto another person's body with no jump, overlap or ambiguity flag and carried the identity across. Sweeps of seeds 1 to 3000 over the eight crossing and crowd scenarios at 58dc9c4 reproduced them (`npm run sim -- <scenario> --from 101 --seeds 900 --strict` now runs such a sweep). Each case was traced frame by frame:
+
+1. **A neighbour lost behind a track was forgotten while still behind it** (crossing-lookalike-faces 716). Bob was last seen beside Alice at IoU 0.23, under `CROSSING_IOU`, then vanished behind her. Her box overlapping his lost track's last box flagged her only while that track lived (`LOST_TRACK_MS`, 1.5 s). After it retired nothing remembered him, and a frame that found only his body handed her track his body. Fix: that overlap makes the lost neighbour a partner (`Track.partners`), so the hidden-partner presumption (`HIDDEN_PARTNER_MS`) runs from the last such frame.
+2. **While a partner may be hidden, frames were confirmed by state carried from earlier frames, not by reads of the frame's own body.** The tracker set `unconfirmed` on each such frame and any agreeing evidence cleared it, but:
+   - the face evidence is the running face mean, mostly earlier frames; it still named Bob on a frame whose own face (the hidden partner's) named nobody (pan-crossing 748, pan-crossing-far 740);
+   - the outfit corroboration that lets a face name a player at the normal bar had been read on an earlier frame, so a look-alike's face on the partner's body read as the player (716 after the hop, crossing-lookalike-stranger 643);
+   - with a fresh face the outfit was audited only once a second, so the hop frame's outfit, which the existing reversal check would have flagged, went unread.
+
+   Fixes (`Track.hiding`): only this frame's own face read confirms (`updateBelief`'s `confirm`); an earlier corroboration counts only on frames whose own outfit read still agrees with that player (`Track.outfitAgrees`, `outfitSupports`); and the outfit is read on every frame, which work shedding on a slow phone no longer skips for such a body.
+3. **A live track won a body that a skipped neighbour's track fitted as well** (pan-crossing 909 geometry, seen while testing another change). Live tracks win over skipped ones as a tie-break. When an unmatched confirmed track fits the body within `MATCH_WIN_MARGIN` of the track that took it, the match is now an uncertain transition.
+4. **A face behind a headless body stretched its hit region** (occlusion 690, and the pan crossing at a 2.2 s period, seed 43). With no head landmarks, the weak association fallback gave the body any face in its upper box, and `hitRegion` reached over that face. With both shoulders observed, a face now goes with the body only above and between them.
+5. **A skipped person's cover was checked at their last box** (pan-crossing-far 2146). During a pan Alice was skipped for a frame. Her last box ended short of the dot, but she had moved over it, in front of Bob, and LOCK bob showed. `coveredByOther` now also checks where the track's motion has carried the box. It is the union with the last box, so it only refuses more.
+6. **A burst with a name accepted at the tap landed across a transition** (slow-phone pan crossing, seed 858). The README said a burst never lands across an uncertain transition; the code held only bursts without an accepted name to it. At the tap Alice's track sat on Bob's body. It hopped back onto Alice 550 ms later, and the burst landed on her 1.8 s after a tap on him. The rule now holds for every burst.
+
+No calibration value changed. `CALIBRATION_VERSION` 2026-10-01.7 marks the earlier start of the `HIDDEN_PARTNER_MS` clock. Each fix has a deterministic test that fails with only that fix reverted (`tests/tracker.test.ts`, `tests/pipeline.test.ts`). 716, 643, 748, 740, 690 and 2146 are pinned in `REGRESSION_SEEDS`.
+
+| scenario (seeds 1-1000) | hit before | hit after | lock before | lock after | wrong / wrong-lock seeds before | after |
+| --- | --- | --- | --- | --- | --- | --- |
+| crossing | 80.1% | 78.2% | 70.9% | 69.2% | none | none |
+| pan-crossing | 76.0% | 72.2% | 67.8% | 65.7% | lock 748 | none |
+| pan-crossing-far | 79.8% | 77.7% | 58.7% | 55.8% | lock 740 (2 frames) | none |
+| crossing-backs | 82.3% | 81.6% | 66.3% | 66.0% | none | none |
+| occlusion | 97.7% | 96.3% | 62.2% | 62.2% | hit 371, lock 690 | none |
+| crossing-lookalike-faces | 87.5% | 86.6% | 62.7% | 61.9% | hit 282, lock 716 (2) | hit 282 |
+| crossing-lookalike-stranger | (226 hits on Alice) | (217) | 0% | 0% | lock 643 | none |
+| crowd-seven | 39.0% | 36.5% | 25.8% | 25.7% | none | none |
+
+Seeds 1001 to 3000, before: pan-crossing 5 wrong-lock frames (1836, 1995, 2548, 2767), pan-crossing-far 1 wrong hit and 4 wrong-lock seeds (2005, 1441, 2146, 2177), crossing-lookalike-faces 2 wrong hits (2032, 2528) and 2 wrong-lock frames (1614, 2725), crossing-lookalike-stranger 11 wrong-lock frames (1172, 1321, 1950, 2012, 2870). After: only the wrong hits 2032 and 2528. On the 100-seed table no scenario loses more than 4 hit points (pan-crossing 76% to 72%; crowd-seven, crossing-lookalike-faces 3; crossing, pan-crossing-far, range-8m 2). The burst rule (item 6) accounts for about half of that, and those hits relied on a track staying on one body across a transition it could not vouch for.
+
+What remains:
+
+- **Instant hit at a neighbour's edge** (crossing-lookalike-faces 282, 2032, 2528, all on the tap at 4.1 s; present before). Alice walks in front of Bob. In the 248 ms-old frame her detected box was 12% narrower than she is, about 2.5 standard deviations of the sim's width jitter. The dot sat just outside her box and outside `AIM_EDGE_BAND` (5% of her width, about one standard deviation of her right edge), and her velocity estimate from the jittered boxes was too small for the motion check. Widening the band is a threshold change and was left alone.
+- **Slow phone, reversing pan** (scenario copies only: 400 ms per frame, 6 wrong-lock frames in 1000 pan-crossing seeds; 4 before, other seeds). One frame moves everybody about 60% of a box width. At the turn of the pan, Alice's body lands exactly where Bob's track expects him, and Bob is not detected. The match is geometrically confident and wrong. The confident target is re-cropped only every 600 ms and its outfit read every other frame, so nothing is read on that body before the label. A fix needs camera-motion compensation (gyro or image registration), not a tracker threshold.
+- **Doubled hand shake** (aimSd 0.04, scenario copies only: 9 wrong hits in 300 pan-crossing-far seeds, 7 before, and 1 in pan-crossing, seed 15). A burst opened from a 230 ms-old frame in which the dot sat on Bob's torso edge, though the pan had carried him off the dot by the tap. A later frame, with the dot re-aimed by the sim's independent per-frame shake, saw him under it. Nominating only from the moved torso was tried and cost 5 to 10 hit points in the default crossings without fixing it (the velocity estimate is too poor at pan reversals).
+- **Pixel mixing is not modelled.** When the detector returns the hidden person's body, its torso pixels can belong to the person in front. The outfit read on that frame would then read the front person's clothes. The sim's outfit sample is the owner's own.
+
+Fairness on scenario copies: the slow-phone crossings keep their hit rates (crossing 71.4% to 71.8%, pan-crossing 20.4% to 20.9%, pan-crossing-far 7.3% to 7.3%), and their wrong outcomes fall from 1 wrong hit and 12 seeds with wrong-lock frames to the 6 pan-crossing frames above. Before the outfit read was exempt from work shedding, the same-frame corroboration cost 7 to 8 points there.
