@@ -21,7 +21,7 @@ import { loadFeedback, optValue, playSamples, readRoundFilters } from './feedbac
 const args = process.argv.slice(2);
 
 const { since, split } = readRoundFilters(args);
-const data = loadFeedback(optValue(args, '--file'));
+const data = await loadFeedback(optValue(args, '--file'));
 const samples = playSamples(data, since);
 const report = buildSessionReport(samples, split);
 
