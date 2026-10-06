@@ -158,3 +158,11 @@ test('every refusal reason has a line that names what to do, and unknown reasons
   assert.equal(refusalAdvice(null), null);
   assert.equal(refusalAdvice('something-new'), null);
 });
+
+test('home copy fits a phone: three short steps and a practice intro under 200 characters, no dashes', async () => {
+  const { HOW_IT_PLAYS, PRACTICE_INTRO } = await import('../src/ui/advice');
+  assert.equal(HOW_IT_PLAYS.length, 3);
+  for (const step of HOW_IT_PLAYS) assert.ok(step.length <= 52, `${step} is short`);
+  assert.ok(PRACTICE_INTRO.length < 200);
+  for (const s of [...HOW_IT_PLAYS, PRACTICE_INTRO]) assert.ok(!/[–—]/.test(s));
+});

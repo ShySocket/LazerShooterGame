@@ -283,7 +283,10 @@ export const PRACTICE_CHECKLIST: readonly string[] = [
   'Dim light, and against a bright window',
 ];
 
-export const PRACTICE_INTRO = 'Practice: everything stays on this phone. Add targets with the back camera (a friend, a TV, a photo), pick who you aim at, and every shot is logged with that answer so the tracking can be tuned. Shots deal no damage.';
+/** Home's three-line answer to "how does this work?" for someone who just opened a link. */
+export const HOW_IT_PLAYS: readonly string[] = ['Scan your face and outfit. It stays on this phone.', 'Wait for your friends in the lobby.', 'Aim through the camera and tap FIRE.'];
+
+export const PRACTICE_INTRO = 'Practice alone: add targets with the back camera (a friend, a TV, a photo) and shoot. Shots deal no damage; each one is logged on this phone to tune the tracking.';
 
 export type PracticeFilter = 'all' | 'good' | 'bad' | 'warn';
 
