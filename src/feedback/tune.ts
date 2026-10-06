@@ -55,6 +55,11 @@ export const TUNE_GUARDS = {
   minRounds: 10,
   /** Share of samples where the replay at the current calibration matches the game; below it the replay is not trusted. */
   agreementFloor: 0.9,
+  /**
+   * Agreement is measured on the samples this calibration version played when there are this many
+   * (the game decided them with the same numbers the replay uses), else on every sample.
+   */
+  minAgreementSamples: 100,
   /** Share of rounds held out of the search to check the gain on. */
   holdoutShare: 0.25,
   /** Fewest misses the candidate must save over all data, and as a share of the labelled shots. */
@@ -86,6 +91,9 @@ export interface TuneEvidence {
   trainRounds: number;
   holdoutRounds: number;
   agreement: number;
+  /** Samples the agreement was measured on, and whether they are this calibration version's own. */
+  agreementSamples: number;
+  agreementOwnVersion: boolean;
   contradictions: number;
   contradictionShare: number;
   current: { all: Evaluation; train: Evaluation; holdout: Evaluation; wrongPerHitUpper: number | null; roundWrongUpper: number | null };
@@ -109,6 +117,8 @@ export interface TuneOptions {
   knobs?: readonly Knob[];
   /** Starting point; defaults to the build's calibration (replay.ts DEFAULT_PARAMS). */
   current?: Partial<ReplayParams>;
+  /** The CALIBRATION_VERSION `current` is; samples that played it measure the replay's agreement. */
+  calibrationVersion?: string;
 }
 
 export const currentParams = (base: Partial<ReplayParams> = {}): Params => {
@@ -158,7 +168,9 @@ export function tune(all: ShotSample[], opts: TuneOptions = {}): TuneResult {
   const holdout = labelled.filter((s) => isHoldout(s.round.key, g.holdoutShare));
   const evalAll = (p: Params) => ({ all: evaluate(labelled, p), train: evaluate(train, p), holdout: evaluate(holdout, p) });
   const base = evalAll(current);
-  const agree = labelled.length ? labelled.filter((s) => replayShot(s, current).resolved === asPlayed(s)).length / labelled.length : 1;
+  const own = opts.calibrationVersion ? labelled.filter((s) => s.app.calibration === opts.calibrationVersion) : [];
+  const agreeOn = own.length >= g.minAgreementSamples ? own : labelled;
+  const agree = agreeOn.length ? agreeOn.filter((s) => replayShot(s, current).resolved === asPlayed(s)).length / agreeOn.length : 1;
   const contradictions = labelled.filter((s) => contradicts(s, g)).length;
   const evidence: TuneEvidence = {
     samples: labelled.length,
@@ -166,6 +178,8 @@ export function tune(all: ShotSample[], opts: TuneOptions = {}): TuneResult {
     trainRounds: new Set(train.map((s) => s.round.key)).size,
     holdoutRounds: new Set(holdout.map((s) => s.round.key)).size,
     agreement: agree,
+    agreementSamples: agreeOn.length,
+    agreementOwnVersion: agreeOn === own,
     contradictions,
     contradictionShare: labelled.length ? contradictions / labelled.length : 0,
     current: { ...base, ...bounds(labelled, current, base.all) },

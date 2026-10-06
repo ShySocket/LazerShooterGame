@@ -22,7 +22,8 @@
     "fixtures": "python3 scripts/fetch-fixtures.py",
     "feedback:pull": "node --import ./tests/register.mjs scripts/feedback-pull.ts",
     "session:report": "node --import ./tests/register.mjs scripts/session-report.ts",
-    "sim:feedback": "node --import ./tests/register.mjs tests/sim/feedback-export.ts"
+    "sim:feedback": "node --import ./tests/register.mjs tests/sim/feedback-export.ts",
+    "tune": "node --import ./tests/register.mjs scripts/tune.ts"
   },
   "dependencies": {
     "@vladmandic/human": "^3.3.6",
