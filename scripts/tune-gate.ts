@@ -8,8 +8,11 @@
  * calibration now in src/ keeps zero wrong hits, on the hold-out rounds too, and the version was
  * bumped; npm test; typecheck; build; sim:full (100 seeds, strict); sim:wide (1000 seeds of the
  * crossing family); realcheck when fixtures/real is present (skipped and said so otherwise). Appends
- * a "Gate" section to <out>/pr-body.md and writes <out>/gate.json. Exit 0 when every check that ran
- * passed, 1 otherwise.
+ * a "Gate" section to <out>/pr-body.md and writes <out>/gate.json. Every check runs, so the report
+ * says everything a person needs. Exit 0 when every check that ran passed; 3 when only the unit tests
+ * failed and every safety check (replay, typecheck, build, sim:full, sim:wide, realcheck) passed: the
+ * tests pin behaviour at today's numbers and need a person to update them, so the job opens a draft;
+ * 1 otherwise.
  */
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -54,7 +57,10 @@ function npm(name: string, script: string[], skip?: string): Check {
   if (skip) return { name, status: 'skipped', ms: 0, detail: skip };
   const t0 = Date.now();
   const r = spawnSync('npm', ['run', '-s', ...script], { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, env: process.env });
-  const tail = `${r.stdout ?? ''}\n${r.stderr ?? ''}`.trim().split('\n').slice(-15).join('\n');
+  const text = `${r.stdout ?? ''}\n${r.stderr ?? ''}`;
+  // node --test lists the failing tests after "failing tests:"; name those instead of the last lines.
+  const failing = [...new Set(text.split('\n').filter((l) => /^✖ /.test(l) && !/failing tests/.test(l)).map((l) => l.replace(/^✖ /, '').replace(/ \([\d.]+ms\)$/, '')))];
+  const tail = failing.length ? `failing: ${failing.join('; ')}\n\n${text.trim().split('\n').slice(-40).join('\n')}` : text.trim().split('\n').slice(-15).join('\n');
   console.log(`${r.status === 0 ? 'pass' : 'FAIL'} ${name} (${Math.round((Date.now() - t0) / 1000)} s)`);
   return { name, status: r.status === 0 ? 'pass' : 'fail', ms: Date.now() - t0, detail: r.status === 0 ? tail.split('\n').slice(-3).join(' / ') : tail };
 }
@@ -64,7 +70,8 @@ if (want('replay')) {
   console.log(`${c.status === 'pass' ? 'pass' : 'FAIL'} replay: ${c.detail}`);
   checks.push(c);
 }
-// Cheap to dear, and stop at the first failure: a red unit test makes the 4-minute sweep pointless.
+// Every check runs: a red unit test is often a test pinned to today's numbers, and whether the
+// simulation sweeps still hold is what decides between a draft for a person and no pull request.
 const steps: [string, string[], string?][] = [
   ['test', ['test']],
   ['typecheck', ['typecheck']],
@@ -75,26 +82,36 @@ const steps: [string, string[], string?][] = [
 ];
 for (const [name, script, skip] of steps) {
   if (!want(name)) continue;
-  if (checks.some((c) => c.status === 'fail')) {
-    checks.push({ name, status: 'skipped', ms: 0, detail: 'an earlier check failed' });
+  // A build that does not compile cannot be simulated meaningfully either.
+  if (name.startsWith('sim') && checks.some((c) => (c.name === 'typecheck' || c.name === 'build') && c.status === 'fail')) {
+    checks.push({ name, status: 'skipped', ms: 0, detail: 'the build failed' });
     continue;
   }
   checks.push(npm(name, script, skip));
 }
 
 const ok = checks.every((c) => c.status !== 'fail');
+const failed = checks.filter((c) => c.status === 'fail').map((c) => c.name);
+const testsOnly = !ok && failed.every((n) => n === 'test') && checks.some((c) => c.name === 'sim:full' && c.status === 'pass');
 const icon = { pass: '✅', fail: '❌', skipped: '⏭️' } as const;
+const plain = (t: string) => t.replace(/\x1b\[[0-9;]*m/g, '');
+/** One line for the table: a failure's first line (the failing tests), otherwise the output's last line. */
+const cell = (c: Check) => {
+  const lines = plain(c.detail).split('\n').map((l) => l.trim()).filter(Boolean);
+  return ((c.status === 'fail' ? lines[0] : lines[lines.length - 1]) ?? '').replace(/\|/g, '\\|').slice(0, 300);
+};
 const md = [
   '',
-  `### Gate: ${ok ? 'passed' : 'FAILED'}`,
+  `### Gate: ${ok ? 'passed' : testsOnly ? 'safety checks passed, unit tests need updating' : 'FAILED'}`,
+  ...(testsOnly ? ['', 'Replay, build and the simulation sweeps hold under the new numbers; the failing unit tests assert behaviour at the old ones. A person decides whether each is a pinned number to update or a real regression before this leaves draft.'] : []),
   '',
   '| check | result | time | detail |',
   '|---|---|---|---|',
-  ...checks.map((c) => `| ${c.name} | ${icon[c.status]} ${c.status} | ${Math.round(c.ms / 1000)} s | ${c.detail.split('\n').slice(-1)[0].replace(/\|/g, '\\|').slice(0, 200)} |`),
+  ...checks.map((c) => `| ${c.name} | ${icon[c.status]} ${c.status} | ${Math.round(c.ms / 1000)} s | ${cell(c)} |`),
   '',
-  ...checks.filter((c) => c.status === 'fail').flatMap((c) => [`<details><summary>${c.name} output</summary>`, '', '```', c.detail, '```', '</details>', '']),
+  ...checks.filter((c) => c.status === 'fail').flatMap((c) => [`<details><summary>${c.name} output</summary>`, '', '```', plain(c.detail), '```', '</details>', '']),
 ].join('\n');
 if (existsSync(join(outDir, 'pr-body.md'))) appendFileSync(join(outDir, 'pr-body.md'), md);
-writeFileSync(join(outDir, 'gate.json'), JSON.stringify({ ok, calibration: CALIBRATION_VERSION, checks }, null, 2));
-console.log(ok ? 'gate passed' : 'gate FAILED');
-process.exit(ok ? 0 : 1);
+writeFileSync(join(outDir, 'gate.json'), JSON.stringify({ ok, testsOnly, calibration: CALIBRATION_VERSION, checks }, null, 2));
+console.log(ok ? 'gate passed' : testsOnly ? 'gate: safety checks passed, unit tests failed' : 'gate FAILED');
+process.exit(ok ? 0 : testsOnly ? 3 : 1);

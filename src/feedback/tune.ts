@@ -245,7 +245,7 @@ export function tune(all: ShotSample[], opts: TuneOptions = {}): TuneResult {
     const cand = evalAll(p);
     evidence.candidate = { ...cand, ...bounds(labelled, p, cand.all) };
     const cost = cand.all.miss - base.all.miss;
-    if (cost > Math.max(1, Math.ceil(g.maxTightenCostShare * labelled.length))) {
+    if (cost > Math.ceil(g.maxTightenCostShare * labelled.length)) {
       reasons.push(`current calibration replays ${base.all.wrong} wrong hit(s), but the tightening that removes them (${[...moved].join(', ')}) costs ${cost} misses, more than ${(g.maxTightenCostShare * 100).toFixed(0)}% of shots; a person must look at those shots first`);
       return none();
     }

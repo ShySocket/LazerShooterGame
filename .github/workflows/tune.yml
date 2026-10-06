@@ -1,0 +1,66 @@
+name: Nightly calibration tuning
+
+# Turns labelled shot feedback (review-card answers and practice shots in feedback/ of the database)
+# into a calibration proposal: npm run tune searches one guarded step per knob, npm run tune:gate
+# replays every shot and runs the tests and simulation sweeps, and only a green gate opens a pull
+# request. Nothing is merged here: a person reads the evidence and merges. scripts/tune-nightly.sh
+# holds the steps; docs/tuning-loop.md has the guardrails and the one-time setup (the FIREBASE_SA_KEY
+# secret and "Allow GitHub Actions to create and approve pull requests").
+on:
+  schedule:
+    # 10:17 UTC: after an evening of play in the Americas, before the next one.
+    - cron: '17 10 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Decide and report, push nothing and open no pull request
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: calibration-tuning
+  cancel-in-progress: false
+
+jobs:
+  tune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # realcheck runs only when its public-domain photos are cached (repository variable TUNE_REALCHECK=1 fetches them once).
+      - uses: actions/cache@v4
+        if: vars.TUNE_REALCHECK == '1'
+        with:
+          path: fixtures/real
+          key: fixtures-real-v1
+      - if: vars.TUNE_REALCHECK == '1' && hashFiles('fixtures/real/SOURCES.md') == ''
+        run: npm run fixtures
+        continue-on-error: true
+      - name: Tune, gate, open the pull request
+        run: scripts/tune-nightly.sh
+        env:
+          FIREBASE_SA_KEY: ${{ secrets.FIREBASE_SA_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tuning-report
+          path: |
+            .rubric/tune/pr-body.md
+            .rubric/tune/summary.json
+            .rubric/tune/gate.json
+          if-no-files-found: ignore

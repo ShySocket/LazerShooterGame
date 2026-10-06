@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { exportFeedback } from './sim/feedbackExport';
-import { collectSamples, evaluate } from '../src/feedback/replay';
+import { collectSamples, evaluate, replayShot } from '../src/feedback/replay';
 import type { ShotSample } from '../src/feedback/sample';
 import { contradicts, currentParams, isHoldout, KNOBS, tune } from '../src/feedback/tune';
 
@@ -61,13 +61,12 @@ test('a proposal moves each knob at most one step, never loosens the face-only b
 
 test('a replayed wrong hit under the current calibration earns a tightening even below the data minimum', async () => {
   const data = await clean();
-  // The four weakest correct hits relabelled "should not count": real wrong hits look like this, not confident.
+  // The four correct hits the replay resolves by the thinnest margin, relabelled "should not count":
+  // real wrong hits look like this, not confident. Chosen through the replay at whatever calibration
+  // this build carries, so the test holds after the tuning loop moves the numbers.
   const weak = data
-    .filter((s) => s.shot.resolvedTo && s.label?.kind === 'player')
-    .map((s) => {
-      const b = Object.values(s.shot.decisionBelief ?? {}).sort((x, y) => y - x);
-      return { s, m: b[0] - (b[1] ?? 0) };
-    })
+    .filter((s) => s.label?.kind === 'player' && replayShot(s).resolved === s.label.target && !contradicts({ ...s, label: { kind: 'none', answeredAt: 0, reviewMs: 1 } }))
+    .map((s) => ({ s, m: replayShot(s).top?.margin ?? 1 }))
     .sort((a, b) => a.m - b.m)
     .slice(0, 4)
     .map((w) => w.s);
@@ -82,9 +81,10 @@ test('a replayed wrong hit under the current calibration earns a tightening even
     const k = KNOBS.find((x) => x.key === c.key)!;
     assert.equal(Math.sign(c.to - c.from), k.tighten, `${c.key} moved the loosening way`);
   }
-  // The cost cap: a tightening that would cost more misses than allowed goes to a person instead.
-  const capped = tune(relabelled, { guards: { maxTightenCostShare: 0 } });
-  assert.equal(capped.decision, 'none');
+  // The cost cap: with no misses allowed, only a free tightening goes through; one that costs misses goes to a person.
+  const cost = r.evidence.candidate!.all.miss - r.evidence.current.all.miss;
+  const capped = tune(relabelled, { guards: { minSamples: 1e9, maxTightenCostShare: 0 } });
+  assert.equal(capped.decision, cost > 0 ? 'none' : 'tighten');
 });
 
 test('the hold-out split is by round and stable', () => {
