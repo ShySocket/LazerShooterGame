@@ -1,11 +1,12 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { backend } from '../net';
-import { enrolledPlayers, livesLabel, type Room } from '../types';
+import { enrolledPlayers, type Room } from '../types';
+import { LifePips } from '../ui/LifePips';
 import { sfx } from '../audio/sfx';
 import { shotLog } from '../debug/shotLog';
 import { ShotReview } from '../feedback/ShotReview';
 import { PracticeReview } from '../feedback/PracticeReview';
-import { placementLine, RESET_FAILED } from '../ui/advice';
+import { placementLine, RESET_FAILED, resultsTitle } from '../ui/advice';
 
 interface Props {
   room: Room;
@@ -24,15 +25,18 @@ export function Results({ room, pid, onLeave }: Props) {
   }, []);
   const fmt = (t: number) => new Date(t).toLocaleTimeString([], { hour12: false, minute: '2-digit', second: '2-digit' });
 
+  // Survivors first, then by lives and tags; the eliminated by how long they lasted.
   const standings = enrolledPlayers(room).sort((a, b) => {
     if (a.status !== b.status) return a.status === 'alive' ? -1 : 1;
-    return (b.eliminatedAt ?? 0) - (a.eliminatedAt ?? 0);
+    if (a.status === 'alive') return b.lives - a.lives || b.tags - a.tags;
+    return (b.eliminatedAt ?? 0) - (a.eliminatedAt ?? 0) || b.tags - a.tags;
   });
+  const aliveCount = standings.filter((p) => p.status === 'alive').length;
 
   return (
     <div className="screen results">
       <header className="results-hero" style={winner ? ({ '--winner': winner.color } as CSSProperties) : undefined}>
-        <h1 className="title">{winner ? `${winner.name} wins` : 'No survivors'}</h1>
+        <h1 className="title">{resultsTitle(winner?.name ?? null, aliveCount)}</h1>
         <p className="sub">{winner?.id === pid ? 'That is you. Nice shooting.' : placementLine(standings.findIndex((p) => p.id === pid) + 1, standings.length)}</p>
       </header>
       <ol className="standings">
@@ -42,12 +46,12 @@ export function Results({ room, pid, onLeave }: Props) {
             <span className="dot" style={{ background: p.color }} />
             <span className="name">
               {p.name}
-              {p.id === pid && <small> you</small>}
+              {p.id === pid && <small>you</small>}
             </span>
             <span className="stat">
               <b>{p.tags}</b> {p.tags === 1 ? 'tag' : 'tags'}
             </span>
-            <span className="stat">{livesLabel(p)}</span>
+            {p.status === 'alive' ? <LifePips lives={p.lives} max={room.settings.lives} /> : <span className="stat">out</span>}
           </li>
         ))}
       </ol>

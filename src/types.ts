@@ -155,6 +155,3 @@ export function alivePlayers(room: Pick<Room, 'players'>): Player[] {
   return enrolledPlayers(room).filter((p) => p.status === 'alive');
 }
 
-export function livesLabel(p: Player): string {
-  return p.status === 'alive' ? `${p.lives} ${p.lives === 1 ? 'life' : 'lives'}` : 'out';
-}

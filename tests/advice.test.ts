@@ -186,3 +186,10 @@ test('results placement line says where you finished, with the right ordinal', a
   assert.equal(placementLine(11, 12), 'You placed 11th of 12.');
   assert.equal(placementLine(0, 4), 'Round over.');
 });
+
+test('the results headline never claims no survivors while players are still in', async () => {
+  const { resultsTitle } = await import('../src/ui/advice');
+  assert.equal(resultsTitle('Host', 1), 'Host wins');
+  assert.equal(resultsTitle(null, 2), 'Round over');
+  assert.equal(resultsTitle(null, 0), 'No survivors');
+});

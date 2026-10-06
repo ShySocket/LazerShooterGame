@@ -152,8 +152,8 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
                 <span className="dot" style={{ background: p.color }} />
                 <span className="name">
                   {p.name}
-                  {p.id === room.hostId && <small> host</small>}
-                  {p.id === pid && <small> you</small>}
+                  {p.id === room.hostId && <small>host</small>}
+                  {p.id === pid && <small>you</small>}
                 </span>
                 <span className={`tag ${state}`}>{state === 'away' ? 'reconnecting…' : state === 'ready' ? 'ready' : 'scanning'}</span>
               </li>

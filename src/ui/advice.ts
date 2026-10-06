@@ -123,6 +123,12 @@ export function rulesSummary(s: { lives: number; cooldownMs: number; invulnMs: n
   return [`${s.lives} ${s.lives === 1 ? 'life' : 'lives'}`, `${sec(s.cooldownMs)} between shots`, `${sec(s.invulnMs)} shield after a hit`];
 }
 
+/** The Results headline: a winner by name, a round the host ended with several still in, or nobody left. */
+export function resultsTitle(winnerName: string | null, aliveCount: number): string {
+  if (winnerName) return `${winnerName} wins`;
+  return aliveCount > 0 ? 'Round over' : 'No survivors';
+}
+
 /** Under the winner's name on Results, for everyone who did not win. */
 export function placementLine(rank: number, total: number): string {
   if (rank < 1 || total < 1) return 'Round over.';

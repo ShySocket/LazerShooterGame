@@ -28,15 +28,6 @@ test('tour', async ({ browser }) => {
   const third = await mk('Jun');
   phones = [host, guest, third];
 
-  // Screens a round cannot reach (dev-only ?gallery, src/gallery/Gallery.tsx).
-  for (const g of ['notice', 'notice-slow', 'crash', 'profile', 'profile-saved', 'body']) {
-    await host.page.goto(`/?e2e&gallery=${g}`);
-    await sleep(500);
-    await shot(host.page, `00-gallery-${g}`);
-  }
-  await host.page.getByRole('button', { name: 'A friend is holding it' }).click();
-  await sleep(1200);
-  await shot(host.page, '00-gallery-body-front');
 
   await host.page.goto('/?e2e');
   await host.page.waitForSelector('.title');
@@ -71,6 +62,23 @@ test('tour', async ({ browser }) => {
   await waitForRoom(host, (r) => r.status === 'playing', 'play');
   await sleep(600);
   await shot(host.page, '10-game-hud');
+  type Lz = { __lzLock?: (t: string | null, k?: string) => void };
+  await host.page.evaluate(() => (window as unknown as Lz).__lzLock?.('LOCK Riley', 'good'));
+  await sleep(250);
+  await shot(host.page, '10b-lock-good');
+  await host.page.evaluate(() => (window as unknown as Lz).__lzLock?.('Riley? 60%', 'warn'));
+  await sleep(250);
+  await shot(host.page, '10c-lock-maybe');
+  await host.page.evaluate(() => (window as unknown as Lz).__lzLock?.(null));
+  // No person on the fake camera: a tap is refused with its reason.
+  await host.page.locator('button.fire').dispatchEvent('pointerdown');
+  await sleep(250);
+  await shot(host.page, '10d-refusal-banner');
+  await guest.ctx.setOffline(true);
+  await sleep(2500);
+  await shot(guest.page, '10e-offline');
+  await guest.ctx.setOffline(false);
+  await sleep(2500);
   // A real shot lands through the pipeline only with a person on camera; mark the hit the way a landed shot does.
   await host.page.evaluate(() => (window as unknown as { __lzMarkHit?: (n: string, c: string) => void }).__lzMarkHit?.('Riley', '#3bd5ff'));
   await sleep(160);
@@ -90,10 +98,26 @@ test('tour', async ({ browser }) => {
   await hit(host, guest);
   await sleep(400);
   await shot(guest.page, '13-spectator');
-  // Jun is still in: finish the round the way a host would.
-  await host.page.getByRole('button', { name: 'end round' }).click();
-  await waitForRoom(host, (r) => r.status === 'ended', 'end', 10_000).catch(() => undefined);
+  // Jun is still in: take Jun's three lives so the round ends with a winner.
+  for (let i = 0; i < 3; i++) {
+    await sleep(3300);
+    await hit(host, third);
+  }
+  await waitForRoom(host, (r) => r.status === 'ended', 'end', 10_000);
   await sleep(800);
   await shot(host.page, '14-results-winner', true);
   await shot(guest.page, '15-results-guest', true);
+
+  // Its own phone, so the crash state's saved incident never reaches the Home captures above.
+  const g = await mk('Gallery');
+  phones.push(g);
+  // Screens a round cannot reach (dev-only ?gallery, src/gallery/Gallery.tsx).
+  for (const state of ['notice', 'notice-slow', 'crash', 'profile', 'profile-saved', 'body']) {
+    await g.page.goto(`/?e2e&gallery=${state}`);
+    await sleep(500);
+    await shot(g.page, `00-gallery-${state}`);
+  }
+  await g.page.getByRole('button', { name: 'A friend is holding it' }).click();
+  await sleep(1200);
+  await shot(g.page, '00-gallery-body-front');
 });

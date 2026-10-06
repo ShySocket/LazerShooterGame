@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { isE2E } from '../e2e/hook';
+import { LifePips } from '../ui/LifePips';
 import type { Human, Result } from '@vladmandic/human';
 import { backend, MIN_PLAYERS, practiceBackend } from '../net';
 import { decideRoundEnd } from '../net/backend';
@@ -7,7 +8,7 @@ import { CROWD_TEXT, hitFailureText, refusalAdvice, hitOutcomeUnknown, hitVerdic
 import { useConnection } from '../hooks/useConnection';
 import { withTimeout } from '../net/withTimeout';
 import { NET_CALIB } from '../vision/calibration';
-import { alivePlayers, enrolledPlayers, livesLabel, UNKNOWN_ID, type Player, type Room } from '../types';
+import { alivePlayers, enrolledPlayers, UNKNOWN_ID, type Player, type Room } from '../types';
 import { useCamera } from '../hooks/useCamera';
 import { useVisionLoop, type VisionFrame } from '../hooks/useVisionLoop';
 import { useHumanStatus } from '../hooks/useHumanStatus';
@@ -231,8 +232,11 @@ export function Game({ room, me, pid, onLeave }: Props) {
       flashScreen('rgba(138,255,61,0.55)', 320);
       markHit(n, c, false);
     };
+    const l = window as unknown as { __lzLock?: (text: string | null, kind?: Kind) => void };
+    l.__lzLock = (text, kind = 'good') => setLock(text ? { text, kind } : null);
     return () => {
       delete w.__lzMarkHit;
+      delete l.__lzLock;
     };
   });
 
@@ -680,18 +684,13 @@ export function Game({ room, me, pid, onLeave }: Props) {
         </div>
         <div className="hud-mid">{rangeMode ? 'RANGE TEST' : forfeitText || `${alive.length} alive`}</div>
         <div className="row">
-          {isHost && playing && (
-            <button className="hud-btn" onClick={endRound}>
-              end round
-            </button>
-          )}
           {debug && (
             <button className={`hud-btn ${rangeMode ? 'on' : ''}`} onClick={() => setRangeMode((m) => !m)}>
               {rangeMode ? 'range on' : 'range'}
             </button>
           )}
-          <button className="hud-btn" onClick={() => setDebug((d) => !d)}>
-            {debug ? `${fps} fps` : 'debug'}
+          <button className={`hud-btn ${debug ? '' : 'icon'}`} aria-label="debug" onClick={() => setDebug((d) => !d)}>
+            {debug ? `${fps} fps` : <span className="bars" aria-hidden="true" />}
           </button>
           {recording && (
             <button className="hud-btn" onClick={saveRecording}>
@@ -699,6 +698,11 @@ export function Game({ room, me, pid, onLeave }: Props) {
             </button>
           )}
         </div>
+        {isHost && playing && (
+          <button className="hud-btn hud-end" onClick={endRound}>
+            end round
+          </button>
+        )}
       </div>
 
       {banner && (
@@ -797,9 +801,6 @@ export function Game({ room, me, pid, onLeave }: Props) {
 
       {spectating ? (
         <div className="spectator">
-          <div className="out-stamp" aria-hidden="true">
-            Eliminated
-          </div>
           <h2>You are out</h2>
           <p className="sub">
             {alive.length} still in. Watch the rest of the round.
@@ -811,7 +812,10 @@ export function Game({ room, me, pid, onLeave }: Props) {
                 <li key={p.id}>
                   <span className="dot" style={{ background: p.color }} />
                   <span className="name">{p.name}</span>
-                  <span className="tag">{livesLabel(p)}</span>
+                  <span className="stat">
+                    <b>{p.tags}</b> {p.tags === 1 ? 'tag' : 'tags'}
+                  </span>
+                  {p.status === 'alive' ? <LifePips lives={p.lives} max={settings.lives} /> : <span className="stat">out</span>}
                 </li>
               ))}
           </ul>

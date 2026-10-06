@@ -34,6 +34,7 @@ npm run dev                                    # HTTPS dev server on the LAN (ca
 npm run dev:http                               # plain HTTP, for browser QA without camera
 npm run replay:rec [folder]                    # replay ?record recordings through the current calibration
 npm run replay -- feedback.json                # re-score the uploaded shot-feedback labels (src/feedback/replay.ts)
+npm run ui:shots                               # UI tour: every screen at 390x844 into UI_SHOTS_DIR (UI_DPR=1|2), plus the motion and a11y contracts (tests/ui/)
 ```
 
 Node 22.15+ is required. Tests run the app's TypeScript directly through `tests/register.mjs` (a `node:module` hook that transpiles with `typescript`), so there is no test bundler or jest config. `.claude/launch.json` defines `dev` (5173, https) and `dev-http` for the browser preview.
@@ -47,6 +48,10 @@ const r = await simulate(SCENARIOS.find(s => s.name === 'occlusion'), { seed: 60
 console.log(r.counts, r.wrongLockFrames, r.shots.filter(s => s.outcome === 'wrong'), r.wrongTraces);
 JS
 ```
+
+## UI
+
+`DESIGN.md` (Tactical HUD tokens and rules) and `PRODUCT.md` describe the visual system; every colour, size, radius and duration is a token in `src/styles.css` `:root`, and player-facing strings stay in `src/ui/advice.ts` with tests. Dev-only `?gallery=<state>` (`src/gallery/Gallery.tsx`) renders waits, the crash screen, the account page and the body scan for the UI tour; `window.__lzMarkHit` / `__lzLock` (e2e only) drive the hit marker and lock label without a person on camera.
 
 ## Architecture
 
