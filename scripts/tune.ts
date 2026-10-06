@@ -8,7 +8,8 @@
  *
  * Triage, guarded search (src/feedback/tune.ts), and on a proposal the calibration written into
  * src/vision/calibration.ts with a version bump. Always writes <out>/pr-body.md, <out>/pr-title.txt
- * and <out>/summary.json (default .rubric/tune). Exit 0: no change; 10: calibration changed (run
+ * <out>/summary.json and <out>/samples.json, the labelled shots it decided on, for tune:gate (default
+ * .rubric/tune, git-ignored). Exit 0: no change; 10: calibration changed (run
  * npm run tune:gate next); 2: could not run. LZ_TUNE_GUARDS (JSON) overrides guards and LZ_TUNE_ROOT
  * names the checkout to write into, for tests.
  */
@@ -47,6 +48,8 @@ const body = prBody({ result, triage: summarise(samples), samples, fromVersion: 
 mkdirSync(outDir, { recursive: true });
 writeFileSync(join(outDir, 'pr-body.md'), body);
 writeFileSync(join(outDir, 'pr-title.txt'), prTitle(result, toVersion));
+// The shots the gate replays under the written calibration; the track's face mean is dropped, it is not needed.
+writeFileSync(join(outDir, 'samples.json'), JSON.stringify(samples.filter((s) => s.label).map((s) => ({ ...s, target: s.target ? { ...s.target, faceMean: null } : null }))));
 writeFileSync(join(outDir, 'summary.json'), JSON.stringify({ day, decision: result.decision, fromVersion: CALIBRATION_VERSION, toVersion, changes: result.changes, reasons: result.reasons, evidence: result.evidence }, null, 2));
 console.log(`${result.decision}${result.changes.length ? ': ' + result.changes.map((c) => `${c.key} ${c.from}->${c.to}`).join(', ') : ''}${toVersion ? ` (calibration ${toVersion})` : ''}`);
 for (const r of result.reasons) console.log(`  ${r}`);
