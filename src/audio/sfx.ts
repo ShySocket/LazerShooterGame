@@ -119,6 +119,16 @@ export const sfx = {
     tone(1047, 1047, 0.6, 'triangle', 0.25, 0.6);
   },
   tick: () => tone(1000, 1000, 0.05, 'sine', 0.15),
+  /** A scan zone locking: each step a semitone-and-a-bit higher, so a lap climbs. */
+  lock: (step: number) => {
+    const f = 660 * Math.pow(2, (step * 2) / 12);
+    tone(f, f * 1.5, 0.07, 'square', 0.12);
+    tone(f * 2, f * 2, 0.09, 'sine', 0.1, 0.05);
+  },
+  lapDone: () => {
+    [880, 1109, 1319, 1760].forEach((f, i) => tone(f, f, 0.12, 'triangle', 0.2, i * 0.07));
+    tone(1400, 2600, 0.35, 'sawtooth', 0.08, 0.28);
+  },
   countdown: () => tone(880, 880, 0.12, 'sine', 0.2),
   go: () => tone(1320, 1320, 0.4, 'sine', 0.25),
 };

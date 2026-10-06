@@ -37,6 +37,9 @@ test('[scan-smoke] the models load, the camera starts, and the face stage runs o
   test.info().annotations.push({ type: 'models', description: `loaded in ${Date.now() - t0} ms` });
   // The loop runs on the fake camera's test pattern: no face, and the scanner says so.
   await expect(phone.page.locator('.hint')).toHaveText(/No face found/, { timeout: 60_000 });
+  // The ring is drawn over the preview with the eight lap-1 zones, dimmed while no face is found.
+  await expect(phone.page.getByTestId('scan-ring')).toHaveAttribute('data-zones', '8');
+  await expect(phone.page.getByTestId('scan-ring')).toHaveClass(/blocked/);
   await expect(phone.page.getByRole('button', { name: 'Restart scan' })).toBeVisible();
   expect(phone.errors).toEqual([]);
 });

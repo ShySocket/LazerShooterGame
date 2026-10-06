@@ -11,7 +11,7 @@
  *                                                                │
  *                     FIRE ──▶ fresh geometry? ──▶ resolve (threshold, margin, TTL) ──▶ burst
  */
-export const CALIBRATION_VERSION = '2026-10-01.11';
+export const CALIBRATION_VERSION = '2026-10-06.1';
 
 // ---- Face similarity (embedding.ts) -------------------------------------------------------------
 /**
@@ -81,6 +81,11 @@ export const SCAN_CALIB = {
   settleMs: 400,
   /** The face stage detects on a copy no wider than this; a selfie-distance face is still hundreds of pixels. */
   faceDetectWidth: 960,
+  /**
+   * Lap 2 of the face scan is taken at arm's length: a face counts only when its box is at most this
+   * fraction of lap 1's median face width, so the extra templates sit at a scale nearer a round's.
+   */
+  lap2MaxScale: 0.7,
   /** How long the front body stage waits for far face samples once the outfit is complete. */
   farFacePatienceMs: 6000,
   minFarFaces: 6,

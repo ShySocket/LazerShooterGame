@@ -27,3 +27,4 @@ One line per `npm run rubric` run that was worth keeping (versions are the merge
 | 2026-10-01 07:10 | 447e73d | 2026-10-01.1 | 3 | 79.5 | 66/76 | 29/40 | 1/8 | scan-works: no dead ends, no face similarity in the scan, thresholds on GhostNet |
 | 2026-10-01 20:05 | 8cf05bb | 2026-10-01.7 | 3 | 80.0 | 72/83 | 32/43 | 1/8 | astra-review gates 8cf05bb |
 | 2026-10-02 10:59 | b12a2f3 | 2026-10-01.11 | 3 | 80.1 | 72/83 | 33/44 | 1/8 | astra-followup gates b12a2f3 |
+| 2026-10-06 07:25 | 0f0988a | 2026-10-06.1 | 3 | 80.0 | 74/85 | 34/46 | 1/8 | scan-ring: ring, arrow, lap 2, silhouette (R8.23-R8.25 green, R8.26 phone) |

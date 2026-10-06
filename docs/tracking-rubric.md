@@ -208,6 +208,10 @@ Real-phone evidence: a rescan on the phones players use, with the yaw/pitch read
 - [ ] **Must**: A failed scan upload keeps the captured scan: the message says why in plain words, "Try again" re-sends it, and "Start over" is a separate link. <!-- R8.20 auto:test:a failed scan upload -->
 - [ ] **Must**: A real person completes the eight-angle face scan with the real models without a dead end or a "different face" refusal: a real interview clip as the selfie camera reaches 8/8 (patience and Skip this angle for the moves the speaker never makes). <!-- R8.21 e2e:real-scan -->
 - [ ] **Must**: No face-scan prompt can dead-end: after 6 s the best right-way frame stands in, after 10 s the angle can be skipped, and the face stage never refuses a sample on face similarity. <!-- R8.22 auto:test:the face stage completes for a person who only turns one way -->
+- [ ] **Should**: The face scan shows where to move, not just words: a ring of zones laid out where the head goes, a dot that follows the measured head angle, and an arrow to the zone that is double-headed before the first turn and flips on the wrong way. <!-- R8.23 auto:test:the arrow is double-headed -->
+- [ ] **Must**: The ring agrees with the mirrored preview: after the first turn and tilt the dot moves the way the player moved, whatever sign the phone gives yaw or pitch. <!-- R8.24 auto:test:after the latch, side a is screen left -->
+- [ ] **Must**: Lap 2 (arm's length) counts a face only when it is smaller than lap 1's, and never dead-ends: patience and Skip this angle work as in lap 1. <!-- R8.25 auto:test:lap 2 can always be finished -->
+- [ ] **Should**: The ring, the lap sweep and the body silhouette read clearly on a real phone, and the dot goes the way the head turns before the first latch (`SCREEN_YAW_SIGN` / `SCREEN_PITCH_SIGN`). <!-- R8.26 phone -->
 - [ ] **Should**: Two people in the selfie frame never give a face sample, and the hint asks for one face. <!-- R8.23 e2e:real-scan-two-faces -->
 
 ## 9. Demo-day protocol (run this before the first guest picks up a phone)

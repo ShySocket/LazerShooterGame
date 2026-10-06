@@ -5,7 +5,7 @@ import { useCamera, type Facing } from '../hooks/useCamera';
 import { useVisionLoop, type VisionFrame } from '../hooks/useVisionLoop';
 import { useHumanStatus } from '../hooks/useHumanStatus';
 import { compactEmbedding, FACE_MIN_SAMPLES, FACE_SAMPLES, faceYawDeg, MAX_YAW_DEG, MIN_FACE_PX, isValidEmbedding } from '../vision/human';
-import { bodySampleDecision, bystanderDecision, EXTRA_ANY, EXTRA_STRAIGHT, faceBigEnough, faceGate, faceStageDone, faceStageStep, farFacesDone, gateHint, hasFrontal, initialFaceStage, needsExtra, promptFor, promptIndex, SCAN_CALIB, settleDone, SKIP_ANGLE_TEXT, skipFaceAngle, smallRoomHint, type FaceStage, type FaceStep } from '../vision/scan';
+import { bodySampleDecision, bystanderDecision, currentPrompt, faceBigEnough, faceGate, faceStageDone, faceStageStep, farFacesDone, gateHint, initialFaceStage, initialLap2Stage, LAP2_PROMPTS, needsExtra, promptIndex, SCAN_CALIB, settleDone, SKIP_ANGLE_TEXT, skipFaceAngle, smallRoomHint, type FaceStage, type FaceStep } from '../vision/scan';
 import { useWakeLock } from '../hooks/useWakeLock';
 import { saveError } from '../ui/advice';
 import { averageOutfits, averageProps, bodyProportions, FrameSampler, outfitRegions, outfitSignature } from '../vision/clothing';
@@ -13,7 +13,9 @@ import { drawOverlay } from '../vision/overlay';
 import { iou, toNBox, type NBox } from '../vision/geometry';
 import { faceRegion, ZoomPass } from '../vision/zoom';
 import type { Detection } from '../vision/tracker';
-import { haptic, sfx } from '../audio/sfx';
+import { haptic, sfx, vibrate } from '../audio/sfx';
+import { ScanRing } from './ScanRing';
+import { BodySilhouette } from './BodySilhouette';
 
 /**
  * The eight prompts, their head-angle bands, the hold and the same-person rule live in
@@ -30,6 +32,8 @@ const FAR_FACE_SAMPLES = 12;
 const MIN_FAR_FACES = SCAN_CALIB.minFarFaces;
 const FAR_FACE_INTERVAL_MS = 250;
 const PROP_COUNTDOWN = 5;
+/** How long the lap-complete sweep plays. */
+const FLOURISH_MS = 900;
 const BODY_SAMPLE_INTERVAL_MS = 150;
 
 export interface ScanResult {
@@ -81,8 +85,15 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const faces = useRef<number[][]>([]);
   const farFaces = useRef<number[][]>([]);
-  /** The face stage's state (scan.ts faceStageStep): prompts, samples, patience. */
+  /** The face stage's state (scan.ts faceStageStep): prompts, samples, patience. Lap 2 replaces it; lap 1 is kept in `lap1`. */
   const faceStage = useRef<FaceStage>(initialFaceStage(performance.now()));
+  const lap1 = useRef<FaceStage | null>(null);
+  const [ringReason, setRingReason] = useState<FaceStep['reason']>('wait');
+  const [flourish, setFlourish] = useState(false);
+  const flourishTimer = useRef<number | undefined>(undefined);
+  /** Far-face samples so far, and whether the front stage is now only waiting for them (the silhouette's dots). */
+  const [farCount, setFarCount] = useState(0);
+  const [farWait, setFarWait] = useState(false);
   const [skippable, setSkippable] = useState(false);
   const [angles, setAngles] = useState<{ yaw: number; pitch: number } | null>(null);
   const lastFarFace = useRef(0);
@@ -113,6 +124,7 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
       mounted.current = false;
       generation.current++;
       window.clearInterval(countdownTimer.current);
+      window.clearTimeout(flourishTimer.current);
     };
   }, []);
 
@@ -143,10 +155,16 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
     }
   };
 
+  /** Lap 1's samples, then lap 2's (tagged), in the order they were taken. */
+  const faceSamples = () => [
+    ...(lap1.current ?? faceStage.current).samples.map((x) => ({ ...x, how: x.how as string })),
+    ...(lap1.current ? faceStage.current.samples.map((x) => ({ ...x, how: `lap2-${x.how}` })) : []),
+  ];
+
   const finish = (back: OutfitSig | null) =>
     submit({
       face: faces.current,
-      faceMeta: faceStage.current.samples.map((x) => ({ yaw: Math.round(x.yaw), pitch: Math.round(x.pitch), how: x.how })),
+      faceMeta: faceSamples().map((x) => ({ yaw: Math.round(x.yaw), pitch: Math.round(x.pitch), how: x.how })),
       farFace: farFaces.current,
       body: averageProps(props.current),
       outfit: outfit && front.current && back ? { front: front.current, back } : null,
@@ -163,6 +181,12 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
     faces.current = [];
     farFaces.current = [];
     faceStage.current = initialFaceStage(performance.now());
+    lap1.current = null;
+    setRingReason('wait');
+    window.clearTimeout(flourishTimer.current);
+    setFlourish(false);
+    setFarCount(0);
+    setFarWait(false);
     setSkippable(false);
     setAngles(null);
     outfits.current = [];
@@ -221,17 +245,45 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
     go('bodyFront');
   };
 
-  /** Apply one face-stage step: the hint, the Skip button, and a taken sample. */
+  const playFlourish = () => {
+    sfx.lapDone();
+    vibrate([20, 40, 20]);
+    setFlourish(true);
+    window.clearTimeout(flourishTimer.current);
+    flourishTimer.current = window.setTimeout(() => mounted.current && setFlourish(false), FLOURISH_MS);
+  };
+
+  /** Apply one face-stage step: the hint, the Skip button, the ring, and a taken sample. */
   const applyFaceStep = (r: FaceStep) => {
+    const before = faceStage.current.samples.length;
     faceStage.current = r.stage;
     if (r.skippable !== skippable) setSkippable(r.skippable);
+    setRingReason(r.reason);
     if (!r.accepted) return setHint(r.hint);
-    faces.current = r.stage.samples.map((x) => x.embedding);
-    sfx.tick();
+    faces.current = faceSamples().map((x) => x.embedding);
+    // A zone locked (a skip locks nothing): a tick that climbs through the lap.
+    if (r.stage.samples.length > before) {
+      sfx.lock(promptIndex(r.stage) + (r.stage.lap === 2 ? 3 : 0));
+      vibrate(15);
+    }
     setHint('');
     if (faceStageDone(r.stage, FACE_SAMPLES, FACE_MIN_SAMPLES)) {
-      if (body) go('bodyMode');
-      else void finish(null);
+      playFlourish();
+      if (r.stage.lap === 1) {
+        // Lap 2 at arm's length: the latched sides carry over; lap 1's face width is the reference.
+        lap1.current = r.stage;
+        faceStage.current = initialLap2Stage(r.stage, performance.now());
+        setRingReason('wait');
+        setFaceIdx(0);
+      } else {
+        // Let the last sweep play before the screen moves on; no frame adds to the finished lap meanwhile.
+        const epoch = generation.current;
+        window.setTimeout(() => {
+          if (!mounted.current || generation.current !== epoch) return;
+          if (body) go('bodyMode');
+          else void finish(null);
+        }, FLOURISH_MS);
+      }
     } else setFaceIdx(promptIndex(r.stage));
   };
 
@@ -257,8 +309,9 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
       drawOverlay(canvas, { dets, tracks: [], vidW: res.width, vidH: res.height }, facing === 'user');
     }
     if (s === 'face') {
+      if (faceStageDone(faceStage.current, FACE_SAMPLES, FACE_MIN_SAMPLES)) return;
       // The gates and the crop turn this frame into one observation; scan.ts faceStageStep decides.
-      const obs = { t: now, faces: res.face.length, box: res.face.length === 1 ? toNBox(res.face[0].boxRaw) : null, blocked: '', yaw: 0, pitch: 0, embedding: [] as number[] };
+      const obs = { t: now, faces: res.face.length, box: res.face.length === 1 ? toNBox(res.face[0].boxRaw) : null, blocked: '', yaw: 0, pitch: 0, embedding: [] as number[], w: res.face.length === 1 ? res.face[0].boxRaw[2] : undefined };
       if (now < faceStage.current.settleUntil) return applyFaceStep(faceStageStep(faceStage.current, obs));
       const gate = faceGate({ faces: res.face.length, score: res.face[0]?.score });
       if (gate !== 'ok') return applyFaceStep(faceStageStep(faceStage.current, { ...obs, blocked: gateHint(gate) }));
@@ -292,6 +345,7 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
         outfitDoneAt.current = 0;
         firstUsableAt.current = 0;
         setProgress(0);
+        setFarWait(false);
       };
       // Somebody else in the frame pauses the scan and keeps the samples; a long intrusion starts over.
       if (res.body.length > 1 || res.face.length > 1) {
@@ -319,6 +373,7 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
           // face is the player's: no similarity gate, which turned heads and distance would fail anyway.
           if (f && isValidEmbedding(f.embedding) && f.score >= 0.7 && faceYawDeg(f) <= MAX_YAW_DEG) {
             farFaces.current.push(compactEmbedding(f.embedding));
+            setFarCount(farFaces.current.length);
             // During the far-face wait the player is metres away: a tick per sample and a bar they can see.
             if (outfitDoneAt.current) {
               sfx.tick();
@@ -372,6 +427,7 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
         // Outfit done; hold the pose a little longer so the far face set fills up. The bar shows the
         // far faces now, large enough to read from where the player stands.
         setProgress(Math.min(1, farFaces.current.length / MIN_FAR_FACES));
+        setFarWait(true);
         setHint(res.face.length === 1 ? `Look at the phone: ${farFaces.current.length} / ${MIN_FAR_FACES}` : 'Look at the phone.');
         return;
       }
@@ -384,8 +440,9 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
         lastBody.current = null;
         lastBodySample.current = 0;
         setProgress(0);
+        setFarWait(false);
         setRecording(false);
-        sfx.tick();
+        sfx.lapDone();
         haptic();
         if (s === 'bodyFront') {
           front.current = avg;
@@ -407,8 +464,9 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
   const copy = ((): { heading: string; prompt: string } => {
     switch (stage) {
       case 'face':
-        if (needsExtra(faceStage.current, FACE_SAMPLES, FACE_MIN_SAMPLES)) return { heading: 'One more look', prompt: (hasFrontal(faceStage.current) ? EXTRA_ANY : EXTRA_STRAIGHT).text };
-        return { heading: `Face ${Math.min(faceIdx, FACE_SAMPLES - 1) + 1} of ${FACE_SAMPLES}`, prompt: promptFor(faceIdx).text };
+        if (needsExtra(faceStage.current, FACE_SAMPLES, FACE_MIN_SAMPLES)) return { heading: 'One more look', prompt: currentPrompt(faceStage.current).text };
+        if (faceStage.current.lap === 2) return { heading: `Lap 2: ${Math.min(faceIdx, LAP2_PROMPTS.length - 1) + 1} of ${LAP2_PROMPTS.length}`, prompt: `Arm's length. ${currentPrompt(faceStage.current).text}` };
+        return { heading: `Face ${Math.min(faceIdx, FACE_SAMPLES - 1) + 1} of ${FACE_SAMPLES}`, prompt: currentPrompt(faceStage.current).text };
       case 'bodyMode':
         return { heading: 'Body scan', prompt: 'The scan needs your shoulders and hips in frame; head to feet is best. Who is holding the phone?' };
       case 'bodyFront':
@@ -436,7 +494,12 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
     <div className="screen camera-screen">
       <div className={`cam-wrap ${facing === 'user' ? 'mirrored' : ''}`}>
         {stage !== 'bodyMode' && <video ref={videoRef} className="cam" autoPlay playsInline muted />}
-        <canvas ref={canvasRef} className="overlay" />
+        {/* The face stage draws the ring instead of detector boxes. */}
+        <canvas ref={canvasRef} className={`overlay ${stage === 'face' ? 'off' : ''}`} />
+        {stage === 'face' && camReady && humanReady && <ScanRing stage={faceStage.current} reason={ringReason} angles={angles} flourish={flourish} />}
+        {(stage === 'bodyFront' || stage === 'bodyBack') && (
+          <BodySilhouette side={stage === 'bodyFront' ? 'front' : 'back'} progress={farWait ? 1 : progress} farFaces={farCount} farTarget={MIN_FAR_FACES} farWait={farWait} recording={recording} />
+        )}
         {countdown !== null && <div className="countdown">{countdown}</div>}
         {recording && <div className="rec-dot">REC</div>}
       </div>
