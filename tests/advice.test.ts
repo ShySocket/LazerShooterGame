@@ -158,3 +158,38 @@ test('every refusal reason has a line that names what to do, and unknown reasons
   assert.equal(refusalAdvice(null), null);
   assert.equal(refusalAdvice('something-new'), null);
 });
+
+test('home copy fits a phone: three short steps and a practice intro under 200 characters, no dashes', async () => {
+  const { HOW_IT_PLAYS, PRACTICE_INTRO } = await import('../src/ui/advice');
+  assert.equal(HOW_IT_PLAYS.length, 3);
+  for (const step of HOW_IT_PLAYS) assert.ok(step.length <= 52, `${step} is short`);
+  assert.ok(PRACTICE_INTRO.length < 200);
+  for (const s of [...HOW_IT_PLAYS, PRACTICE_INTRO]) assert.ok(!/[–—]/.test(s));
+});
+
+test('lobby rule presets stay inside the fields and the guest summary reads in seconds', async () => {
+  const { RULE_PRESETS, rulesSummary } = await import('../src/ui/advice');
+  const { MIN_INVULN_MS } = await import('../src/types');
+  for (const p of RULE_PRESETS.cooldownMs) assert.ok(p.value >= 200 && p.value <= 10000);
+  for (const p of RULE_PRESETS.invulnMs) assert.ok(p.value >= MIN_INVULN_MS && p.value <= 30000);
+  for (const p of RULE_PRESETS.hitThreshold) assert.ok(p.value >= 0.2 && p.value <= 0.7);
+  assert.ok(RULE_PRESETS.hitThreshold.some((p) => p.value === 0.5), 'the default is one tap away');
+  assert.deepEqual(rulesSummary({ lives: 3, cooldownMs: 1000, invulnMs: 3000 }), ['3 lives', '1 s between shots', '3 s shield after a hit']);
+  assert.deepEqual(rulesSummary({ lives: 1, cooldownMs: 1500, invulnMs: 500 })[0], '1 life');
+  assert.equal(rulesSummary({ lives: 1, cooldownMs: 1500, invulnMs: 500 })[1], '1.5 s between shots');
+});
+
+test('results placement line says where you finished, with the right ordinal', async () => {
+  const { placementLine } = await import('../src/ui/advice');
+  assert.equal(placementLine(2, 2), 'You placed 2nd of 2.');
+  assert.equal(placementLine(3, 8), 'You placed 3rd of 8.');
+  assert.equal(placementLine(11, 12), 'You placed 11th of 12.');
+  assert.equal(placementLine(0, 4), 'Round over.');
+});
+
+test('the results headline never claims no survivors while players are still in', async () => {
+  const { resultsTitle } = await import('../src/ui/advice');
+  assert.equal(resultsTitle('Host', 1), 'Host wins');
+  assert.equal(resultsTitle(null, 2), 'Round over');
+  assert.equal(resultsTitle(null, 0), 'No survivors');
+});

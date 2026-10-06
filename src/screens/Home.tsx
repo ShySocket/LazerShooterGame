@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { crashNotice, PRACTICE_INTRO } from '../ui/advice';
+import { crashNotice, HOW_IT_PLAYS, PRACTICE_INTRO } from '../ui/advice';
 import { backend, practiceBackend } from '../net';
 import { authAvailable, signInGoogle, type Account } from '../net/auth';
 import type { DeepProfile } from '../types';
@@ -51,92 +51,139 @@ export function Home({ initialCode, account, deep, notice, onProfile, onCreate, 
     }
   };
 
+  // Opened from a shared link: joining that room is the one thing to do. "Start your own" clears it.
+  const invited = !practiceBackend && initialCode.length === 4 && code === initialCode;
+  const primary = () => {
+    if (practiceBackend) return run(() => onCreate(name.trim()));
+    if (invited) return run(() => onJoin(name.trim(), code));
+    return run(() => onCreate(name.trim()));
+  };
+
   return (
-    <div className="screen center">
-      <h1 className="title">
-        LAZER<span>SHOOTER</span>
-      </h1>
-      <p className="sub">Real-life laser tag. Your phone is the gun.</p>
-      {practiceBackend && <div className="note">{PRACTICE_INTRO}</div>}
-      {backend.mode === 'local' && !practiceBackend && (
-        <div className="note warn">
-          Local mode: no Firebase config found, so this device plays alone. See README to enable multiplayer.
-        </div>
-      )}
-      {authAvailable && !account && (
-        <button
-          className="btn google-btn"
-          disabled={busy}
-          onClick={() => {
-            unlockAudio();
-            void signInGoogle().catch((e) => setErr(e instanceof Error ? e.message : String(e)));
-          }}
-        >
-          <GoogleMark /> Sign in with Google
-        </button>
-      )}
-      {account && (
-        <button className="account-row" onClick={onProfile}>
-          {account.photo ? <img src={account.photo} alt="" referrerPolicy="no-referrer" /> : <span className="dot" style={{ background: 'var(--good)' }} />}
-          <span className="name">{account.name}</span>
-          <span className={`tag ${scanReady ? 'ok' : 'todo'}`}>{scanReady ? 'scan saved' : 'set up scan'}</span>
-        </button>
-      )}
-      {account && !scanReady && (
-        <p className="hint">Do your one-time deep scan now so games only need an outfit scan.</p>
-      )}
-      <label className="field">
-        <span>Your name</span>
-        <input value={name} onChange={(e) => setName(e.target.value)} maxLength={16} placeholder="e.g. Sam" autoComplete="off" />
-      </label>
-      <button className="btn primary" disabled={busy} onClick={() => run(() => onCreate(name.trim()))}>
-        {practiceBackend ? 'Start practice' : 'Create a room'}
-      </button>
-      {practiceBackend ? (
-        <a className="link" href={location.pathname}>
-          Back to the real game
-        </a>
-      ) : (
-        <a className="link" href={`${location.pathname}?practice`}>
-          Practice alone (no friends needed)
-        </a>
-      )}
-      {!practiceBackend && <div className="divider">or join one</div>}
+    <div className="screen home">
+      <header className="home-brand">
+        <h1 className="title wordmark">
+          LAZER<span>SHOOTER</span>
+        </h1>
+        <p className="sub">Real-life laser tag. Your phone is the gun.</p>
+      </header>
+
       {!practiceBackend && (
-        <div className="row">
-          <input
-            className="code-input"
-            value={code}
-            onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 4))}
-            placeholder="CODE"
-            autoCapitalize="characters"
-            autoComplete="off"
-          />
-          <button className="btn" disabled={busy || code.length !== 4} onClick={() => run(() => onJoin(name.trim(), code))}>
-            Join
-          </button>
-        </div>
+        <ol className="how-it-plays">
+          {HOW_IT_PLAYS.map((step, i) => (
+            <li key={step}>
+              <span className="step-n">{i + 1}</span>
+              {step}
+            </li>
+          ))}
+        </ol>
       )}
-      {(err ?? notice) && <div className="note bad">{err ?? notice}</div>}
-      {incident && (
-        <div className="note warn incident">
-          <div className="label">{crashNotice(incident).title}</div>
-          <div className="incident-msg">{crashNotice(incident).summary}</div>
-          {showDetails && <pre className="incident-details">{crashNotice(incident).details}</pre>}
-          <button className="link" onClick={() => setShowDetails((v) => !v)}>
-            {showDetails ? 'Hide details' : 'Details'}
+
+      <div className="home-notes">
+        {backend.mode === 'local' && !practiceBackend && (
+          <div className="note warn">
+            Local mode: no Firebase config found, so this device plays alone. See README to enable multiplayer.
+          </div>
+        )}
+        {account && (
+          <button className="account-row" onClick={onProfile}>
+            {account.photo ? <img src={account.photo} alt="" referrerPolicy="no-referrer" /> : <span className="dot" style={{ background: 'var(--good)' }} />}
+            <span className="name">{account.name}</span>
+            <span className={`tag ${scanReady ? 'ok' : 'todo'}`}>{scanReady ? 'scan saved' : 'set up scan'}</span>
           </button>
+        )}
+        {account && !scanReady && <p className="hint">Do your one-time deep scan now so games only need an outfit scan.</p>}
+        {incident && (
+          <div className="note warn incident">
+            <div className="incident-title">{crashNotice(incident).title}</div>
+            <div className="incident-msg">{crashNotice(incident).summary}</div>
+            {showDetails && <pre className="incident-details">{crashNotice(incident).details}</pre>}
+            <div className="row incident-actions">
+              <button className="link" onClick={() => setShowDetails((v) => !v)}>
+                {showDetails ? 'Hide details' : 'Details'}
+              </button>
+              <button
+                className="link"
+                onClick={() => {
+                  clearIncident();
+                  setIncident(null);
+                }}
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <form
+        className="home-actions"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!busy) void primary();
+        }}
+      >
+        {practiceBackend && <p className="home-lede">{PRACTICE_INTRO}</p>}
+        {invited && (
+          <p className="home-lede">
+            You are invited to room <span className="code-inline">{code}</span>
+          </p>
+        )}
+        <label className="field">
+          <span>Your name</span>
+          <input value={name} onChange={(e) => setName(e.target.value)} maxLength={16} placeholder="e.g. Sam" autoComplete="off" enterKeyHint="go" />
+        </label>
+        <button type="submit" className="btn primary big" disabled={busy}>
+          {practiceBackend ? 'Start practice' : invited ? `Join ${code}` : 'Create a room'}
+        </button>
+        {(err ?? notice) && <div className="note bad">{err ?? notice}</div>}
+
+        {!practiceBackend && !invited && (
+          <div className="join-row">
+            <input
+              className="code-input"
+              value={code}
+              onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 4))}
+              placeholder="CODE"
+              aria-label="Room code"
+              autoCapitalize="characters"
+              autoComplete="off"
+            />
+            <button type="button" className="btn" disabled={busy || code.length !== 4} onClick={() => run(() => onJoin(name.trim(), code))}>
+              Join
+            </button>
+          </div>
+        )}
+      </form>
+
+      <footer className="home-foot">
+        {invited ? (
+          <button type="button" className="link" onClick={() => setCode('')}>
+            Start your own room instead
+          </button>
+        ) : practiceBackend ? (
+          <a className="link" href={location.pathname}>
+            Back to the real game
+          </a>
+        ) : (
+          <a className="link" href={`${location.pathname}?practice`}>
+            Practice alone
+          </a>
+        )}
+        {authAvailable && !account && (
           <button
-            className="link"
+            type="button"
+            className="link google-btn"
+            disabled={busy}
             onClick={() => {
-              clearIncident();
-              setIncident(null);
+              unlockAudio();
+              void signInGoogle().catch((e) => setErr(e instanceof Error ? e.message : String(e)));
             }}
           >
-            Dismiss
+            <GoogleMark /> Sign in to save your scan
           </button>
-        </div>
-      )}
+        )}
+      </footer>
     </div>
   );
 }

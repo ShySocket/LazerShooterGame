@@ -98,6 +98,45 @@ export function lobbyHint(s: LobbyState): string {
 export const shareFallback = (code: string): string => `Could not copy. The code is ${code}.`;
 
 export const HIT_CONFIDENCE_NOTE = '0.5 suits most rounds. Above 0.7 few shots can land, so the field stops there.';
+/** One-tap rule presets the host picks from; the raw fields stay under "Fine-tune". Values sit inside the fields' bounds. */
+export const RULE_PRESETS = {
+  cooldownMs: [
+    { label: 'Fast', value: 500 },
+    { label: 'Normal', value: 1000 },
+    { label: 'Slow', value: 2000 },
+  ],
+  invulnMs: [
+    { label: 'Short', value: 1000 },
+    { label: 'Normal', value: 3000 },
+    { label: 'Long', value: 5000 },
+  ],
+  hitThreshold: [
+    { label: 'Loose', value: 0.4 },
+    { label: 'Normal', value: 0.5 },
+    { label: 'Strict', value: 0.6 },
+  ],
+} as const;
+
+/** The round's rules as short readouts, for guests in the lobby. */
+export function rulesSummary(s: { lives: number; cooldownMs: number; invulnMs: number }): string[] {
+  const sec = (ms: number) => `${Number((ms / 1000).toFixed(1))} s`;
+  return [`${s.lives} ${s.lives === 1 ? 'life' : 'lives'}`, `${sec(s.cooldownMs)} between shots`, `${sec(s.invulnMs)} shield after a hit`];
+}
+
+/** The Results headline: a winner by name, a round the host ended with several still in, or nobody left. */
+export function resultsTitle(winnerName: string | null, aliveCount: number): string {
+  if (winnerName) return `${winnerName} wins`;
+  return aliveCount > 0 ? 'Round over' : 'No survivors';
+}
+
+/** Under the winner's name on Results, for everyone who did not win. */
+export function placementLine(rank: number, total: number): string {
+  if (rank < 1 || total < 1) return 'Round over.';
+  const n = rank % 100;
+  const suffix = n >= 11 && n <= 13 ? 'th' : rank % 10 === 1 ? 'st' : rank % 10 === 2 ? 'nd' : rank % 10 === 3 ? 'rd' : 'th';
+  return `You placed ${rank}${suffix} of ${total}.`;
+}
+
 export const MUTE_SWITCH_NOTE = 'On an iPhone, sounds stay off while the mute switch is on.';
 
 /**
@@ -283,7 +322,10 @@ export const PRACTICE_CHECKLIST: readonly string[] = [
   'Dim light, and against a bright window',
 ];
 
-export const PRACTICE_INTRO = 'Practice: everything stays on this phone. Add targets with the back camera (a friend, a TV, a photo), pick who you aim at, and every shot is logged with that answer so the tracking can be tuned. Shots deal no damage.';
+/** Home's three-line answer to "how does this work?" for someone who just opened a link. */
+export const HOW_IT_PLAYS: readonly string[] = ['Scan your face and outfit. It stays on this phone.', 'Wait for your friends in the lobby.', 'Aim through the camera and tap FIRE.'];
+
+export const PRACTICE_INTRO = 'Practice alone: add targets with the back camera (a friend, a TV, a photo) and shoot. Shots deal no damage; each one is logged on this phone to tune the tracking.';
 
 export type PracticeFilter = 'all' | 'good' | 'bad' | 'warn';
 

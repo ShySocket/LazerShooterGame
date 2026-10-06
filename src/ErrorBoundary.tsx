@@ -20,9 +20,9 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
   render(): ReactNode {
     if (!this.state.error) return this.props.children;
     return (
-      <div className="screen center">
-        <div className="label">Something broke</div>
-        <p className="sub">{this.state.error.message}</p>
+      <div className="screen center crash">
+        <h2>Something broke</h2>
+        <p className="crash-msg">{this.state.error.message}</p>
         <p className="hint">The details were saved. Reloading takes you back into your room.</p>
         <button className="btn primary" onClick={() => location.reload()}>
           Reload

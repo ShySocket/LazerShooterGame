@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { isPresent, shieldMs } from '../net/backend';
 import { backend, MIN_PLAYERS, practiceBackend } from '../net';
-import { HIT_CONFIDENCE_NOTE, lobbyHint, MUTE_SWITCH_NOTE, OFFLINE_TEXT, PRACTICE_INTRO, shareFallback } from '../ui/advice';
+import { HIT_CONFIDENCE_NOTE, lobbyHint, MUTE_SWITCH_NOTE, OFFLINE_TEXT, PRACTICE_INTRO, RULE_PRESETS, rulesSummary, shareFallback } from '../ui/advice';
 import { useConnection } from '../hooks/useConnection';
 import { CLOTHING_CONFLICT, MIN_INVULN_MS, type Player, type Room, type RoomSettings } from '../types';
 import { outfitConflict } from '../vision/clothing';
@@ -110,18 +110,20 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
   };
 
   return (
-    <div className="screen">
-      <div className="lobby-head">
-        <div>
-          <div className="label">Room code</div>
-          <div className="code">{room.code}</div>
+    <div className="screen lobby">
+      <header className="lobby-head">
+        <div className="room-code">
+          <div className="code" aria-label={`Room code ${room.code}`}>
+            {room.code}
+          </div>
+          <p className="sub">{practiceBackend ? 'Practice room on this phone' : 'Friends join with this code or your link'}</p>
         </div>
         {!practiceBackend && (
-          <button className="btn" onClick={share}>
+          <button className="btn share-btn" onClick={share}>
             {copied ? 'Copied!' : 'Share link'}
           </button>
         )}
-      </div>
+      </header>
 
       {shareNote && <div className="note">{shareNote}</div>}
       {!online && <div className="note bad offline">{OFFLINE_TEXT}</div>}
@@ -131,27 +133,34 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
           {audio === 'none' ? 'Tap to enable sound and buzz' : 'Sound is blocked. Tap to turn it back on'}
         </button>
       )}
-      <p className="readout">{MUTE_SWITCH_NOTE}</p>
 
       <ShotReview room={room} pid={pid} />
 
       {practiceBackend && <p className="note">{PRACTICE_INTRO}</p>}
       {practiceBackend && isHost && <PracticeTargets room={room} />}
 
-      <h3>Players ({connected.length})</h3>
-      <ul className="players">
-        {players.map((p) => (
-          <li key={p.id} className={isPresent(p, nowMs) ? '' : 'dim'}>
-            <span className="dot" style={{ background: p.color }} />
-            <span className="name">
-              {p.name}
-              {p.id === room.hostId && <small> host</small>}
-              {p.id === pid && <small> you</small>}
-            </span>
-            <span className={`tag ${p.enrolled ? 'ok' : 'todo'}`}>{!isPresent(p, nowMs) ? 'reconnecting…' : p.enrolled ? 'enrolled' : 'enrolling'}</span>
-          </li>
-        ))}
-      </ul>
+      <section className="lobby-section">
+        <h3>
+          Players <span className="count">{connected.length}</span>
+        </h3>
+        <ul className="players">
+          {players.map((p) => {
+            const present = isPresent(p, nowMs);
+            const state = !present ? 'away' : p.enrolled ? 'ready' : 'scanning';
+            return (
+              <li key={p.id} className={present ? '' : 'dim'}>
+                <span className="dot" style={{ background: p.color }} />
+                <span className="name">
+                  {p.name}
+                  {p.id === room.hostId && <small>host</small>}
+                  {p.id === pid && <small>you</small>}
+                </span>
+                <span className={`tag ${state}`}>{state === 'away' ? 'reconnecting…' : state === 'ready' ? 'ready' : 'scanning'}</span>
+              </li>
+            );
+          })}
+        </ul>
+      </section>
 
       {stale.map((p) => (
         <div key={p.id} className="note warn">
@@ -181,26 +190,44 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
       ))}
 
       {isHost ? (
-        <div className="settings">
+        <section className="lobby-section settings">
           <h3>Rules</h3>
-          <label>
-            Lives <NumberField value={settings.lives} min={1} max={10} step={1} onCommit={(v) => saveSettings({ lives: v })} />
-          </label>
-          <label>
-            Cooldown (ms) <NumberField value={settings.cooldownMs} min={200} max={10000} step={100} onCommit={(v) => saveSettings({ cooldownMs: v })} />
-          </label>
-          <label>
-            Shield after hit (ms) <NumberField value={shieldMs(settings.invulnMs)} min={MIN_INVULN_MS} max={30000} step={500} onCommit={(v) => saveSettings({ invulnMs: v })} />
-          </label>
-          <label>
-            Hit confidence <NumberField value={settings.hitThreshold} min={0.2} max={0.7} step={0.05} onCommit={(v) => saveSettings({ hitThreshold: v })} />
-          </label>
-          <p className="readout">{HIT_CONFIDENCE_NOTE}</p>
-        </div>
+          <div className="rule">
+            <span className="rule-name">Lives</span>
+            <Stepper value={settings.lives} min={1} max={10} label="Lives" onChange={(v) => saveSettings({ lives: v })} />
+          </div>
+          <div className="rule">
+            <span className="rule-name">Between shots</span>
+            <Segmented label="Time between shots" options={RULE_PRESETS.cooldownMs} value={settings.cooldownMs} onChange={(v) => saveSettings({ cooldownMs: v })} />
+          </div>
+          <div className="rule">
+            <span className="rule-name">Shield after a hit</span>
+            <Segmented label="Shield after a hit" options={RULE_PRESETS.invulnMs} value={shieldMs(settings.invulnMs)} onChange={(v) => saveSettings({ invulnMs: v })} />
+          </div>
+          <div className="rule">
+            <span className="rule-name">Hits</span>
+            <Segmented label="How sure a hit must be" options={RULE_PRESETS.hitThreshold} value={settings.hitThreshold} onChange={(v) => saveSettings({ hitThreshold: v })} />
+          </div>
+          <details className="fine-tune">
+            <summary>Fine-tune</summary>
+            <label>
+              Cooldown (ms) <NumberField value={settings.cooldownMs} min={200} max={10000} step={100} onCommit={(v) => saveSettings({ cooldownMs: v })} />
+            </label>
+            <label>
+              Shield after hit (ms) <NumberField value={shieldMs(settings.invulnMs)} min={MIN_INVULN_MS} max={30000} step={500} onCommit={(v) => saveSettings({ invulnMs: v })} />
+            </label>
+            <label>
+              Hit confidence <NumberField value={settings.hitThreshold} min={0.2} max={0.7} step={0.05} onCommit={(v) => saveSettings({ hitThreshold: v })} />
+            </label>
+            <p className="readout">{HIT_CONFIDENCE_NOTE}</p>
+          </details>
+        </section>
       ) : (
-        <p className="sub">
-          {settings.lives} lives, {settings.cooldownMs / 1000}s cooldown, {shieldMs(settings.invulnMs) / 1000}s shield after a hit.
-        </p>
+        <ul className="rules-summary" aria-label="Rules">
+          {rulesSummary({ ...settings, invulnMs: shieldMs(settings.invulnMs) }).map((r) => (
+            <li key={r}>{r}</li>
+          ))}
+        </ul>
       )}
 
       <div className="lobby-actions">
@@ -209,10 +236,10 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
             Start game
           </button>
         ) : (
-          <p className="sub">Waiting for {room.players[room.hostId]?.name ?? 'the host'} to start.</p>
+          <p className="waiting">Waiting for {room.players[room.hostId]?.name ?? 'the host'} to start.</p>
         )}
         {isHost && !canStart && startHint && <p className="hint">{startHint}</p>}
-        <div className="row">
+        <div className="row lobby-links">
           <button className="link" onClick={() => backend.updatePlayer(room.code, me.id, { enrolled: false })}>
             Redo my enrollment
           </button>
@@ -220,7 +247,35 @@ export function Lobby({ room, me, pid, onLeave }: Props) {
             Leave room
           </button>
         </div>
+        <p className="fineprint">{MUTE_SWITCH_NOTE}</p>
       </div>
+    </div>
+  );
+}
+
+/** Pick one of a few named values; a value set by hand elsewhere simply leaves none highlighted. */
+function Segmented({ label, options, value, onChange }: { label: string; options: readonly { label: string; value: number }[]; value: number; onChange: (v: number) => void }) {
+  return (
+    <div className="segmented" role="radiogroup" aria-label={label}>
+      {options.map((o) => (
+        <button key={o.value} type="button" role="radio" aria-checked={o.value === value} className={o.value === value ? 'on' : ''} onClick={() => o.value !== value && onChange(o.value)}>
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Stepper({ value, min, max, label, onChange }: { value: number; min: number; max: number; label: string; onChange: (v: number) => void }) {
+  return (
+    <div className="stepper" role="group" aria-label={label}>
+      <button type="button" aria-label={`Fewer ${label.toLowerCase()}`} disabled={value <= min} onClick={() => onChange(value - 1)}>
+        −
+      </button>
+      <output aria-live="polite">{value}</output>
+      <button type="button" aria-label={`More ${label.toLowerCase()}`} disabled={value >= max} onClick={() => onChange(value + 1)}>
+        +
+      </button>
     </div>
   );
 }

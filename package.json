@@ -21,9 +21,12 @@
     "realcheck": "node --import ./tests/register.mjs scripts/realcheck.ts",
     "fixtures": "python3 scripts/fetch-fixtures.py",
     "feedback:pull": "node --import ./tests/register.mjs scripts/feedback-pull.ts",
-    "session:report": "node --import ./tests/register.mjs scripts/session-report.ts"
+    "session:report": "node --import ./tests/register.mjs scripts/session-report.ts",
+    "ui:shots": "playwright test -c playwright.ui.config.ts"
   },
   "dependencies": {
+    "@fontsource/chakra-petch": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
     "@vladmandic/human": "^3.3.6",
     "firebase": "^12.18.0",
     "react": "^19.2.8",

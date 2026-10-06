@@ -29,14 +29,14 @@ export default defineConfig(({ command }) => ({
         name: 'Lazer Shooter',
         short_name: 'Lazer',
         description: 'Real-life laser tag with your phone camera.',
-        theme_color: '#0b0f1a',
-        background_color: '#0b0f1a',
+        theme_color: '#07090f',
+        background_color: '#07090f',
         display: 'standalone',
         orientation: 'portrait',
         icons: [{ src: 'icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' }],
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,svg,ico}'],
+        globPatterns: ['**/*.{js,css,html,svg,ico,woff2}'],
         globIgnores: ['models/**'],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         runtimeCaching: [

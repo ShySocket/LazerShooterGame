@@ -431,18 +431,41 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
     }
   })();
   const { heading, prompt } = copy;
+  // The steps this scan runs, so the player always sees how far along they are.
+  const steps: { key: string; label: string; stages: Stage[] }[] = [
+    ...(face ? [{ key: 'face', label: 'Face', stages: ['face'] as Stage[] }] : []),
+    ...(body ? [{ key: 'front', label: 'Front', stages: ['bodyMode', 'bodyFront'] as Stage[] }, { key: 'back', label: 'Back', stages: ['bodyBack'] as Stage[] }] : []),
+  ];
+  const current = steps.findIndex((st) => st.stages.includes(stage));
+  const stepAt = current < 0 ? steps.length : current;
 
   return (
     <div className="screen camera-screen">
       <div className={`cam-wrap ${facing === 'user' ? 'mirrored' : ''}`}>
         {stage !== 'bodyMode' && <video ref={videoRef} className="cam" autoPlay playsInline muted />}
         <canvas ref={canvasRef} className="overlay" />
-        {countdown !== null && <div className="countdown">{countdown}</div>}
+        {stage !== 'bodyMode' && <div className="viewfinder" aria-hidden="true" />}
+        {countdown !== null && (
+          <div className="countdown" key={countdown}>
+            {countdown}
+          </div>
+        )}
         {recording && <div className="rec-dot">REC</div>}
       </div>
       <div className="enroll-panel">
         <div className="enroll-top">
-          <div>{header}</div>
+          <div className="enroll-who">
+            {header}
+            {steps.length > 1 && (
+              <ol className="scan-steps" aria-label="Scan steps">
+                {steps.map((st, i) => (
+                  <li key={st.key} className={i < stepAt ? 'done' : i === stepAt ? 'now' : ''} aria-current={i === stepAt ? 'step' : undefined}>
+                    {st.label}
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
           {onCancel && (
             <button className="link" onClick={onCancel}>
               Leave
@@ -451,12 +474,23 @@ export function Scanner({ face, body, outfit, header, savingText, onDone, onCanc
         </div>
         <h2>{heading}</h2>
         <p className="prompt">{prompt}</p>
-        {progress > 0 && (
-          <div className="bar">
-            <div style={{ width: `${progress * 100}%` }} />
+        {stage === 'face' && (
+          <div className="face-ticks" aria-hidden="true">
+            {Array.from({ length: FACE_SAMPLES }, (_, i) => (
+              <span key={i} className={i < faceIdx ? 'on' : i === faceIdx ? 'now' : ''} />
+            ))}
           </div>
         )}
-        {hint && <p className="hint">{hint}</p>}
+        {progress > 0 && (
+          <div className="bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)}>
+            <div style={{ transform: `scaleX(${Math.min(1, progress)})` }} />
+          </div>
+        )}
+        {hint && (
+          <p className="hint" aria-live="polite">
+            {hint}
+          </p>
+        )}
         {stage === 'face' && angles && (
           <p className="readout" aria-label="Measured head angle">
             yaw {angles.yaw}° · pitch {angles.pitch}°
