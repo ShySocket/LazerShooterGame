@@ -25,6 +25,11 @@ if (import.meta.env.DEV) {
   // ?realcheck (dev builds only): scripts/realcheck.mjs runs the real models on fixture photos and clips.
   if (new URL(location.href).searchParams.has('realcheck')) installProbe();
 }
+import '@fontsource/chakra-petch/latin-500.css';
+import '@fontsource/chakra-petch/latin-600.css';
+import '@fontsource/chakra-petch/latin-700.css';
+import '@fontsource/jetbrains-mono/latin-500.css';
+import '@fontsource/jetbrains-mono/latin-700.css';
 import './styles.css';
 
 installDiagnostics();
