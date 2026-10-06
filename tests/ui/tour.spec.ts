@@ -4,7 +4,8 @@ import { closeAll, createRoom, deleteRoom, enroll, hit, joinRoom, sleep, waitFor
 /** Screenshot tour of every screen: `UI_SHOTS_DIR=out UI_DPR=1 npx playwright test -c playwright.ui.config.ts`. */
 const DIR = process.env.UI_SHOTS_DIR ?? 'artifacts/ui-shots';
 const DPR = Number(process.env.UI_DPR ?? 2);
-const shot = (page: Page, name: string, fullPage = false) => page.screenshot({ path: `${DIR}/${name}@${DPR}x.png`, fullPage, animations: 'disabled' });
+const shot = (page: Page, name: string, fullPage = false, live = false) =>
+  page.screenshot({ path: `${DIR}/${name}@${DPR}x.png`, fullPage, animations: live ? 'allow' : 'disabled' });
 
 test.describe.configure({ mode: 'serial' });
 let phones: Phone[] = [];
@@ -57,10 +58,13 @@ test('tour', async ({ browser }) => {
   await waitForRoom(host, (r) => r.status === 'playing', 'play');
   await sleep(600);
   await shot(host.page, '10-game-hud');
+  // A real shot lands through the pipeline only with a person on camera; mark the hit the way a landed shot does.
+  await host.page.evaluate(() => (window as unknown as { __lzMarkHit?: (n: string, c: string) => void }).__lzMarkHit?.('Riley', '#3bd5ff'));
+  await sleep(160);
+  await shot(host.page, '12-game-hit-scored', false, true);
   await hit(host, guest);
-  await sleep(300);
-  await shot(guest.page, '11-game-hit-taken');
-  await shot(host.page, '12-game-hit-scored');
+  await sleep(140);
+  await shot(guest.page, '11-game-hit-taken', false, true);
   await sleep(3300);
   await hit(host, guest);
   await sleep(3300);

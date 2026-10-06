@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { isE2E } from '../e2e/hook';
 import type { Human, Result } from '@vladmandic/human';
 import { backend, MIN_PLAYERS, practiceBackend } from '../net';
 import { decideRoundEnd } from '../net/backend';
@@ -91,7 +92,10 @@ export function Game({ room, me, pid, onLeave }: Props) {
   const [rangeTargetId, setRangeTargetId] = useState('');
   const [rangeTick, setRangeTick] = useState(0);
   const [banner, setBanner] = useState<{ text: string; kind: Kind; advice?: string } | null>(null);
-  const [flash, setFlash] = useState<string | null>(null);
+  const [flash, setFlash] = useState<{ color: string; ms: number; n: number } | null>(null);
+  // The shooter's reward: corner ticks snap onto the reticle in the target's colour, with their name.
+  const [marker, setMarker] = useState<{ name: string; color: string; out: boolean; n: number } | null>(null);
+  const markerTimer = useRef<number | undefined>(undefined);
   const [cooling, setCooling] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [lock, setLock] = useState<{ text: string; kind: Kind } | null>(null);
@@ -201,11 +205,34 @@ export function Game({ room, me, pid, onLeave }: Props) {
   };
   const flashTimer = useRef<number | undefined>(undefined);
   const flashScreen = (color: string, ms = 220) => {
-    setFlash(color);
+    setFlash((f) => ({ color, ms, n: (f?.n ?? 0) + 1 }));
     window.clearTimeout(flashTimer.current);
     flashTimer.current = window.setTimeout(() => setFlash(null), ms);
   };
-  useEffect(() => () => window.clearTimeout(flashTimer.current), []);
+  useEffect(
+    () => () => {
+      window.clearTimeout(flashTimer.current);
+      window.clearTimeout(markerTimer.current);
+    },
+    [],
+  );
+  const markHit = (name: string, color: string, out: boolean) => {
+    setMarker((m) => ({ name, color, out, n: (m?.n ?? 0) + 1 }));
+    window.clearTimeout(markerTimer.current);
+    markerTimer.current = window.setTimeout(() => setMarker(null), 900);
+  };
+  // e2e/tour only: show the scored-hit marker without a person in front of the fake camera.
+  useEffect(() => {
+    if (!isE2E()) return;
+    const w = window as unknown as { __lzMarkHit?: (n: string, c: string) => void };
+    w.__lzMarkHit = (n, c) => {
+      flashScreen('rgba(138,255,61,0.55)', 320);
+      markHit(n, c, false);
+    };
+    return () => {
+      delete w.__lzMarkHit;
+    };
+  });
 
   // Countdown before the round, then flip to playing. The flip is beginPlay: one transaction that
   // applies only while this round's countdown is still on, so a flip this phone buffered while asleep
@@ -433,7 +460,8 @@ export function Game({ room, me, pid, onLeave }: Props) {
         const v = hitVerdict(out, name);
         if (v.kind === 'good') {
           sfx.hit();
-          flashScreen('rgba(124,255,59,0.35)');
+          flashScreen('rgba(138,255,61,0.55)', 320);
+          markHit(name, room.players[r.id]?.color ?? 'var(--lock)', out === 'eliminated');
         } else if (v.kind === 'warn') sfx.unclear();
         show(v.text, v.kind);
       })
@@ -622,18 +650,28 @@ export function Game({ room, me, pid, onLeave }: Props) {
       {!spectating && <video ref={videoRef} className="cam" autoPlay playsInline muted />}
       {!spectating && <canvas ref={canvasRef} className="overlay" style={{ opacity: debug ? 1 : 0 }} />}
       {!spectating && (
-        <div className={`crosshair ${lock?.kind ?? ''}`}>{lock && <span className="lock-label">{lock.text}</span>}</div>
+        <div className={`crosshair ${lock?.kind ?? ''}`}>
+          <span className="pip" />
+          {marker && (
+            <span key={marker.n} className="hit-marker" style={{ '--hit': marker.color } as CSSProperties}>
+              <span className="hit-name">{marker.out ? `${marker.name} out` : marker.name}</span>
+            </span>
+          )}
+          {lock && (
+            <span className="lock-label" aria-live="polite">
+              {lock.text}
+            </span>
+          )}
+        </div>
       )}
-      {flash && <div className="flash" style={{ background: flash }} />}
+      {flash && <div key={flash.n} className="flash" style={{ '--flash': flash.color, animationDuration: `${flash.ms}ms` } as CSSProperties} />}
 
       {!online && <div className="status-pill offline">{OFFLINE_TEXT}</div>}
       {crowded && !spectating && <div className="status-pill crowd">{CROWD_TEXT}</div>}
       <div className="hud-top">
-        <div className="hearts">
+        <div className="hearts" role="img" aria-label={`${me.lives} of ${settings.lives} lives`}>
           {hearts.map((on, i) => (
-            <span key={i} className={on ? 'on' : 'off'}>
-              ♥
-            </span>
+            <span key={i} className={on ? 'on' : 'off'} />
           ))}
         </div>
         <div className="hud-mid">{rangeMode ? 'RANGE TEST' : forfeitText || `${alive.length} alive`}</div>
@@ -660,17 +698,21 @@ export function Game({ room, me, pid, onLeave }: Props) {
       </div>
 
       {banner && (
-        <div className={`banner ${banner.kind}`}>
+        <div className={`banner ${banner.kind}`} role="status" aria-live="assertive">
           <span>{banner.text}</span>
           {(banner.advice ?? verdictAdvice(banner.text)) && <small>{banner.advice ?? verdictAdvice(banner.text)}</small>}
         </div>
       )}
-      {countdown !== null && <div className="countdown">{countdown > 0 ? countdown : 'GO'}</div>}
+      {countdown !== null && (
+        <div className="countdown" key={countdown}>
+          {countdown > 0 ? countdown : 'GO'}
+        </div>
+      )}
       {!spectating && (!camReady || !humanReady) && (
         <div className="status-pill">
           {camError ?? (camReady ? status : (camNotice ?? 'Starting camera'))}
           {(camError || humanFailed) && (
-            <button className="hud-btn" style={{ marginLeft: 8 }} onClick={camError ? retryCamera : retryModels}>
+            <button className="hud-btn" onClick={camError ? retryCamera : retryModels}>
               retry
             </button>
           )}
@@ -751,8 +793,13 @@ export function Game({ room, me, pid, onLeave }: Props) {
 
       {spectating ? (
         <div className="spectator">
+          <div className="out-stamp" aria-hidden="true">
+            Eliminated
+          </div>
           <h2>You are out</h2>
-          <p className="sub">Watch the rest of the round.</p>
+          <p className="sub">
+            {alive.length} still in. Watch the rest of the round.
+          </p>
           <ul className="players">
             {enrolledPlayers(room)
               .sort((a, b) => b.lives - a.lives)
@@ -769,7 +816,13 @@ export function Game({ room, me, pid, onLeave }: Props) {
           </button>
         </div>
       ) : (
-        <button className={`fire ${cooling ? 'cooling' : ''}`} disabled={!canFire} onPointerDown={fire} onClick={unlockAudio}>
+        <button
+          className={`fire ${cooling ? 'cooling' : ''}`}
+          style={{ '--cool': `${settings.cooldownMs}ms` } as CSSProperties}
+          disabled={!canFire}
+          onPointerDown={fire}
+          onClick={unlockAudio}
+        >
           FIRE
         </button>
       )}
