@@ -1,8 +1,11 @@
 import { buildDetections, faceOwner, type Detection } from '../../src/vision/tracker';
-import { VisionPipeline, type FireResult, type FrameOutcome, type LockState } from '../../src/vision/pipeline';
+import { VisionPipeline, type FireResult, type FrameOutcome, type LockState, type ShotSettlement } from '../../src/vision/pipeline';
 import { UNKNOWN_ID } from '../../src/types';
 import type { Candidate } from '../../src/vision/scoring';
-import type { NBox } from '../../src/vision/geometry';
+import { indexInSight, type NBox } from '../../src/vision/geometry';
+import { ShotRecorder } from '../../src/feedback/recorder';
+import { DEFAULT_SETTINGS } from '../../src/types';
+import type { ShotLabel, ShotSample } from '../../src/feedback/sample';
 import { Rng } from './rng';
 import type { Recorder } from '../../src/debug/recorder';
 import { buildScene, cropFaces, DEFAULT_DETECTOR, detect, faceBox, FRAME_H, FRAME_W, hitBox, personBox, sampleOutfit, step, torsoPixelsOf, type DetectorModel, type Pan, type Person, type PersonSpec, type Scene } from './world';
@@ -42,6 +45,23 @@ export interface SimOptions {
    * detection and face crop really belonged to, and the pipeline's outcome. Never changes the round.
    */
   probe?: (event: ProbeFrame | ProbeFire) => void;
+  /**
+   * Record every shot as the game's feedback recorder would (src/feedback/recorder.ts) and label it
+   * from ground truth the way an honest shooter answers the review card: who was under the dot, or
+   * "should not count" when nobody playable was. Ambiguous shots get no label ("I can't tell").
+   */
+  feedback?: SimFeedback;
+}
+
+export interface SimFeedback {
+  /** Room code of the recorded round (4 uppercase letters). */
+  code: string;
+  /** Server-clock start of the round; part of the round key. */
+  startAt: number;
+  /** Labelled samples are appended here. */
+  samples: ShotSample[];
+  /** The anonymised ids the recorder used, real id -> pid, filled at round start. */
+  pids?: Record<string, string>;
 }
 
 /** A tap as the probe sees it: where the dot was, who was really visible under it, and what the pipeline did. */
@@ -129,12 +149,21 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
   const candidates: Candidate[] = Object.entries(scene.profiles).map(([id, profile]) => ({ id, profile }));
   const eligible = new Set(candidates.map((c) => c.id).filter((id) => id !== scene.selfId));
   let now = 0;
-  const pipeline = new VisionPipeline<{ t: number; under: Truth }>(
+  const pipeline = new VisionPipeline<{ t: number; under: Truth; shotId?: string }>(
     { candidates, exclusiveIds: new Set(candidates.map((c) => c.id)), eligible, hitThreshold: opts.hitThreshold, hitMargin: opts.hitMargin },
     () => now,
   );
   const target = scene.people.find((p) => p.id === opts.target);
   if (!target) throw new Error('unknown target ' + opts.target);
+  const fb = opts.feedback;
+  const shotRec = fb ? new ShotRecorder() : null;
+  if (fb && shotRec) {
+    const playerIds = candidates.map((c) => c.id);
+    shotRec.startRound({ code: fb.code, startAt: fb.startAt, settings: { ...DEFAULT_SETTINGS, hitThreshold: opts.hitThreshold, hitMargin: opts.hitMargin }, playerIds, shooter: scene.selfId });
+    fb.pids = Object.fromEntries(playerIds.map((id) => [id, shotRec.pid(id)]));
+  }
+  let shotSeq = 0;
+  let latest: (FrameOutcome<unknown> & { capturedAt: number }) | null = null;
 
   const result: SimResult = {
     shots: [],
@@ -224,7 +253,22 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
   /** Whether a lock on `id` is defensible at this instant. */
   const lockOk = (truth: Truth, id: string) => judge(truth, id) !== 'wrong';
   const underDot = (crosshair: NBox): Truth => truthAt(crosshair);
-  const settle = (s: { track: unknown; resolution: { id: string } | null; elapsedMs: number; context: { t: number; under: Truth } }) => {
+  /** The label an honest shooter gives the review card, from the truth at the tap; null for "I can't tell". */
+  const truthLabel = (truth: Truth): ShotLabel | null => {
+    const base = { answeredAt: 0, reviewMs: 1 };
+    const v = truth.visible;
+    if (v && truth.hittable(v) && truth.visibleHittable && !truth.edge.some((p) => p.distance < v.distance)) return { kind: 'player', target: shotRec!.pid(v.id), ...base };
+    if (!v || (!v.player || v.copyOf)) return truth.edge.some((p) => truth.hittable(p)) ? null : { kind: 'none', ...base };
+    return null;
+  };
+  const finishSample = (shotId: string | undefined, under: Truth, verdict: Parameters<ShotRecorder['endShot']>[1]) => {
+    if (!shotRec || !fb || !shotId) return;
+    const sample = shotRec.endShot(shotId, verdict);
+    const label = sample && truthLabel(under);
+    if (sample && label) fb.samples.push({ ...sample, label });
+  };
+  const settle = (s: ShotSettlement<{ t: number; under: Truth; shotId?: string }>, settledBy: 'tap' | 'frame' | 'timer') => {
+    finishSample(s.context.shotId, s.context.under, { outcome: s.resolution ? 'hit' : s.track ? 'unclear' : 'miss', resolvedTo: s.resolution?.id ?? null, via: s.resolution?.via ?? null, resolveMs: Math.round(s.elapsedMs), zoom: s.zoomed, track: s.track, settledBy, refusal: s.refusal ?? null });
     if (s.resolution) {
       const verdict = judge(s.context.under, s.resolution.id);
       record(s.context.t, verdict, s.elapsedMs, s.resolution.id);
@@ -312,7 +356,7 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
         now = pending.deadline;
         const s = pipeline.expirePending(pending.token);
         pending = null;
-        if (s) settle(s);
+        if (s) settle(s, 'timer');
         continue;
       }
       now = nextFire;
@@ -323,11 +367,20 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
       const truth = underDot(tapAim);
       if (truth.visible?.id === target.id && truth.hittable(truth.visible) && truth.visibleHittable) result.possibleShots++;
       opts.recorder?.fire(now, tapAim, target.player ? target.id : null);
-      const fire = pipeline.fire({ t: now, under: truth }, tapAim);
+      const shotId = shotRec ? `sim${opts.seed}-${++shotSeq}` : undefined;
+      const fire = pipeline.fire({ t: now, under: truth, shotId }, tapAim);
       opts.probe?.({ kind: 'fire', t: now, aim: tapAim, visible: truth.visible, result: fire });
+      if (shotRec && shotId && fire.kind !== 'busy' && latest) {
+        // As Game.tsx: the nominated track is the instant settlement's, else the body under the dot in the newest frame.
+        const idx = indexInSight(latest.dets.map((d) => d.box), tapAim);
+        const track = fire.kind === 'instant' ? fire.settlement.track : idx >= 0 ? latest.tracks[idx] : null;
+        const frameT = latest.capturedAt;
+        shotRec.beginShot({ id: shotId, tapAt: now, roundNow: fb!.startAt + now, kind: fire.kind, crosshair: tapAim, frameT, frameAgeMs: Math.round(now - frameT), allowanceMs: pipeline.staleMs(), trackId: track?.id ?? null, track, width: FRAME_W, height: FRAME_H, periodMs: pipeline.periodMs(), staleMs: pipeline.staleMs(), burstMs: pipeline.burstMs(), liveFaces: pipeline.liveFaceCounts(), eligible });
+      }
       if (fire.kind === 'pending') pending = { token: fire.token, deadline: fire.deadline };
-      else if (fire.kind === 'instant') settle(fire.settlement);
+      else if (fire.kind === 'instant') settle(fire.settlement, 'tap');
       else {
+        if (fire.kind !== 'busy') finishSample(shotId, truth, { outcome: fire.kind === 'stale' ? 'stale frame' : fire.kind === 'no-camera' ? 'no camera' : 'miss', resolvedTo: null, via: null, resolveMs: 0, zoom: false, track: null, settledBy: 'tap', refusal: null });
         record(now, fire.kind);
         if (opts.traceOutcomes.includes(fire.kind)) recordWrong(now, `${fire.kind} at fire; visible: ${underDot(tapAim).visible?.id ?? 'nobody'}`);
       }
@@ -354,8 +407,12 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
       },
       isCurrent: () => true,
     };
-    const outcome = await pipeline.processFrame(dets, capturedAt, FRAME_W, FRAME_H, crosshair, opts.recorder ? opts.recorder.frame(capturedAt, crosshair, dets, baseOps) : baseOps);
+    const debugOps = opts.recorder ? opts.recorder.frame(capturedAt, crosshair, dets, baseOps) : baseOps;
+    const galleries = shotRec ? pipeline.galleries() : null;
+    const outcome = await pipeline.processFrame(dets, capturedAt, FRAME_W, FRAME_H, crosshair, shotRec ? shotRec.wrapOps(debugOps, dets) : debugOps);
     if (!outcome) throw new Error('frame abandoned');
+    if (shotRec && galleries) shotRec.frameDone(outcome, dets, capturedAt, galleries);
+    latest = { ...(outcome as FrameOutcome<unknown>), capturedAt };
     lastCrops = cropsThisFrame;
     result.frames++;
     result.periodMs = outcome.periodMs;
@@ -363,7 +420,7 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
     opts.probe?.({ kind: 'frame', capturedAt, completedAt: now, scene, dets, owners: dets.map((d) => raw.owner.get(d.body ?? d.face!) ?? null), faces: probeFaces, outcome, crosshair });
     if (outcome.settled) {
       pending = null;
-      settle(outcome.settled);
+      settle(outcome.settled, 'frame');
     }
     const targetDet = dets.findIndex((d) => d.body && raw.owner.get(d.body) === target);
     if (targetDet >= 0) seenTrackIds.add(outcome.tracks[targetDet].id);
