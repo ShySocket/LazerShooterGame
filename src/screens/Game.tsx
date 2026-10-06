@@ -96,6 +96,8 @@ export function Game({ room, me, pid, onLeave }: Props) {
   // The shooter's reward: corner ticks snap onto the reticle in the target's colour, with their name.
   const [marker, setMarker] = useState<{ name: string; color: string; out: boolean; n: number } | null>(null);
   const markerTimer = useRef<number | undefined>(undefined);
+  // The life pip that was just lost pulses once, so the count change is seen, not read.
+  const [lostPip, setLostPip] = useState<number | null>(null);
   const [cooling, setCooling] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [lock, setLock] = useState<{ text: string; kind: Kind } | null>(null);
@@ -303,6 +305,8 @@ export function Game({ room, me, pid, onLeave }: Props) {
       if (me.lastHitAt > 0) {
         sfx.gotHit();
         vibrate([200, 100, 200]);
+        setLostPip(me.lives);
+        window.setTimeout(() => setLostPip(null), 700);
         flashScreen('rgba(255,59,92,0.9)', 650);
         show(me.status === 'out' ? 'YOU ARE OUT' : `HIT! ${me.lives} ${me.lives === 1 ? 'life' : 'lives'} left`, 'bad', 2000);
       }
@@ -671,7 +675,7 @@ export function Game({ room, me, pid, onLeave }: Props) {
       <div className="hud-top">
         <div className="hearts" role="img" aria-label={`${me.lives} of ${settings.lives} lives`}>
           {hearts.map((on, i) => (
-            <span key={i} className={on ? 'on' : 'off'} />
+            <span key={i} className={`${on ? 'on' : 'off'}${i === lostPip ? ' lost' : ''}`} />
           ))}
         </div>
         <div className="hud-mid">{rangeMode ? 'RANGE TEST' : forfeitText || `${alive.length} alive`}</div>

@@ -62,6 +62,12 @@ test('tour', async ({ browser }) => {
   await host.page.evaluate(() => (window as unknown as { __lzMarkHit?: (n: string, c: string) => void }).__lzMarkHit?.('Riley', '#3bd5ff'));
   await sleep(160);
   await shot(host.page, '12-game-hit-scored', false, true);
+  // Filmstrip of the marker's life (enter, hold, exit) for the motion review.
+  await host.page.evaluate(() => (window as unknown as { __lzMarkHit?: (n: string, c: string) => void }).__lzMarkHit?.('Riley', '#3bd5ff'));
+  for (const ms of [30, 120, 450, 820]) {
+    await sleep(ms === 30 ? 30 : ms - [30, 120, 450, 820][[30, 120, 450, 820].indexOf(ms) - 1]);
+    await host.page.locator('.crosshair').screenshot({ path: `${DIR}/12-marker-${ms}ms@${DPR}x.png`, animations: 'allow' });
+  }
   await hit(host, guest);
   await sleep(140);
   await shot(guest.page, '11-game-hit-taken', false, true);

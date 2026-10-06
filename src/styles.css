@@ -195,9 +195,10 @@ a.link { display: inline-flex; align-items: center; justify-content: center; }
   font-family: var(--font-mono); font-weight: 700; font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: 0.06em;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { transition-duration: 1ms !important; animation-duration: 1ms !important; animation-iteration-count: 1 !important; }
-}
+/* Screens arrive with a short rise; the game camera is excluded so the view is never late. */
+.screen:not(.camera-screen) { animation: screen-in var(--t-ui) var(--ease-out) both; }
+@keyframes screen-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 
 /* Home: brand up top, every action in the thumb zone at the bottom. */
 .screen.home { gap: var(--s-6); }
@@ -243,6 +244,7 @@ a.link { display: inline-flex; align-items: center; justify-content: center; }
   display: flex; align-items: center; gap: var(--s-3); min-height: 52px;
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: var(--s-3) var(--s-4);
 }
+.players li { animation: row-in var(--t-beat) var(--ease-out) both; }
 .players li.dim { opacity: 0.45; }
 .dot { width: 12px; height: 12px; border-radius: 3px; flex: none; }
 .name { flex: 1; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -399,6 +401,8 @@ a.link { display: inline-flex; align-items: center; justify-content: center; }
   box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.85);
 }
 .hearts .on { background: var(--signal); }
+.hearts .lost { animation: pip-lost 700ms var(--ease-out) both; }
+@keyframes pip-lost { 0% { background: #fff; transform: skewX(-18deg) scale(1.5); } 40% { background: var(--signal); transform: skewX(-18deg) scale(1.1); } 100% { transform: skewX(-18deg) scale(1); } }
 .hearts .off { background: rgba(255, 255, 255, 0.14); box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.45), 0 0 0 1.5px rgba(0, 0, 0, 0.6); }
 .hud-mid {
   justify-self: center; background: var(--plate); border: 1px solid var(--line); border-radius: 3px; padding: var(--s-1) var(--s-3);
@@ -579,3 +583,15 @@ a.link { display: inline-flex; align-items: center; justify-content: center; }
 .practice-shot .verdict.bad { color: #ff8199; }
 .row.chips { flex-wrap: wrap; gap: 6px; }
 .practice-review .row { justify-content: flex-start; }
+
+/* Reduced motion: nothing moves or scales; state changes still fade so they are noticed. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-property: opacity, background-color, border-color, color !important; scroll-behavior: auto !important; }
+  .screen:not(.camera-screen), .banner, .countdown, .standings li, .players li, .results-hero .title, .hit-name { animation-name: fade-in !important; animation-duration: 160ms !important; }
+  .banner { transform: translateX(-50%) !important; }
+  .hit-marker::before, .hearts .lost { animation: none !important; }
+  .rec-dot::before { animation: none !important; }
+  .btn:active:not(:disabled), .fire:active:not(:disabled), .segmented button:active, .stepper button:active:not(:disabled), .hud-btn:active, .account-row:active { transform: none; }
+  .fire:active:not(:disabled) { transform: translateX(-50%); }
+  .crosshair.good { transform: none; }
+}
