@@ -255,10 +255,45 @@ a.link { display: inline-flex; align-items: center; justify-content: center; }
 .cam-wrap.mirrored .cam { transform: scaleX(-1); }
 .cam { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-.enroll-panel { padding: 18px 20px calc(env(safe-area-inset-bottom) + 20px); display: flex; flex-direction: column; gap: 10px; }
-.enroll-top { display: flex; justify-content: space-between; align-items: center; }
-.bar { height: 8px; background: var(--panel); border-radius: 4px; overflow: hidden; }
-.bar div { height: 100%; background: var(--good); transition: width 0.1s; }
+/* Viewfinder: four corner brackets drawn as gradients on one element, dark-edged so they read on any frame. */
+.viewfinder {
+  position: absolute; inset: calc(env(safe-area-inset-top) + var(--s-6)) var(--s-6) var(--s-6); pointer-events: none;
+  --b: 3px; --l: 28px; --c: rgba(255, 255, 255, 0.92);
+  background:
+    linear-gradient(var(--c), var(--c)) top left / var(--l) var(--b) no-repeat,
+    linear-gradient(var(--c), var(--c)) top left / var(--b) var(--l) no-repeat,
+    linear-gradient(var(--c), var(--c)) top right / var(--l) var(--b) no-repeat,
+    linear-gradient(var(--c), var(--c)) top right / var(--b) var(--l) no-repeat,
+    linear-gradient(var(--c), var(--c)) bottom left / var(--l) var(--b) no-repeat,
+    linear-gradient(var(--c), var(--c)) bottom left / var(--b) var(--l) no-repeat,
+    linear-gradient(var(--c), var(--c)) bottom right / var(--l) var(--b) no-repeat,
+    linear-gradient(var(--c), var(--c)) bottom right / var(--b) var(--l) no-repeat;
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.9)) drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+}
+.enroll-panel {
+  padding: var(--s-4) var(--s-5) calc(env(safe-area-inset-bottom) + var(--s-5));
+  display: flex; flex-direction: column; gap: var(--s-3);
+  background: var(--bg); border-top: 1px solid var(--line);
+}
+.enroll-panel h2 { font-size: var(--fs-2xl); line-height: 1.1; text-transform: uppercase; letter-spacing: 0.02em; }
+.enroll-panel .prompt { color: var(--text); text-wrap: pretty; }
+.enroll-panel .hint {
+  background: var(--warn-soft); border: 1px solid rgba(255, 204, 51, 0.28); border-radius: var(--radius);
+  padding: var(--s-2) var(--s-3); font-size: var(--fs-md); color: var(--warn);
+}
+.enroll-panel .hint .btn { margin-left: var(--s-2); min-height: 36px; padding: var(--s-1) var(--s-3); font-size: var(--fs-md); }
+.enroll-top { display: flex; justify-content: space-between; align-items: center; gap: var(--s-3); margin-right: calc(var(--s-3) * -1); }
+.enroll-who { display: flex; align-items: center; gap: var(--s-3); min-width: 0; }
+.scan-steps { list-style: none; margin: 0; padding: 0; display: flex; gap: var(--s-1); font-family: var(--font-mono); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: 0.06em; }
+.scan-steps li { color: var(--faint); padding: 2px var(--s-2); border: 1px solid var(--line); border-radius: 3px; }
+.scan-steps li.done { color: var(--lock); border-color: rgba(138, 255, 61, 0.35); }
+.scan-steps li.now { color: var(--text); border-color: var(--line-strong); background: var(--surface-2); }
+.face-ticks { display: grid; grid-template-columns: repeat(8, 1fr); gap: var(--s-1); }
+.face-ticks span { height: 6px; border-radius: 1px; background: var(--surface-2); transition: background-color var(--t-ui) var(--ease-out); }
+.face-ticks span.on { background: var(--lock); }
+.face-ticks span.now { background: var(--line-strong); }
+.bar { height: 6px; background: var(--surface-2); border-radius: 1px; overflow: hidden; }
+.bar div { height: 100%; background: var(--lock); transform-origin: left; transition: transform 120ms linear; }
 
 /* Game */
 .game { position: fixed; inset: 0; background: #000; overflow: hidden; }
@@ -305,7 +340,7 @@ a.link { display: inline-flex; align-items: center; justify-content: center; }
 .banner.bad { color: var(--bad); }
 .countdown {
   position: absolute; inset: 0; z-index: 6; display: flex; align-items: center; justify-content: center;
-  font-size: 140px; font-weight: 900; color: #fff; text-shadow: 0 0 40px rgba(0, 0, 0, 0.8);
+  font-family: var(--font-display); font-size: 140px; font-weight: 700; color: #fff; text-shadow: 0 2px 24px rgba(0, 0, 0, 0.8);
   background: rgba(0, 0, 0, 0.35); pointer-events: none;
 }
 .status-pill {
@@ -327,13 +362,15 @@ a.link { display: inline-flex; align-items: center; justify-content: center; }
 .spectator .players { width: 100%; max-width: 420px; }
 
 /* Enrollment body scan */
-.mode-pick { display: flex; flex-direction: column; gap: 10px; }
+.mode-pick { display: flex; flex-direction: column; gap: var(--s-3); }
 .rec-dot {
-  position: absolute; top: calc(env(safe-area-inset-top) + 12px); left: 12px; z-index: 3;
-  background: rgba(255, 59, 92, 0.9); color: #fff; font-weight: 900; font-size: 12px; letter-spacing: 2px;
-  padding: 4px 10px; border-radius: 999px; animation: blink 1s steps(2, start) infinite;
+  position: absolute; top: calc(env(safe-area-inset-top) + var(--s-3)); left: var(--s-3); z-index: 3;
+  display: inline-flex; align-items: center; gap: var(--s-2);
+  background: var(--plate); color: var(--text); font-family: var(--font-mono); font-weight: 700; font-size: var(--fs-xs); letter-spacing: 0.12em;
+  padding: var(--s-1) var(--s-3); border-radius: 3px; border: 1px solid var(--line);
 }
-@keyframes blink { to { visibility: hidden; } }
+.rec-dot::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--signal); animation: rec-pulse 1.2s ease-in-out infinite; }
+@keyframes rec-pulse { 50% { opacity: 0.25; } }
 .cam-wrap .countdown { font-size: 120px; }
 
 /* Shot log */
