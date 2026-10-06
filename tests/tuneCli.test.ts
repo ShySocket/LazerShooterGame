@@ -26,7 +26,7 @@ function run(args: string[], env: Record<string, string> = {}) {
   return { status: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
-const LOOSE = JSON.stringify({ minMissGain: 1, minMissGainShare: 0 });
+const LOOSE = JSON.stringify({ minMissGain: 1, minMissGainShare: 0, minHoldoutGain: 0 });
 
 test('npm run tune: a proposal is written into calibration.ts with a version bump and a PR body (exit 10)', async () => {
   const file = join(dir, 'clean.json');

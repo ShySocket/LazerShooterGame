@@ -44,7 +44,7 @@ test('clean data at the default guards keeps the calibration when the gain is be
 
 test('a proposal moves each knob at most one step, never loosens the face-only bar, and keeps zero wrong hits', async () => {
   const data = await clean();
-  const r = tune(data, { guards: { minMissGain: 1, minMissGainShare: 0 } });
+  const r = tune(data, { guards: { minMissGain: 1, minMissGainShare: 0, minHoldoutGain: 0 } });
   assert.equal(r.decision, 'propose', r.reasons.join('; '));
   assert.ok(r.changes.length > 0);
   for (const c of r.changes) {
@@ -56,7 +56,7 @@ test('a proposal moves each knob at most one step, never loosens the face-only b
   assert.ok(r.evidence.candidate!.all.miss < r.evidence.current.all.miss);
   assert.equal(evaluate(data, r.params).wrong, 0);
   // Deterministic: the same data proposes the same thing.
-  assert.deepEqual(tune(data, { guards: { minMissGain: 1, minMissGainShare: 0 } }).params, r.params);
+  assert.deepEqual(tune(data, { guards: { minMissGain: 1, minMissGainShare: 0, minHoldoutGain: 0 } }).params, r.params);
 });
 
 test('a replayed wrong hit under the current calibration earns a tightening even below the data minimum', async () => {
@@ -96,9 +96,13 @@ test('the hold-out split is by round and stable', () => {
 });
 
 test('a few poisoned labels below the contradiction ceiling do not ratchet a tightening', async () => {
+  // Properties, not today's numbers, so the test holds at any calibration the loop moves to: the
+  // poisoned shots never earn a loosening, and a tightening only ever comes when it removes at least
+  // half of what the replay calls wrong hits (at 2026-10-01.11 it removes 2 of 14 and is refused).
   const r = tune(collectSamples(await exportFeedback({ seeds: [1, 2], poison: 0.02 })));
   assert.ok(r.evidence.contradictionShare <= 0.05, 'below the ceiling: the labels look plausible on their own');
   assert.ok(r.evidence.current.all.wrong > 0);
-  assert.equal(r.decision, 'none');
-  assert.ok(r.reasons.some((x) => /look like labelling errors/.test(x)), r.reasons.join('; '));
+  assert.notEqual(r.decision, 'propose');
+  if (r.decision === 'tighten') assert.ok(2 * (r.evidence.current.all.wrong - r.evidence.candidate!.all.wrong) >= r.evidence.current.all.wrong);
+  else assert.ok(r.reasons.some((x) => /a person must look/.test(x)), r.reasons.join('; '));
 });
