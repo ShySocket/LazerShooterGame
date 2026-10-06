@@ -25,7 +25,18 @@ test('tour', async ({ browser }) => {
   };
   const host = await mk('Host');
   const guest = await mk('Riley');
-  phones = [host, guest];
+  const third = await mk('Jun');
+  phones = [host, guest, third];
+
+  // Screens a round cannot reach (dev-only ?gallery, src/gallery/Gallery.tsx).
+  for (const g of ['notice', 'notice-slow', 'crash', 'profile', 'profile-saved', 'body']) {
+    await host.page.goto(`/?e2e&gallery=${g}`);
+    await sleep(500);
+    await shot(host.page, `00-gallery-${g}`);
+  }
+  await host.page.getByRole('button', { name: 'A friend is holding it' }).click();
+  await sleep(1200);
+  await shot(host.page, '00-gallery-body-front');
 
   await host.page.goto('/?e2e');
   await host.page.waitForSelector('.title');
@@ -48,6 +59,8 @@ test('tour', async ({ browser }) => {
   await shot(guest.page, '06-home-join-link');
   await joinRoom(guest, code);
   await enroll(guest, 2);
+  await joinRoom(third, code);
+  await enroll(third, 3);
   await sleep(500);
   await shot(host.page, '07-lobby-host-ready', true);
   await shot(guest.page, '08-lobby-guest', true);
@@ -77,6 +90,8 @@ test('tour', async ({ browser }) => {
   await hit(host, guest);
   await sleep(400);
   await shot(guest.page, '13-spectator');
+  // Jun is still in: finish the round the way a host would.
+  await host.page.getByRole('button', { name: 'end round' }).click();
   await waitForRoom(host, (r) => r.status === 'ended', 'end', 10_000).catch(() => undefined);
   await sleep(800);
   await shot(host.page, '14-results-winner', true);

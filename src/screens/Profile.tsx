@@ -39,18 +39,20 @@ export function Profile({ account, deep, onDeepChange, onBack }: Props) {
 
   return (
     <div className="screen">
-      <div className="lobby-head">
-        <div>
-          <div className="label">Signed in as</div>
-          <h2>{account.name}</h2>
-          {account.email && <p className="sub">{account.email}</p>}
-        </div>
-        <button className="link" onClick={onBack}>
+      <header className="profile-head">
+        <button className="link back" onClick={onBack}>
           Back
         </button>
-      </div>
+        <div className="profile-who">
+          {account.photo ? <img src={account.photo} alt="" referrerPolicy="no-referrer" /> : <span className="avatar">{account.name.slice(0, 1)}</span>}
+          <div>
+            <h2>{account.name}</h2>
+            {account.email && <p className="sub">{account.email}</p>}
+          </div>
+        </div>
+      </header>
 
-      <h3>Your scan</h3>
+      <h3 className="section-h">Your scan</h3>
       {current ? (
         <div className="note ok">
           Deep scan saved {new Date(deep!.updatedAt).toLocaleDateString()} with {deep!.face.length} face angles
@@ -82,7 +84,7 @@ export function Profile({ account, deep, onDeepChange, onBack }: Props) {
         </button>
       )}
 
-      <div className="lobby-actions">
+      <div className="lobby-actions profile-actions">
         <button className="link" disabled={busy} onClick={() => void signOut().then(onBack)}>
           Sign out
         </button>

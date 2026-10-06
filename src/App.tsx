@@ -215,10 +215,13 @@ function Waiting({ base, onBack }: { base: string; onBack: () => void }) {
   return <Notice text={state.text} onBack={state.showBack ? onBack : undefined} />;
 }
 
-function Notice({ text, onBack }: { text: string; onBack?: () => void }) {
+export function Notice({ text, onBack }: { text: string; onBack?: () => void }) {
   return (
-    <div className="screen center">
-      <p className="sub">{text}</p>
+    <div className="screen center notice">
+      <div className="scanline" aria-hidden="true" />
+      <p className="notice-text" role="status">
+        {text}
+      </p>
       {onBack && (
         <button className="btn" onClick={onBack}>
           Back
