@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { backend } from '../net';
 import { enrolledPlayers, livesLabel, type Room } from '../types';
 import { sfx } from '../audio/sfx';
 import { shotLog } from '../debug/shotLog';
 import { ShotReview } from '../feedback/ShotReview';
 import { PracticeReview } from '../feedback/PracticeReview';
-import { RESET_FAILED } from '../ui/advice';
+import { placementLine, RESET_FAILED } from '../ui/advice';
 
 interface Props {
   room: Room;
@@ -30,23 +30,30 @@ export function Results({ room, pid, onLeave }: Props) {
   });
 
   return (
-    <div className="screen center">
-      <div className="label">Game over</div>
-      <h1 className="title">{winner ? `${winner.name} wins` : 'No survivors'}</h1>
-      {winner?.id === pid && <p className="sub">That is you. Nice shooting.</p>}
+    <div className="screen results">
+      <header className="results-hero" style={winner ? ({ '--winner': winner.color } as CSSProperties) : undefined}>
+        <h1 className="title">{winner ? `${winner.name} wins` : 'No survivors'}</h1>
+        <p className="sub">{winner?.id === pid ? 'That is you. Nice shooting.' : placementLine(standings.findIndex((p) => p.id === pid) + 1, standings.length)}</p>
+      </header>
       <ol className="standings">
         {standings.map((p, i) => (
-          <li key={p.id}>
+          <li key={p.id} className={winner?.id === p.id ? 'winner' : ''} style={{ '--i': i, '--pc': p.color } as CSSProperties}>
             <span className="rank">{i + 1}</span>
             <span className="dot" style={{ background: p.color }} />
-            <span className="name">{p.name}</span>
-            <span className="tag">{p.tags} tags</span>
-            <span className="tag">{livesLabel(p)}</span>
+            <span className="name">
+              {p.name}
+              {p.id === pid && <small> you</small>}
+            </span>
+            <span className="stat">
+              <b>{p.tags}</b> {p.tags === 1 ? 'tag' : 'tags'}
+            </span>
+            <span className="stat">{livesLabel(p)}</span>
           </li>
         ))}
       </ol>
       <ShotReview room={room} pid={pid} />
       <PracticeReview />
+      <div className="results-actions">
       {isHost ? (
         <>
           {/* Names the round it ends: a tap replayed after another host moved on changes nothing. */}
@@ -61,6 +68,7 @@ export function Results({ room, pid, onLeave }: Props) {
       <button className="link" onClick={onLeave}>
         Leave room
       </button>
+      </div>
       {shots.length > 0 && (
         <button className="link" onClick={() => setShowLog((v) => !v)}>
           {showLog ? 'Hide' : 'Show'} my shot log ({shots.length})

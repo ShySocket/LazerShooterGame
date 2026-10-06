@@ -178,3 +178,11 @@ test('lobby rule presets stay inside the fields and the guest summary reads in s
   assert.deepEqual(rulesSummary({ lives: 1, cooldownMs: 1500, invulnMs: 500 })[0], '1 life');
   assert.equal(rulesSummary({ lives: 1, cooldownMs: 1500, invulnMs: 500 })[1], '1.5 s between shots');
 });
+
+test('results placement line says where you finished, with the right ordinal', async () => {
+  const { placementLine } = await import('../src/ui/advice');
+  assert.equal(placementLine(2, 2), 'You placed 2nd of 2.');
+  assert.equal(placementLine(3, 8), 'You placed 3rd of 8.');
+  assert.equal(placementLine(11, 12), 'You placed 11th of 12.');
+  assert.equal(placementLine(0, 4), 'Round over.');
+});

@@ -123,6 +123,14 @@ export function rulesSummary(s: { lives: number; cooldownMs: number; invulnMs: n
   return [`${s.lives} ${s.lives === 1 ? 'life' : 'lives'}`, `${sec(s.cooldownMs)} between shots`, `${sec(s.invulnMs)} shield after a hit`];
 }
 
+/** Under the winner's name on Results, for everyone who did not win. */
+export function placementLine(rank: number, total: number): string {
+  if (rank < 1 || total < 1) return 'Round over.';
+  const n = rank % 100;
+  const suffix = n >= 11 && n <= 13 ? 'th' : rank % 10 === 1 ? 'st' : rank % 10 === 2 ? 'nd' : rank % 10 === 3 ? 'rd' : 'th';
+  return `You placed ${rank}${suffix} of ${total}.`;
+}
+
 export const MUTE_SWITCH_NOTE = 'On an iPhone, sounds stay off while the mute switch is on.';
 
 /**

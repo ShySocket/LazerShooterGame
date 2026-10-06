@@ -110,7 +110,7 @@ export function ShotReview({ room, pid }: Props) {
   if (state.phase === 'done') {
     return (
       <div className="review done">
-        <div className="label">Shot review</div>
+        <h3>Shot review</h3>
         <p className="sub">
           {state.uploaded === null ? 'Skipped that one.' : state.uploaded ? 'Thanks. That answer helps tune the tracking.' : 'Thanks. Saved; it uploads when the phone is back online.'}
         </p>
@@ -134,7 +134,7 @@ export function ShotReview({ room, pid }: Props) {
 
   return (
     <div className="review">
-      <div className="label">Shot review</div>
+      <h3>Shot review</h3>
       <p className="prompt">Did you clearly shoot another player when you did this shot?</p>
       {url ? <img className="review-photo" src={url} alt="The camera frame at the moment you fired, with the crosshair" /> : <p className="sub">No photo was kept for this shot.</p>}
       <p className="hint">
