@@ -21,7 +21,8 @@
     "realcheck": "node --import ./tests/register.mjs scripts/realcheck.ts",
     "fixtures": "python3 scripts/fetch-fixtures.py",
     "feedback:pull": "node --import ./tests/register.mjs scripts/feedback-pull.ts",
-    "session:report": "node --import ./tests/register.mjs scripts/session-report.ts"
+    "session:report": "node --import ./tests/register.mjs scripts/session-report.ts",
+    "ui:shots": "playwright test -c playwright.ui.config.ts"
   },
   "dependencies": {
     "@vladmandic/human": "^3.3.6",
