@@ -166,3 +166,15 @@ test('home copy fits a phone: three short steps and a practice intro under 200 c
   assert.ok(PRACTICE_INTRO.length < 200);
   for (const s of [...HOW_IT_PLAYS, PRACTICE_INTRO]) assert.ok(!/[–—]/.test(s));
 });
+
+test('lobby rule presets stay inside the fields and the guest summary reads in seconds', async () => {
+  const { RULE_PRESETS, rulesSummary } = await import('../src/ui/advice');
+  const { MIN_INVULN_MS } = await import('../src/types');
+  for (const p of RULE_PRESETS.cooldownMs) assert.ok(p.value >= 200 && p.value <= 10000);
+  for (const p of RULE_PRESETS.invulnMs) assert.ok(p.value >= MIN_INVULN_MS && p.value <= 30000);
+  for (const p of RULE_PRESETS.hitThreshold) assert.ok(p.value >= 0.2 && p.value <= 0.7);
+  assert.ok(RULE_PRESETS.hitThreshold.some((p) => p.value === 0.5), 'the default is one tap away');
+  assert.deepEqual(rulesSummary({ lives: 3, cooldownMs: 1000, invulnMs: 3000 }), ['3 lives', '1 s between shots', '3 s shield after a hit']);
+  assert.deepEqual(rulesSummary({ lives: 1, cooldownMs: 1500, invulnMs: 500 })[0], '1 life');
+  assert.equal(rulesSummary({ lives: 1, cooldownMs: 1500, invulnMs: 500 })[1], '1.5 s between shots');
+});

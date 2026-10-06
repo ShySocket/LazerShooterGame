@@ -98,6 +98,31 @@ export function lobbyHint(s: LobbyState): string {
 export const shareFallback = (code: string): string => `Could not copy. The code is ${code}.`;
 
 export const HIT_CONFIDENCE_NOTE = '0.5 suits most rounds. Above 0.7 few shots can land, so the field stops there.';
+/** One-tap rule presets the host picks from; the raw fields stay under "Fine-tune". Values sit inside the fields' bounds. */
+export const RULE_PRESETS = {
+  cooldownMs: [
+    { label: 'Fast', value: 500 },
+    { label: 'Normal', value: 1000 },
+    { label: 'Slow', value: 2000 },
+  ],
+  invulnMs: [
+    { label: 'Short', value: 1000 },
+    { label: 'Normal', value: 3000 },
+    { label: 'Long', value: 5000 },
+  ],
+  hitThreshold: [
+    { label: 'Loose', value: 0.4 },
+    { label: 'Normal', value: 0.5 },
+    { label: 'Strict', value: 0.6 },
+  ],
+} as const;
+
+/** The round's rules as short readouts, for guests in the lobby. */
+export function rulesSummary(s: { lives: number; cooldownMs: number; invulnMs: number }): string[] {
+  const sec = (ms: number) => `${Number((ms / 1000).toFixed(1))} s`;
+  return [`${s.lives} ${s.lives === 1 ? 'life' : 'lives'}`, `${sec(s.cooldownMs)} between shots`, `${sec(s.invulnMs)} shield after a hit`];
+}
+
 export const MUTE_SWITCH_NOTE = 'On an iPhone, sounds stay off while the mute switch is on.';
 
 /**
