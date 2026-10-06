@@ -25,23 +25,29 @@ function y4m(name: string, parts: [clip: string, start: number, dur: number][]):
   return out;
 }
 
-/** Drive the face stage: tap Skip when offered, record every hint, stop when the body stage shows or time runs out. */
-async function runFaceStage(page: Page, timeoutMs: number): Promise<{ done: boolean; hints: string[]; faces: number }> {
+/**
+ * Drive the face stage: tap Skip when offered, record every hint, stop when the body stage shows or
+ * time runs out. Both laps run: lap 2 (arm's length) can only be skipped through here, since a clip
+ * never gets further away, which is the no-dead-end case for that lap.
+ */
+async function runFaceStage(page: Page, timeoutMs: number): Promise<{ done: boolean; hints: string[]; faces: number; lap1S: number | null; doneS: number | null }> {
   const hints: string[] = [];
   const t0 = Date.now();
   let faces = 0;
+  let lap1S: number | null = null;
   while (Date.now() - t0 < timeoutMs) {
-    if (await page.getByRole('button', { name: 'A friend is holding it' }).isVisible().catch(() => false)) return { done: true, hints, faces: 8 };
-    const heading = (await page.locator('h2').first().textContent().catch(() => '')) ?? '';
+    if (await page.getByRole('button', { name: 'A friend is holding it' }).isVisible().catch(() => false)) return { done: true, hints, faces: 8, lap1S, doneS: (Date.now() - t0) / 1000 };
+    const heading = (await page.locator('h2').first().textContent({ timeout: 2000 }).catch(() => '')) ?? '';
+    if (lap1S === null && heading.startsWith('Lap 2')) lap1S = (Date.now() - t0) / 1000;
     const m = heading.match(/Face (\d) of 8/);
     if (m) faces = Number(m[1]) - 1;
-    const hint = (await page.locator('.enroll-panel .hint').first().textContent().catch(() => null)) ?? '';
+    const hint = (await page.locator('.enroll-panel .hint').first().textContent({ timeout: 500 }).catch(() => null)) ?? '';
     if (hint && hints.at(-1) !== hint) hints.push(hint);
     const skip = page.getByRole('button', { name: 'Skip this angle' });
-    if (await skip.isVisible().catch(() => false)) await skip.click().catch(() => undefined);
+    if (await skip.isVisible().catch(() => false)) await skip.click({ timeout: 2000 }).catch(() => undefined);
     await page.waitForTimeout(400);
   }
-  return { done: false, hints, faces };
+  return { done: false, hints, faces, lap1S, doneS: null };
 }
 
 async function openScan(camera: string) {
@@ -57,12 +63,14 @@ async function openScan(camera: string) {
 
 test('[real-scan] a real person on the selfie camera completes the eight-angle face scan: no "different face", no dead end', async () => {
   test.skip(!existsSync(join(CLIPS, 'talker-pennington.mp4')), 'needs npm run fixtures');
-  test.setTimeout(300_000);
+  test.setTimeout(420_000);
   const { browser, phone } = await openScan(y4m('scan-pennington', [['talker-pennington', 0, 25]]));
   try {
-    const r = await runFaceStage(phone.page, 200_000);
+    const r = await runFaceStage(phone.page, 300_000);
+    test.info().annotations.push({ type: 'face stage', description: `lap 1 in ${r.lap1S} s, both laps in ${r.doneS} s` });
     writeFileSync(join(OUT, 'realscan-hints.json'), JSON.stringify(r, null, 1));
     expect(r.hints.filter((h) => /not the face|different face/i.test(h)), r.hints.join(' | ')).toEqual([]);
+    expect(r.lap1S, `lap 1 stuck at sample ${r.faces}`).not.toBeNull();
     expect(r.done, `face stage stuck at sample ${r.faces}; hints: ${r.hints.join(' | ')}`).toBe(true);
   } finally {
     await closeAll([phone]);

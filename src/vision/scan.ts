@@ -31,7 +31,20 @@ export const FACE_PROMPTS: FacePrompt[] = [
 
 export const promptFor = (index: number): FacePrompt => FACE_PROMPTS[Math.min(index, FACE_PROMPTS.length - 1)];
 
-export type PoseReason = 'ok' | 'turn-more' | 'turn-less' | 'other-way' | 'tilt-more' | 'tilt-less' | 'straighten';
+/**
+ * The second lap, at arm's length: the same judge, hold, patience and skip as the first, at a face
+ * size closer to what a round sees. The left/right and chin conventions latched in lap 1 carry over.
+ */
+export const LAP2_PROMPTS: FacePrompt[] = [
+  { text: 'Look straight at the camera', yaw: SCAN_CALIB.straightYaw },
+  { text: 'Turn your head slightly to the left', yaw: SCAN_CALIB.slightYaw, side: 'a' },
+  { text: 'Turn your head slightly to the right', yaw: SCAN_CALIB.slightYaw, side: 'b' },
+  { text: 'Tilt your chin up', tilt: 'up' },
+  { text: 'Tilt your chin down', tilt: 'down' },
+];
+export const LAP2_HEADING = 'Lap 2: arm\'s length';
+
+export type PoseReason = 'ok' | 'turn-more' | 'turn-less' | 'other-way' | 'tilt-more' | 'tilt-less' | 'straighten' | 'further';
 
 export interface ScanState {
   /** Sign of the yaw that counts as side 'a', 0 until the first turned sample. */
@@ -148,6 +161,8 @@ export function hintFor(prompt: FacePrompt, reason: PoseReason): string {
       return prompt.tilt === 'up' ? 'Chin up a little more.' : 'Chin down a little more.';
     case 'tilt-less':
       return 'Not quite that far. Ease back a little.';
+    case 'further':
+      return 'Hold the phone further away, at arm\'s length.';
   }
 }
 
@@ -214,6 +229,8 @@ export interface FaceObs {
   pitch: number;
   /** Unit embedding of the face from the square crop; empty when blocked. */
   embedding: number[];
+  /** Face box width as a fraction of the frame width, when measured (lap 2's distance gate). */
+  w?: number;
 }
 
 export interface FaceFrame {
@@ -222,16 +239,24 @@ export interface FaceFrame {
   pitch: number;
   progress: number;
   t: number;
+  w?: number;
 }
 
 /** How a face sample was taken: the pose held, the best try after the patience, or an extra look to reach the minimum. */
 export type SampleHow = 'held' | 'patience' | 'extra';
 
 export interface FaceStage {
+  /** Lap 1 is the close set (FACE_PROMPTS); lap 2 repeats LAP2_PROMPTS at arm's length. */
+  lap: 1 | 2;
+  /** Lap 2 only: the median lap-1 face width (normalised); a lap-2 face must be at most `lap2MaxScale` of it. */
+  refWidth: number;
   scan: ScanState;
-  samples: { embedding: number[]; yaw: number; pitch: number; how: SampleHow }[];
+  /** `w` is the face box width as a fraction of the frame, when known. */
+  samples: { embedding: number[]; yaw: number; pitch: number; how: SampleHow; w?: number }[];
   /** Prompts skipped by the player: those angles stay missing, no template stands in for them. */
   skipped: number;
+  /** Which prompt indices were skipped, for the ring. */
+  skippedAt: number[];
   /** When the current prompt began, and no sample before `settleUntil` (a pause after each one). */
   promptStart: number;
   settleUntil: number;
@@ -239,15 +264,36 @@ export interface FaceStage {
   last: FaceFrame | null;
 }
 
-export const initialFaceStage = (t: number): FaceStage => ({ scan: initialScanState(), samples: [], skipped: 0, promptStart: t, settleUntil: t + SCAN_CALIB.settleMs, best: null, last: null });
+export const initialFaceStage = (t: number): FaceStage => ({ lap: 1, refWidth: 0, scan: initialScanState(), samples: [], skipped: 0, skippedAt: [], promptStart: t, settleUntil: t + SCAN_CALIB.settleMs, best: null, last: null });
+
+/** The median face width of a lap's samples (0 when none was measured). */
+export function medianWidth(st: FaceStage): number {
+  const ws = st.samples.map((s) => s.w ?? 0).filter((w) => w > 0).sort((a, b) => a - b);
+  return ws.length ? ws[Math.floor(ws.length / 2)] : 0;
+}
+
+/** Lap 2 starts from a finished lap 1: same conventions, fresh samples, and lap 1's face width as the reference. */
+export const initialLap2Stage = (lap1: FaceStage, t: number): FaceStage => ({ ...initialFaceStage(t), lap: 2, refWidth: medianWidth(lap1), scan: { ...lap1.scan, hold: 0 } });
+
+/** Is this face small enough for lap 2? Without a reference (no measured lap-1 width) any face counts. */
+export const farEnough = (w: number | undefined, refWidth: number, maxScale = SCAN_CALIB.lap2MaxScale): boolean => !refWidth || !w || w <= refWidth * maxScale;
 
 /** Which prompt the stage is on: one per sample or skip; past the eight, extra looks. */
 export const promptIndex = (st: FaceStage): number => st.samples.length + st.skipped;
+export const lapPrompts = (st: FaceStage): FacePrompt[] => (st.lap === 2 ? LAP2_PROMPTS : FACE_PROMPTS);
 export const hasFrontal = (st: FaceStage): boolean => st.samples.some((s) => Math.abs(s.yaw) <= SCAN_CALIB.straightYaw[1]);
-/** Extra looks are needed once all eight prompts are done but the scan holds too few real samples or none straight on. */
-export const needsExtra = (st: FaceStage, total = 8, min = 5): boolean => promptIndex(st) >= total && (st.samples.length < min || !hasFrontal(st));
+/** Extra looks are needed once all eight prompts are done but the scan holds too few real samples or none straight on. Lap 2 has none. */
+export const needsExtra = (st: FaceStage, total = 8, min = 5): boolean => st.lap === 1 && promptIndex(st) >= total && (st.samples.length < min || !hasFrontal(st));
 export function faceStageDone(st: FaceStage, total = 8, min = 5): boolean {
+  if (st.lap === 2) return promptIndex(st) >= LAP2_PROMPTS.length;
   return promptIndex(st) >= total && st.samples.length >= min && hasFrontal(st);
+}
+
+/** The prompt the stage is asking for right now, extra looks included. */
+export function currentPrompt(st: FaceStage): FacePrompt {
+  if (needsExtra(st)) return hasFrontal(st) ? EXTRA_ANY : EXTRA_STRAIGHT;
+  const list = lapPrompts(st);
+  return list[Math.min(promptIndex(st), list.length - 1)];
 }
 /** The extra look: straight on until there is a frontal sample, then any small turn that differs from the last sample. */
 export const EXTRA_STRAIGHT: FacePrompt = { text: 'One more: look straight at the camera', yaw: SCAN_CALIB.straightYaw };
@@ -259,14 +305,17 @@ export interface FaceStep {
   accepted: boolean;
   /** Skip this angle may be offered. */
   skippable: boolean;
+  /** Why the frame did not count, for the ring's arrow: a pose reason, 'blocked' by a gate, or 'wait' in the settle. */
+  reason: PoseReason | 'blocked' | 'wait';
 }
 
-function accept(st: FaceStage, fr: FaceFrame, scan: ScanState, latch: Partial<Pick<ScanState, 'yawSign' | 'pitchSign'>>, t: number, how: SampleHow): FaceStep {
+function accept(st: FaceStage, fr: FaceFrame, scan: ScanState, latch: Partial<Pick<ScanState, 'yawSign' | 'pitchSign'>>, t: number, how: SampleHow, w?: number): FaceStep {
   return {
-    stage: { ...st, scan: { ...scan, ...latch, hold: 0 }, samples: [...st.samples, { embedding: fr.embedding, yaw: fr.yaw, pitch: fr.pitch, how }], promptStart: t, settleUntil: t + SCAN_CALIB.settleMs, best: null },
+    stage: { ...st, scan: { ...scan, ...latch, hold: 0 }, samples: [...st.samples, { embedding: fr.embedding, yaw: fr.yaw, pitch: fr.pitch, how, ...(w ? { w } : {}) }], promptStart: t, settleUntil: t + SCAN_CALIB.settleMs, best: null },
     hint: '',
     accepted: true,
     skippable: false,
+    reason: 'ok',
   };
 }
 
@@ -280,22 +329,28 @@ function accept(st: FaceStage, fr: FaceFrame, scan: ScanState, latch: Partial<Pi
  */
 export function faceStageStep(st: FaceStage, obs: FaceObs): FaceStep {
   const skippable = canSkipAngle(obs.t - st.promptStart);
-  if (obs.t < st.settleUntil) return { stage: st, hint: '', accepted: false, skippable: false };
-  if (obs.blocked || !obs.embedding.length) return { stage: st, hint: obs.blocked || 'Hold still and face the camera a little more.', accepted: false, skippable: skippable && Boolean(st.last) };
+  if (obs.t < st.settleUntil) return { stage: st, hint: '', accepted: false, skippable: false, reason: 'wait' };
+  if (obs.blocked || !obs.embedding.length) return { stage: st, hint: obs.blocked || 'Hold still and face the camera a little more.', accepted: false, skippable: skippable && Boolean(st.last), reason: 'blocked' };
   const extra = needsExtra(st);
-  const prompt = extra ? (hasFrontal(st) ? EXTRA_ANY : EXTRA_STRAIGHT) : promptFor(promptIndex(st));
+  const prompt = currentPrompt(st);
+  // Lap 2: a face as close as lap 1's adds nothing; it neither counts nor stands in after the patience.
+  if (st.lap === 2 && !farEnough(obs.w, st.refWidth)) {
+    // The face was seen, so Skip this angle stays on offer through any blocked frames that follow.
+    const last: FaceFrame = { embedding: obs.embedding, yaw: obs.yaw, pitch: obs.pitch, progress: -Infinity, t: obs.t, ...(obs.w ? { w: obs.w } : {}) };
+    return { stage: { ...st, last, scan: { ...st.scan, hold: 0 } }, hint: hintFor(prompt, 'further'), accepted: false, skippable, reason: 'further' };
+  }
   let judgement = judgePose(prompt, obs.yaw, obs.pitch, st.scan);
   // An extra look must add something: a different angle than the last sample.
   if (extra && judgement.ok && prompt === EXTRA_ANY && st.samples.length && Math.abs(obs.yaw - st.samples[st.samples.length - 1].yaw) < 5) judgement = { ok: false, reason: 'turn-more', latch: {} };
   if (judgement.ok && Math.abs(obs.yaw) > SCAN_CALIB.enrolYawMax) judgement = { ok: false, reason: 'turn-less', latch: {} };
-  const fr: FaceFrame = { embedding: obs.embedding, yaw: obs.yaw, pitch: obs.pitch, progress: promptProgress(prompt, obs.yaw, obs.pitch, st.scan), t: obs.t };
+  const fr: FaceFrame = { embedding: obs.embedding, yaw: obs.yaw, pitch: obs.pitch, progress: promptProgress(prompt, obs.yaw, obs.pitch, st.scan), t: obs.t, ...(obs.w ? { w: obs.w } : {}) };
   const best = Math.abs(obs.yaw) <= SCAN_CALIB.enrolYawMax && (!st.best || fr.progress > st.best.progress) ? fr : st.best;
   let stage: FaceStage = { ...st, last: fr, best };
   const held = holdStep(stage.scan, judgement);
-  if (held.ready) return accept(stage, fr, held.state, {}, obs.t, extra ? 'extra' : 'held');
+  if (held.ready) return accept(stage, fr, held.state, {}, obs.t, extra ? 'extra' : 'held', fr.w);
   stage = { ...stage, scan: held.state };
-  if (!extra && best && patienceAccepts(prompt, best.progress, obs.t - stage.promptStart)) return accept(stage, best, stage.scan, patienceLatch(prompt, best.yaw, best.pitch, stage.scan), obs.t, 'patience');
-  return { stage, hint: [hintFor(prompt, judgement.reason), angleNote(prompt, judgement.reason, obs.yaw, obs.pitch)].filter(Boolean).join(' '), accepted: false, skippable: skippable && !extra };
+  if (!extra && best && patienceAccepts(prompt, best.progress, obs.t - stage.promptStart)) return accept(stage, best, stage.scan, patienceLatch(prompt, best.yaw, best.pitch, stage.scan), obs.t, 'patience', best.w);
+  return { stage, hint: [hintFor(prompt, judgement.reason), angleNote(prompt, judgement.reason, obs.yaw, obs.pitch)].filter(Boolean).join(' '), accepted: false, skippable: skippable && !extra, reason: judgement.reason };
 }
 
 /**
@@ -304,7 +359,7 @@ export function faceStageStep(st: FaceStage, obs: FaceObs): FaceStep {
  */
 export function skipFaceAngle(st: FaceStage, t: number): FaceStep | null {
   if (needsExtra(st)) return null;
-  return { stage: { ...st, skipped: st.skipped + 1, scan: { ...st.scan, hold: 0 }, promptStart: t, settleUntil: t + SCAN_CALIB.settleMs, best: null }, hint: '', accepted: true, skippable: false };
+  return { stage: { ...st, skipped: st.skipped + 1, skippedAt: [...st.skippedAt, promptIndex(st)], scan: { ...st.scan, hold: 0 }, promptStart: t, settleUntil: t + SCAN_CALIB.settleMs, best: null }, hint: '', accepted: true, skippable: false, reason: 'ok' };
 }
 
 // ---- Body stages ---------------------------------------------------------------------------------

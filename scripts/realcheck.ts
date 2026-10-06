@@ -295,9 +295,10 @@ async function clips(page: Page) {
     }
     seats.filter((s) => s.faces.length >= 30).forEach((seat, k) => {
       const enrol = seat.faces.filter((x) => x.t < ENROL_S);
-      // Spread the eight samples over the enrolment window.
-      const step = Math.max(1, Math.floor(enrol.length / 8));
-      const profile = enrol.filter((_, i) => i % step === 0).slice(0, 8).map((x) => x.face.embedding);
+      // Spread the samples over the enrolment window: eight, or REALCHECK_TEMPLATES (13 = lap 1 and the arm's-length lap 2).
+      const n = Number(process.env.REALCHECK_TEMPLATES ?? 8);
+      const step = Math.max(1, Math.floor(enrol.length / n));
+      const profile = enrol.filter((_, i) => i % step === 0).slice(0, n).map((x) => x.face.embedding);
       const live = seat.faces.filter((x) => x.t >= ENROL_S + 1).map((x) => ({ t: x.t, px: Math.round(x.face.px), yaw: Math.round(x.face.yaw), e: x.face.embedding }));
       if (profile.length < 3 || live.length < 10) return;
       people.push({ name: `${file.replace(/\.mp4$/, '')}#${k}`, profile, live });
