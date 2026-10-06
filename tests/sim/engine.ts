@@ -367,7 +367,8 @@ export async function simulate(scenario: Scenario, overrides: Partial<SimOptions
       const truth = underDot(tapAim);
       if (truth.visible?.id === target.id && truth.hittable(truth.visible) && truth.visibleHittable) result.possibleShots++;
       opts.recorder?.fire(now, tapAim, target.player ? target.id : null);
-      const shotId = shotRec ? `sim${opts.seed}-${++shotSeq}` : undefined;
+      // Unique across rounds, as the game's are: the round's code and the tap's number in it.
+      const shotId = shotRec ? `${fb!.code}${fb!.startAt}-${++shotSeq}` : undefined;
       const fire = pipeline.fire({ t: now, under: truth, shotId }, tapAim);
       opts.probe?.({ kind: 'fire', t: now, aim: tapAim, visible: truth.visible, result: fire });
       if (shotRec && shotId && fire.kind !== 'busy' && latest) {

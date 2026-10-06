@@ -94,3 +94,11 @@ test('the hold-out split is by round and stable', () => {
   assert.ok(share > 0.15 && share < 0.35, `share ${share}`);
   assert.deepEqual(Object.keys(currentParams()).sort(), KNOBS.map((k) => k.key).sort());
 });
+
+test('a few poisoned labels below the contradiction ceiling do not ratchet a tightening', async () => {
+  const r = tune(collectSamples(await exportFeedback({ seeds: [1, 2], poison: 0.02 })));
+  assert.ok(r.evidence.contradictionShare <= 0.05, 'below the ceiling: the labels look plausible on their own');
+  assert.ok(r.evidence.current.all.wrong > 0);
+  assert.equal(r.decision, 'none');
+  assert.ok(r.reasons.some((x) => /look like labelling errors/.test(x)), r.reasons.join('; '));
+});

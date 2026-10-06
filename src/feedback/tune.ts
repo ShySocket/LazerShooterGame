@@ -81,6 +81,12 @@ export const TUNE_GUARDS = {
    * from the game before a person looks.
    */
   maxTightenCostShare: 0.05,
+  /**
+   * A tightening must remove at least this share of the replayed wrong hits. Real wrong hits sit near
+   * the bar and a step removes them; mislabelled shots mostly survive every step, and chasing them
+   * would ratchet the calibration night after night for nothing.
+   */
+  minTightenRemovedShare: 0.5,
 };
 
 export type Params = Record<TunableKey, number>;
@@ -245,6 +251,11 @@ export function tune(all: ShotSample[], opts: TuneOptions = {}): TuneResult {
     const cand = evalAll(p);
     evidence.candidate = { ...cand, ...bounds(labelled, p, cand.all) };
     const cost = cand.all.miss - base.all.miss;
+    const removed = base.all.wrong - cand.all.wrong;
+    if (removed < g.minTightenRemovedShare * base.all.wrong) {
+      reasons.push(`current calibration replays ${base.all.wrong} wrong hit(s), but the best one-step tightening (${[...moved].join(', ')}) removes only ${removed}; the rest look like labelling errors or a cause outside the tunable knobs, so a person must look at them first`);
+      return none();
+    }
     if (cost > Math.ceil(g.maxTightenCostShare * labelled.length)) {
       reasons.push(`current calibration replays ${base.all.wrong} wrong hit(s), but the tightening that removes them (${[...moved].join(', ')}) costs ${cost} misses, more than ${(g.maxTightenCostShare * 100).toFixed(0)}% of shots; a person must look at those shots first`);
       return none();
