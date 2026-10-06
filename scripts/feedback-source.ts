@@ -2,7 +2,9 @@
  * Where the feedback scripts (feedback:pull, session:report, replay) get the shot feedback log: a
  * saved export with --file, otherwise the live database through the Firebase CLI (the owner's login),
  * saved under .rubric/feedback/ (git-ignored: the profiles in it are re-identifiable; LZ_FEEDBACK_OUT
- * puts it elsewhere). Also the --since and --eval filters they share.
+ * puts it elsewhere). With a service account in the environment (FIREBASE_SA_KEY or
+ * GOOGLE_APPLICATION_CREDENTIALS, scripts/feedback-rest.ts) the pull goes over REST instead, which is
+ * how the nightly tuning job reads it. Also the --since and --eval filters they share.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -10,6 +12,7 @@ import { join, resolve } from 'node:path';
 import { collectSamples } from '../src/feedback/replay.ts';
 import type { ShotSample } from '../src/feedback/sample.ts';
 import { parseCutoff, parseEvalSplit, type EvalSplit } from '../src/feedback/sessionReport.ts';
+import { fetchFeedbackWithServiceAccount, serviceAccountFromEnv } from './feedback-rest.ts';
 
 const ROOT = resolve(import.meta.dirname, '..');
 
@@ -78,10 +81,28 @@ export function tuningSamples<T extends ShotSample>(samples: T[], split: EvalSpl
   };
 }
 
+/** The live log: over REST with a service account when one is configured, else through the owner's firebase-tools login. */
+export async function fetchLive(): Promise<unknown> {
+  let key;
+  try {
+    key = serviceAccountFromEnv();
+  } catch (e) {
+    return usageError(`service-account key unreadable: ${(e as Error).message}`);
+  }
+  if (!key) return fetchFeedbackLog();
+  try {
+    // An empty database returns null, which is an empty log, not an error.
+    return (await fetchFeedbackWithServiceAccount(key)) ?? {};
+  } catch (e) {
+    console.error((e as Error).message);
+    process.exit(2);
+  }
+}
+
 /** The export in `file`, or a fresh pull (saved under .rubric/feedback/) when there is none. */
-export function loadFeedback(file: string | null): unknown {
+export async function loadFeedback(file: string | null): Promise<unknown> {
   if (file) return JSON.parse(readFileSync(file, 'utf8'));
-  const data = fetchFeedbackLog();
+  const data = await fetchLive();
   const dir = process.env.LZ_FEEDBACK_OUT ? resolve(process.env.LZ_FEEDBACK_OUT) : join(ROOT, '.rubric', 'feedback');
   mkdirSync(dir, { recursive: true });
   const out = join(dir, `feedback-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);

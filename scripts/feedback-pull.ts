@@ -19,7 +19,7 @@ import { loadFeedback, optValue, playSamples, readRoundFilters, tuningSamples } 
 const args = process.argv.slice(2);
 
 const { since, split } = readRoundFilters(args);
-const data = loadFeedback(optValue(args, '--file'));
+const data = await loadFeedback(optValue(args, '--file'));
 const tuning = tuningSamples(playSamples(data, since), split);
 const samples = tuning.samples;
 const labelled = samples.filter((s): s is ShotSample & { label: NonNullable<ShotSample['label']> } => Boolean(s.label));
